@@ -1,4 +1,6 @@
 // ==UserScript==
+// @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/refund-capture-tool.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/refund-capture-tool.user.js
 // @name         Refund Capture Tool Enhanced
 // @namespace    refund-capture-tool
 // @version      2.8
