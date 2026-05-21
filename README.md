@@ -6,8 +6,8 @@ A small Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 
 | Script | Purpose | Install |
 |---|---|---|
-| **Better Freshdesk** | Freshdesk reply cleanup, auto-bold text, and CMS email search | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js) |
-| **Better CMS** | Refund capture, refund automation, cancellation reason autofill, screenshots, and payment badges | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js) |
+| **Better&nbsp;Freshdesk** | Freshdesk reply cleanup, auto-bold text, and CMS email search | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js) |
+| **Better&nbsp;CMS** | Refund capture, refund automation, cancellation reason autofill, screenshots, and payment badges | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js) |
 
 ## What They Do
 
