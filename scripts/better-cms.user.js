@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.2.1
+// @version      1.3
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
@@ -1678,11 +1678,9 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
 /* ============================================================
  * Feature 3: CMS Auto Percentage Refund After Action
- * Source: ViewLift CMS auto percentage refund after action 1.2
- * Note: restored original standalone workflow logic.
+ * Source: exact original standalone script body, unchanged.
  * ============================================================ */
 
-if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 (function () {
     'use strict';
 
@@ -2133,7 +2131,6 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
     });
 
 })();
-}
 
 /* ============================================================
  * Feature 4: CMS Real Snapshot to Clipboard
