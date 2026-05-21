@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.3
+// @version      1.4
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and improved Status placement/menu.
 // @match        https://viewlift.freshdesk.com/*
@@ -816,8 +816,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const STATUS_ROW_CLASS = 'better-freshdesk-status-row';
   const STATUS_LABEL_CLASS = 'better-freshdesk-status-label';
   const STATUS_DROPDOWN_CLASS = 'better-freshdesk-status-dropdown';
+  const SHOW_ALL_CLASS = 'better-freshdesk-status-show-all';
   const QUICKBAR_CLASS = 'better-freshdesk-status-quickbar';
   const QUICKBUTTON_CLASS = 'better-freshdesk-status-quickbutton';
+  const OTHER_BUTTON_CLASS = 'better-freshdesk-status-other-button';
+  const LISTBOX_WRAPPER_CLASS = 'better-freshdesk-status-listbox-wrapper';
 
   const PRIORITY_STATUS_ORDER = [
     'Waiting on End User',
@@ -949,6 +952,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
       .${QUICKBUTTON_CLASS}:active {
         transform: translateY(0) !important;
+      }
+
+      .${OTHER_BUTTON_CLASS} {
+        color: #475569 !important;
+        background: #f8fafc !important;
+        border-style: dashed !important;
+        font-weight: 700 !important;
+      }
+
+      .${STATUS_DROPDOWN_CLASS}:not(.${SHOW_ALL_CLASS}) [role="listbox"],
+      .${STATUS_DROPDOWN_CLASS}:not(.${SHOW_ALL_CLASS}) .ember-power-select-options,
+      .${STATUS_DROPDOWN_CLASS}:not(.${SHOW_ALL_CLASS}) .${LISTBOX_WRAPPER_CLASS} {
+        display: none !important;
+      }
+
+      .${STATUS_DROPDOWN_CLASS}.${SHOW_ALL_CLASS} {
+        max-height: 360px !important;
+      }
+
+      .${STATUS_DROPDOWN_CLASS}.${SHOW_ALL_CLASS} .${OTHER_BUTTON_CLASS} {
+        background: #eef2ff !important;
+        border-color: rgba(99, 102, 241, 0.35) !important;
+        color: #3730a3 !important;
       }
 
       .${STATUS_DROPDOWN_CLASS} [role="option"],
@@ -1187,6 +1213,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     dropdown.classList.add(STATUS_DROPDOWN_CLASS);
+    dropdown.classList.add(SHOW_ALL_CLASS);
+
+    await delay(30);
 
     let option = findVisibleStatusOption(statusText, dropdown);
 
@@ -1220,6 +1249,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return false;
   }
 
+  function labelListbox(dropdown) {
+    const listbox = dropdown.querySelector('[role="listbox"], .ember-power-select-options');
+
+    if (listbox) {
+      listbox.classList.add(LISTBOX_WRAPPER_CLASS);
+    }
+  }
+
   function buildQuickStatusBar(dropdown) {
     if (!dropdown || dropdown.querySelector(`.${QUICKBAR_CLASS}`)) return;
 
@@ -1247,9 +1284,36 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       bar.appendChild(button);
     });
 
+    const otherButton = document.createElement('button');
+    otherButton.type = 'button';
+    otherButton.className = `${QUICKBUTTON_CLASS} ${OTHER_BUTTON_CLASS}`;
+    otherButton.textContent = 'Other';
+    otherButton.setAttribute('data-better-freshdesk-status-other', 'true');
+
+    otherButton.addEventListener('mousedown', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+
+    otherButton.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      dropdown.classList.toggle(SHOW_ALL_CLASS);
+
+      if (dropdown.classList.contains(SHOW_ALL_CLASS)) {
+        otherButton.textContent = 'Hide other statuses';
+      } else {
+        otherButton.textContent = 'Other';
+      }
+    }, true);
+
+    bar.appendChild(otherButton);
+
     const listbox = dropdown.querySelector('[role="listbox"], .ember-power-select-options');
 
     if (listbox) {
+      listbox.classList.add(LISTBOX_WRAPPER_CLASS);
       dropdown.insertBefore(bar, listbox);
     } else {
       dropdown.prepend(bar);
@@ -1261,6 +1325,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     dropdowns.forEach(dropdown => {
       dropdown.classList.add(STATUS_DROPDOWN_CLASS);
+      dropdown.classList.remove(SHOW_ALL_CLASS);
+      labelListbox(dropdown);
       buildQuickStatusBar(dropdown);
     });
   }
