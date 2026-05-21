@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.5
+// @version      1.6
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and custom Status picker.
 // @match        https://viewlift.freshdesk.com/*
@@ -813,6 +813,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
   const STYLE_ID = 'better-freshdesk-status-style';
+  const BODY_OPENING_CLASS = 'better-freshdesk-status-opening';
   const STATUS_ROW_CLASS = 'better-freshdesk-status-row';
   const STATUS_LABEL_CLASS = 'better-freshdesk-status-label';
   const STATUS_DROPDOWN_CLASS = 'better-freshdesk-status-dropdown';
@@ -844,6 +845,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     ...OTHER_STATUS_OPTIONS
   ];
 
+  let openingTimer = null;
+
   function cleanText(value) {
     return String(value || '')
       .replace(/\u00a0/g, ' ')
@@ -874,6 +877,19 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     );
   }
 
+  function isUsableDropdownShell(element) {
+    if (!element || element.nodeType !== 1) return false;
+
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+
+    return (
+      rect.width > 0 &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden'
+    );
+  }
+
   function isTouchableForScript(element) {
     if (!element || element.nodeType !== 1) return false;
 
@@ -894,6 +910,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
+      body.${BODY_OPENING_CLASS} .ticket-properties-dropdown:not(.${STATUS_DROPDOWN_CLASS}) [role="listbox"],
+      body.${BODY_OPENING_CLASS} .ticket-properties-dropdown:not(.${STATUS_DROPDOWN_CLASS}) .ember-power-select-options,
+      body.${BODY_OPENING_CLASS} .ticket-properties-dropdown:not(.${STATUS_DROPDOWN_CLASS}) [data-test-id^="vertical-options-count"] {
+        opacity: 0 !important;
+      }
+
       .${STATUS_ROW_CLASS} {
         position: relative !important;
         margin: 8px 10px 12px !important;
@@ -1020,6 +1042,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.head.appendChild(style);
   }
 
+  function markStatusOpening() {
+    addStyles();
+
+    document.body.classList.add(BODY_OPENING_CLASS);
+
+    clearTimeout(openingTimer);
+
+    openingTimer = setTimeout(function () {
+      document.body.classList.remove(BODY_OPENING_CLASS);
+    }, 1800);
+
+    scheduleDropdownEnhancement();
+  }
+
+  function unmarkStatusOpeningSoon() {
+    clearTimeout(openingTimer);
+
+    openingTimer = setTimeout(function () {
+      document.body.classList.remove(BODY_OPENING_CLASS);
+    }, 250);
+  }
+
   function getPropertiesSticky() {
     return (
       document.querySelector('[data-test-id="ticket-properties-sticky"]') ||
@@ -1044,6 +1088,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (element.matches('[data-test-id="ticket-status"]')) return false;
 
     return cleanText(element.textContent) === 'Status';
+  }
+
+  function isStatusInteractionTarget(target) {
+    if (!target || !target.closest) return false;
+
+    if (target.closest(`.${STATUS_ROW_CLASS}`)) return true;
+
+    const text = normalizeText(target.innerText || target.textContent || '');
+    if (text === 'status') return true;
+
+    const control = target.closest('[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], .ember-basic-dropdown-trigger');
+
+    if (!control) return false;
+
+    const row = control.closest(`.${STATUS_ROW_CLASS}`);
+    if (row) return true;
+
+    const nearby = control.closest('.ticket-property, .ticket-properties-field, .form-field, .field, div');
+    if (!nearby) return false;
+
+    return Boolean(
+      Array.from(nearby.querySelectorAll('label, span, div, p')).some(element => cleanText(element.textContent) === 'Status')
+    );
   }
 
   function hasStatusControl(element) {
@@ -1157,7 +1224,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function isStatusDropdown(dropdown) {
-    if (!dropdown || !isVisible(dropdown)) return false;
+    if (!dropdown || !isUsableDropdownShell(dropdown)) return false;
 
     if (!dropdown.classList.contains('ticket-properties-dropdown') &&
         !dropdown.classList.contains('ember-power-select-dropdown') &&
@@ -1366,11 +1433,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       dropdown.classList.add(STATUS_DROPDOWN_CLASS);
       buildQuickStatusBar(dropdown);
       hideNativeList(dropdown);
+      unmarkStatusOpeningSoon();
     });
   }
 
   function scheduleDropdownEnhancement() {
-    setTimeout(enhanceStatusDropdowns, 30);
+    setTimeout(enhanceStatusDropdowns, 0);
+    setTimeout(enhanceStatusDropdowns, 20);
+    setTimeout(enhanceStatusDropdowns, 60);
     setTimeout(enhanceStatusDropdowns, 120);
     setTimeout(enhanceStatusDropdowns, 300);
     setTimeout(enhanceStatusDropdowns, 700);
@@ -1384,7 +1454,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       timer = setTimeout(function () {
         moveStatusBelowProperties();
         enhanceStatusDropdowns();
-      }, 200);
+      }, 120);
     });
 
     observer.observe(document.body || document.documentElement, {
@@ -1394,18 +1464,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     });
   }
 
-  document.addEventListener('click', function (event) {
-    const row = event.target.closest(`.${STATUS_ROW_CLASS}`);
-
-    if (row) {
-      scheduleDropdownEnhancement();
-      return;
+  document.addEventListener('pointerdown', function (event) {
+    if (isStatusInteractionTarget(event.target)) {
+      markStatusOpening();
     }
+  }, true);
 
-    const text = normalizeText(event.target.innerText || event.target.textContent || '');
+  document.addEventListener('mousedown', function (event) {
+    if (isStatusInteractionTarget(event.target)) {
+      markStatusOpening();
+    }
+  }, true);
 
-    if (text === 'status' || event.target.closest('[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], .ember-basic-dropdown-trigger')) {
-      scheduleDropdownEnhancement();
+  document.addEventListener('click', function (event) {
+    if (isStatusInteractionTarget(event.target)) {
+      markStatusOpening();
     }
   }, true);
 
@@ -1415,6 +1488,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return;
     }
 
+    addStyles();
     moveStatusBelowProperties();
     enhanceStatusDropdowns();
     installObserver();
