@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.0
+// @version      1.1
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
@@ -1678,465 +1678,508 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
 /* ============================================================
  * Feature 3: CMS Auto Percentage Refund After Action
- * Source: ViewLift CMS auto percentage refund after action 1.2
+ * Source: ViewLift CMS auto percentage refund after action 1.3
+ * Fix: starts when the Refund menu option appears, not only when VisibilityIcon is clicked
  * ============================================================ */
 
-
 if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
-
 (function () {
-    'use strict';
+  'use strict';
 
-    const REFUND_PERCENTAGE = '100';
-    const REFUND_REASON_VALUE = 'ROTH';
-    const ADDITIONAL_COMMENT_PREFIX = 'Customer wanted a refund: ';
+  if (window.__betterCmsAutoPercentageRefundInstalled) {
+    return;
+  }
 
-    let workflowActive = false;
-    let attempts = 0;
+  window.__betterCmsAutoPercentageRefundInstalled = true;
 
-    let refundClicked = false;
-    let issuePercentageClicked = false;
-    let percentageFilled = false;
-    let reasonDropdownOpened = false;
-    let reasonSelected = false;
-    let additionalCommentsHandled = false;
+  const REFUND_PERCENTAGE = '100';
+  const REFUND_REASON_VALUE = 'ROTH';
+  const ADDITIONAL_COMMENT_PREFIX = 'Customer wanted a refund: ';
 
-    function isVisible(element) {
-        if (!element) return false;
+  let workflowActive = false;
+  let attempts = 0;
 
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
+  let refundClicked = false;
+  let issuePercentageClicked = false;
+  let percentageFilled = false;
+  let reasonDropdownOpened = false;
+  let reasonSelected = false;
+  let additionalCommentsHandled = false;
 
+  function isVisible(element) {
+    if (!element) return false;
+
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.opacity !== '0'
+    );
+  }
+
+  function cleanText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getText(element) {
+    return cleanText(element.innerText || element.textContent || '');
+  }
+
+  function getBestClickable(element) {
+    if (!element) return null;
+
+    return element.closest(
+      'button, [role="button"], li, [role="menuitem"], [role="option"], [tabindex], a'
+    ) || element;
+  }
+
+  function realClick(element, logMessage) {
+    const target = getBestClickable(element);
+
+    if (!target || !isVisible(target)) return false;
+
+    target.scrollIntoView({
+      block: 'center',
+      inline: 'center'
+    });
+
+    target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+
+    if (logMessage) {
+      console.log(logMessage);
+    }
+
+    return true;
+  }
+
+  function setNativeValue(element, value) {
+    const tagName = element.tagName.toLowerCase();
+
+    let prototype = null;
+
+    if (tagName === 'input') {
+      prototype = window.HTMLInputElement.prototype;
+    } else if (tagName === 'textarea') {
+      prototype = window.HTMLTextAreaElement.prototype;
+    }
+
+    const descriptor = prototype
+      ? Object.getOwnPropertyDescriptor(prototype, 'value')
+      : null;
+
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(element, value);
+    } else {
+      element.value = value;
+    }
+
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+
+  function findClickableByExactText(text) {
+    const targetText = text.toLowerCase();
+
+    return Array.from(document.querySelectorAll(
+      'button, [role="button"], li, [role="menuitem"], [role="option"], [tabindex], div, span'
+    ))
+      .filter(isVisible)
+      .find(element => getText(element).toLowerCase() === targetText) || null;
+  }
+
+  function findClickableByTextPattern(pattern) {
+    return Array.from(document.querySelectorAll(
+      'button, [role="button"], li, [role="menuitem"], [role="option"], [tabindex], div, span'
+    ))
+      .filter(isVisible)
+      .find(element => pattern.test(getText(element))) || null;
+  }
+
+  function findVisibleRefundMenuItem() {
+    const menuContainers = Array.from(document.querySelectorAll(
+      '[role="menu"], .MuiMenu-paper, .MuiPopover-paper, .MuiPaper-root'
+    )).filter(isVisible);
+
+    for (const container of menuContainers) {
+      const refundItem = Array.from(container.querySelectorAll(
+        'button, [role="button"], li, [role="menuitem"], [tabindex], div, span'
+      ))
+        .filter(isVisible)
+        .find(element => getText(element).toLowerCase() === 'refund');
+
+      if (refundItem) return refundItem;
+    }
+
+    return findClickableByExactText('Refund');
+  }
+
+  function maybeStartWorkflowFromOpenedMenu() {
+    if (workflowActive) return;
+
+    const refundItem = findVisibleRefundMenuItem();
+
+    if (!refundItem) return;
+
+    startWorkflow();
+  }
+
+  function scheduleWorkflowDetection() {
+    setTimeout(maybeStartWorkflowFromOpenedMenu, 120);
+    setTimeout(maybeStartWorkflowFromOpenedMenu, 300);
+    setTimeout(maybeStartWorkflowFromOpenedMenu, 700);
+    setTimeout(maybeStartWorkflowFromOpenedMenu, 1200);
+  }
+
+  function getRefundPercentageInput() {
+    const exact = document.querySelector('input[placeholder="Enter refund percentage"]');
+
+    if (exact && isVisible(exact)) {
+      return exact;
+    }
+
+    return Array.from(document.querySelectorAll('input'))
+      .filter(input => {
+        if (!isVisible(input)) return false;
+        if (input.disabled || input.readOnly) return false;
+
+        const text = [
+          input.getAttribute('aria-label'),
+          input.getAttribute('placeholder'),
+          input.getAttribute('name'),
+          input.getAttribute('id'),
+          input.closest('.MuiFormControl-root')?.innerText,
+          input.closest('.MuiDialog-root')?.innerText
+        ].filter(Boolean).join(' ').toLowerCase();
+
+        return text.includes('refund') || text.includes('percentage');
+      })[0] || null;
+  }
+
+  function fillRefundPercentage() {
+    const input = getRefundPercentageInput();
+
+    if (!input) return false;
+
+    input.focus();
+    setNativeValue(input, REFUND_PERCENTAGE);
+
+    percentageFilled = true;
+
+    console.log('[Better CMS Refund] Refund percentage filled: 100');
+
+    return true;
+  }
+
+  function getReasonDropdown() {
+    const candidates = Array.from(document.querySelectorAll(
+      '[role="combobox"], .MuiSelect-select, .MuiInputBase-root'
+    )).filter(element => {
+      if (!isVisible(element)) return false;
+
+      const text = [
+        element.getAttribute('aria-label'),
+        element.getAttribute('placeholder'),
+        element.getAttribute('name'),
+        element.getAttribute('id'),
+        getText(element),
+        element.closest('.MuiFormControl-root')?.innerText,
+        element.closest('.MuiDialog-root')?.innerText
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      if (text.includes('refund percentage')) return false;
+      if (text.includes('enter refund percentage')) return false;
+
+      return (
+        text.includes('reason') ||
+        text.includes('refund reason') ||
+        element.getAttribute('role') === 'combobox' ||
+        String(element.className).includes('MuiSelect')
+      );
+    });
+
+    if (!candidates.length) return null;
+
+    const scored = candidates.map(element => {
+      const text = [
+        element.getAttribute('aria-label'),
+        element.getAttribute('placeholder'),
+        getText(element),
+        element.closest('.MuiFormControl-root')?.innerText,
+        element.closest('.MuiDialog-root')?.innerText
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      let score = 0;
+
+      if (text.includes('refund reason')) score += 50;
+      if (text.includes('reason')) score += 30;
+      if (element.getAttribute('role') === 'combobox') score += 20;
+      if (String(element.className).includes('MuiSelect')) score += 15;
+
+      return { element, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored[0].element;
+  }
+
+  function getROTHOption() {
+    const exact = document.querySelector(
+      'li[data-value="ROTH"], [role="option"][data-value="ROTH"]'
+    );
+
+    if (exact && isVisible(exact)) {
+      return exact;
+    }
+
+    return Array.from(document.querySelectorAll('li, [role="option"], [role="menuitem"], div, span'))
+      .filter(isVisible)
+      .find(option => {
+        const text = getText(option).toLowerCase();
+        const value = option.getAttribute('data-value');
+
+        return value === REFUND_REASON_VALUE || text.includes('roth');
+      }) || null;
+  }
+
+  function getAdditionalCommentsField() {
+    const selectors = [
+      'textarea[rows="4"][required]',
+      'textarea.MuiInputBase-inputMultiline[required]',
+      'textarea.MuiInputBase-inputMultiline',
+      'textarea[rows="4"]'
+    ];
+
+    for (const selector of selectors) {
+      const fields = Array.from(document.querySelectorAll(selector))
+        .filter(field => {
+          return (
+            isVisible(field) &&
+            !field.disabled &&
+            !field.readOnly
+          );
+        });
+
+      if (fields.length) {
+        return fields[fields.length - 1];
+      }
+    }
+
+    const textareas = Array.from(document.querySelectorAll('textarea'))
+      .filter(field => {
         return (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            style.opacity !== '0'
+          isVisible(field) &&
+          !field.disabled &&
+          !field.readOnly
         );
+      });
+
+    if (textareas.length) {
+      return textareas[textareas.length - 1];
     }
 
-    function cleanText(value) {
-        return (value || '').replace(/\s+/g, ' ').trim();
+    return null;
+  }
+
+  function getFreshdeskURLFromRefundCaptureTool() {
+    const field = document.getElementById('refund-freshdesk');
+
+    if (!field) {
+      console.log('[Better CMS Refund] Refund Capture field #refund-freshdesk not found');
+      return '';
     }
 
-    function getText(element) {
-        return cleanText(element.innerText || element.textContent || '');
+    const value = cleanText(field.value);
+
+    if (/^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(value)) {
+      return value;
     }
 
-    function realClick(element, logMessage) {
-        if (!element || !isVisible(element)) return false;
+    console.log('[Better CMS Refund] No valid Freshdesk URL found:', value || 'empty');
 
-        element.scrollIntoView({
-            block: 'center',
-            inline: 'center'
-        });
+    return '';
+  }
 
-        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  function handleAdditionalComments() {
+    const field = getAdditionalCommentsField();
 
-        if (logMessage) {
-            console.log(logMessage);
-        }
-
-        return true;
+    if (!field) {
+      console.log('[Better CMS Refund] Additional comments field not found.');
+      return false;
     }
 
-    function setNativeValue(element, value) {
-        const tagName = element.tagName.toLowerCase();
-
-        let prototype = null;
-
-        if (tagName === 'input') {
-            prototype = window.HTMLInputElement.prototype;
-        } else if (tagName === 'textarea') {
-            prototype = window.HTMLTextAreaElement.prototype;
-        }
-
-        const descriptor = prototype
-            ? Object.getOwnPropertyDescriptor(prototype, 'value')
-            : null;
-
-        if (descriptor && descriptor.set) {
-            descriptor.set.call(element, value);
-        } else {
-            element.value = value;
-        }
-
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-        element.dispatchEvent(new Event('blur', { bubbles: true }));
-    }
-
-    function isActionIconClick(target) {
-        const icon = target.closest('[data-testid="VisibilityIcon"]');
-
-        if (icon) return true;
-
-        const clickable = target.closest('button, [role="button"], a, td, div');
-
-        if (!clickable) return false;
-
-        return Boolean(clickable.querySelector('[data-testid="VisibilityIcon"]'));
-    }
-
-    function findButtonByText(text) {
-        const targetText = text.toLowerCase();
-
-        return Array.from(document.querySelectorAll('button, [role="button"]'))
-            .filter(isVisible)
-            .find(button => getText(button).toLowerCase() === targetText);
-    }
-
-    function findMenuItemByText(text) {
-        const targetText = text.toLowerCase();
-
-        return Array.from(document.querySelectorAll('li, [role="menuitem"], [role="option"]'))
-            .filter(isVisible)
-            .find(item => getText(item).toLowerCase() === targetText);
-    }
-
-    function getRefundPercentageInput() {
-        const exact = document.querySelector('input[placeholder="Enter refund percentage"]');
-
-        if (exact && isVisible(exact)) {
-            return exact;
-        }
-
-        return Array.from(document.querySelectorAll('input'))
-            .filter(input => {
-                if (!isVisible(input)) return false;
-                if (input.disabled || input.readOnly) return false;
-
-                const text = [
-                    input.getAttribute('aria-label'),
-                    input.getAttribute('placeholder'),
-                    input.getAttribute('name'),
-                    input.getAttribute('id'),
-                    input.closest('.MuiFormControl-root')?.innerText,
-                    input.closest('.MuiDialog-root')?.innerText
-                ].filter(Boolean).join(' ').toLowerCase();
-
-                return text.includes('refund') || text.includes('percentage');
-            })[0] || null;
-    }
-
-    function fillRefundPercentage() {
-        const input = getRefundPercentageInput();
-
-        if (!input) return false;
-
-        input.focus();
-        setNativeValue(input, REFUND_PERCENTAGE);
-
-        percentageFilled = true;
-
-        console.log('[ViewLift Refund] Refund percentage filled: 100');
-
-        return true;
-    }
-
-    function getReasonDropdown() {
-        const candidates = Array.from(document.querySelectorAll(
-            '[role="combobox"], .MuiSelect-select, .MuiInputBase-root'
-        )).filter(element => {
-            if (!isVisible(element)) return false;
-
-            const text = [
-                element.getAttribute('aria-label'),
-                element.getAttribute('placeholder'),
-                element.getAttribute('name'),
-                element.getAttribute('id'),
-                getText(element),
-                element.closest('.MuiFormControl-root')?.innerText,
-                element.closest('.MuiDialog-root')?.innerText
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            if (text.includes('refund percentage')) return false;
-            if (text.includes('enter refund percentage')) return false;
-
-            return (
-                text.includes('reason') ||
-                text.includes('refund reason') ||
-                element.getAttribute('role') === 'combobox' ||
-                String(element.className).includes('MuiSelect')
-            );
-        });
-
-        if (!candidates.length) return null;
-
-        const scored = candidates.map(element => {
-            const text = [
-                element.getAttribute('aria-label'),
-                element.getAttribute('placeholder'),
-                getText(element),
-                element.closest('.MuiFormControl-root')?.innerText,
-                element.closest('.MuiDialog-root')?.innerText
-            ].filter(Boolean).join(' ').toLowerCase();
-
-            let score = 0;
-
-            if (text.includes('refund reason')) score += 50;
-            if (text.includes('reason')) score += 30;
-            if (element.getAttribute('role') === 'combobox') score += 20;
-            if (String(element.className).includes('MuiSelect')) score += 15;
-
-            return { element, score };
-        });
-
-        scored.sort((a, b) => b.score - a.score);
-
-        return scored[0].element;
-    }
-
-    function getROTHOption() {
-        const exact = document.querySelector(
-            'li[data-value="ROTH"], [role="option"][data-value="ROTH"]'
-        );
-
-        if (exact && isVisible(exact)) {
-            return exact;
-        }
-
-        return Array.from(document.querySelectorAll('li, [role="option"], [role="menuitem"]'))
-            .filter(isVisible)
-            .find(option => {
-                const text = getText(option).toLowerCase();
-                const value = option.getAttribute('data-value');
-
-                return value === REFUND_REASON_VALUE || text.includes('roth');
-            }) || null;
-    }
-
-    function getAdditionalCommentsField() {
-        const selectors = [
-            'textarea[rows="4"][required]',
-            'textarea.MuiInputBase-inputMultiline[required]',
-            'textarea.MuiInputBase-inputMultiline',
-            'textarea[rows="4"]'
-        ];
-
-        for (const selector of selectors) {
-            const fields = Array.from(document.querySelectorAll(selector))
-                .filter(field => {
-                    return (
-                        isVisible(field) &&
-                        !field.disabled &&
-                        !field.readOnly
-                    );
-                });
-
-            if (fields.length) {
-                return fields[fields.length - 1];
-            }
-        }
-
-        const textareas = Array.from(document.querySelectorAll('textarea'))
-            .filter(field => {
-                return (
-                    isVisible(field) &&
-                    !field.disabled &&
-                    !field.readOnly
-                );
-            });
-
-        if (textareas.length) {
-            return textareas[textareas.length - 1];
-        }
-
-        return null;
-    }
-
-    function getFreshdeskURLFromRefundCaptureTool() {
-        const field = document.getElementById('refund-freshdesk');
-
-        if (!field) {
-            console.log('[ViewLift Refund] Refund Capture Tool field #refund-freshdesk not found');
-            return '';
-        }
-
-        const value = cleanText(field.value);
-
-        if (/^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(value)) {
-            return value;
-        }
-
-        console.log('[ViewLift Refund] Refund Capture Tool field found but no valid Freshdesk URL:', value || 'empty');
-
-        return '';
-    }
-
-    function handleAdditionalComments() {
-        const field = getAdditionalCommentsField();
-
-        if (!field) {
-            console.log('[ViewLift Refund] Additional comments field not found.');
-            return false;
-        }
-
-        field.scrollIntoView({
-            block: 'center',
-            inline: 'center'
-        });
-
-        field.focus();
-        field.click();
-
-        const freshdeskURL = getFreshdeskURLFromRefundCaptureTool();
-
-        if (freshdeskURL) {
-            const comment = ADDITIONAL_COMMENT_PREFIX + freshdeskURL;
-
-            setNativeValue(field, comment);
-
-            console.log('[ViewLift Refund] Additional comments filled from Refund Capture Tool:', comment);
-        } else {
-            console.log('[ViewLift Refund] No Freshdesk URL available. Additional comments focused for manual paste.');
-        }
-
-        additionalCommentsHandled = true;
-
-        return true;
-    }
-
-    function selectROTHReason() {
-        const option = getROTHOption();
-
-        if (option) {
-            realClick(option, '[ViewLift Refund] Refund reason selected: ROTH');
-
-            reasonSelected = true;
-
-            setTimeout(handleAdditionalComments, 400);
-            setTimeout(handleAdditionalComments, 1000);
-
-            return true;
-        }
-
-        if (!reasonDropdownOpened) {
-            const dropdown = getReasonDropdown();
-
-            if (dropdown) {
-                reasonDropdownOpened = true;
-                realClick(dropdown, '[ViewLift Refund] Refund reason dropdown opened');
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function runWorkflow() {
-        if (!workflowActive) return;
-
-        attempts += 1;
-
-        if (attempts > 50) {
-            workflowActive = false;
-            console.log('[ViewLift Refund] Workflow stopped after too many attempts');
-            return;
-        }
-
-        if (!refundClicked) {
-            const refundButton = findButtonByText('Refund');
-
-            if (refundButton) {
-                refundClicked = realClick(refundButton, '[ViewLift Refund] Refund clicked automatically');
-                setTimeout(runWorkflow, 400);
-                return;
-            }
-        }
-
-        if (!issuePercentageClicked) {
-            const item = findMenuItemByText('Issue percentage refund');
-
-            if (item) {
-                issuePercentageClicked = realClick(item, '[ViewLift Refund] Issue percentage refund clicked automatically');
-                setTimeout(runWorkflow, 400);
-                return;
-            }
-        }
-
-        if (!percentageFilled) {
-            if (fillRefundPercentage()) {
-                setTimeout(runWorkflow, 400);
-                return;
-            }
-        }
-
-        if (!reasonSelected) {
-            if (selectROTHReason()) {
-                setTimeout(runWorkflow, 400);
-                return;
-            }
-        }
-
-        if (reasonSelected && !additionalCommentsHandled) {
-            if (handleAdditionalComments()) {
-                workflowActive = false;
-                console.log('[ViewLift Refund] Refund form prepared. Final confirmation was NOT clicked.');
-                return;
-            }
-        }
-
-        if (
-            refundClicked &&
-            issuePercentageClicked &&
-            percentageFilled &&
-            reasonSelected &&
-            additionalCommentsHandled
-        ) {
-            workflowActive = false;
-            console.log('[ViewLift Refund] Refund form prepared. Final confirmation was NOT clicked.');
-        }
-    }
-
-    function startWorkflow() {
-        workflowActive = true;
-        attempts = 0;
-
-        refundClicked = false;
-        issuePercentageClicked = false;
-        percentageFilled = false;
-        reasonDropdownOpened = false;
-        reasonSelected = false;
-        additionalCommentsHandled = false;
-
-        console.log('[ViewLift Refund] Action clicked. Starting refund workflow.');
-
-        setTimeout(runWorkflow, 300);
-        setTimeout(runWorkflow, 700);
-        setTimeout(runWorkflow, 1200);
-        setTimeout(runWorkflow, 1800);
-        setTimeout(runWorkflow, 2600);
-        setTimeout(runWorkflow, 3600);
-        setTimeout(runWorkflow, 5000);
-    }
-
-    document.addEventListener('click', function (event) {
-        if (isActionIconClick(event.target)) {
-            startWorkflow();
-        }
-    }, true);
-
-    const observer = new MutationObserver(function () {
-        if (workflowActive) {
-            runWorkflow();
-        }
+    field.scrollIntoView({
+      block: 'center',
+      inline: 'center'
     });
 
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+    field.focus();
+    field.click();
 
+    const freshdeskURL = getFreshdeskURLFromRefundCaptureTool();
+
+    if (freshdeskURL) {
+      const comment = ADDITIONAL_COMMENT_PREFIX + freshdeskURL;
+
+      setNativeValue(field, comment);
+
+      console.log('[Better CMS Refund] Additional comments filled:', comment);
+    } else {
+      console.log('[Better CMS Refund] No Freshdesk URL available. Comments field focused.');
+    }
+
+    additionalCommentsHandled = true;
+
+    return true;
+  }
+
+  function selectROTHReason() {
+    const option = getROTHOption();
+
+    if (option) {
+      realClick(option, '[Better CMS Refund] Refund reason selected: ROTH');
+
+      reasonSelected = true;
+
+      setTimeout(handleAdditionalComments, 400);
+      setTimeout(handleAdditionalComments, 1000);
+
+      return true;
+    }
+
+    if (!reasonDropdownOpened) {
+      const dropdown = getReasonDropdown();
+
+      if (dropdown) {
+        reasonDropdownOpened = true;
+        realClick(dropdown, '[Better CMS Refund] Refund reason dropdown opened');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function runWorkflow() {
+    if (!workflowActive) return;
+
+    attempts += 1;
+
+    if (attempts > 60) {
+      workflowActive = false;
+      console.log('[Better CMS Refund] Workflow stopped after too many attempts');
+      return;
+    }
+
+    if (!refundClicked) {
+      const refundButton = findVisibleRefundMenuItem() || findClickableByExactText('Refund');
+
+      if (refundButton) {
+        refundClicked = realClick(refundButton, '[Better CMS Refund] Refund clicked automatically');
+        setTimeout(runWorkflow, 400);
+        return;
+      }
+    }
+
+    if (!issuePercentageClicked) {
+      const item =
+        findClickableByExactText('Issue percentage refund') ||
+        findClickableByTextPattern(/^issue\s+percentage\s+refund$/i);
+
+      if (item) {
+        issuePercentageClicked = realClick(item, '[Better CMS Refund] Issue percentage refund clicked automatically');
+        setTimeout(runWorkflow, 400);
+        return;
+      }
+    }
+
+    if (!percentageFilled) {
+      if (fillRefundPercentage()) {
+        setTimeout(runWorkflow, 400);
+        return;
+      }
+    }
+
+    if (!reasonSelected) {
+      if (selectROTHReason()) {
+        setTimeout(runWorkflow, 400);
+        return;
+      }
+    }
+
+    if (reasonSelected && !additionalCommentsHandled) {
+      if (handleAdditionalComments()) {
+        workflowActive = false;
+        console.log('[Better CMS Refund] Refund form prepared. Final confirmation was NOT clicked.');
+        return;
+      }
+    }
+
+    if (
+      refundClicked &&
+      issuePercentageClicked &&
+      percentageFilled &&
+      reasonSelected &&
+      additionalCommentsHandled
+    ) {
+      workflowActive = false;
+      console.log('[Better CMS Refund] Refund form prepared. Final confirmation was NOT clicked.');
+    }
+  }
+
+  function startWorkflow() {
+    if (workflowActive) return;
+
+    workflowActive = true;
+    attempts = 0;
+
+    refundClicked = false;
+    issuePercentageClicked = false;
+    percentageFilled = false;
+    reasonDropdownOpened = false;
+    reasonSelected = false;
+    additionalCommentsHandled = false;
+
+    console.log('[Better CMS Refund] Refund menu detected. Starting refund workflow.');
+
+    setTimeout(runWorkflow, 100);
+    setTimeout(runWorkflow, 300);
+    setTimeout(runWorkflow, 700);
+    setTimeout(runWorkflow, 1200);
+    setTimeout(runWorkflow, 1800);
+    setTimeout(runWorkflow, 2600);
+    setTimeout(runWorkflow, 3600);
+    setTimeout(runWorkflow, 5000);
+  }
+
+  document.addEventListener('click', function () {
+    scheduleWorkflowDetection();
+  }, true);
+
+  const observer = new MutationObserver(function () {
+    if (workflowActive) {
+      runWorkflow();
+      return;
+    }
+
+    maybeStartWorkflowFromOpenedMenu();
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 })();
-
 }
-
 
 
 /* ============================================================
