@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.2
+// @version      1.3
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and improved Status placement/menu.
 // @match        https://viewlift.freshdesk.com/*
@@ -804,7 +804,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 })();
 
 /* ============================================================
- * Feature 4: Better Freshdesk Status Placement and Menu Order
+ * Feature 4: Better Freshdesk Status Placement and Quick Status Picker
  * ============================================================ */
 
 (function () {
@@ -815,13 +815,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const STYLE_ID = 'better-freshdesk-status-style';
   const STATUS_ROW_CLASS = 'better-freshdesk-status-row';
   const STATUS_LABEL_CLASS = 'better-freshdesk-status-label';
-  const STATUS_MENU_CLASS = 'better-freshdesk-status-menu';
-  const STATUS_MENU_PAPER_CLASS = 'better-freshdesk-status-menu-paper';
+  const STATUS_DROPDOWN_CLASS = 'better-freshdesk-status-dropdown';
+  const QUICKBAR_CLASS = 'better-freshdesk-status-quickbar';
+  const QUICKBUTTON_CLASS = 'better-freshdesk-status-quickbutton';
 
   const PRIORITY_STATUS_ORDER = [
     'Waiting on End User',
     'Resolved',
     'Open'
+  ];
+
+  const STATUS_HINTS = [
+    'Open',
+    'Resolved',
+    'Closed',
+    'Pending',
+    'Waiting on End User',
+    'Waiting on Customer',
+    'Waiting on Review',
+    'Waiting in Queue',
+    'Under Development',
+    'Phone Open',
+    'Waiting on AI Team'
   ];
 
   function cleanText(value) {
@@ -833,6 +848,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function normalizeText(value) {
     return cleanText(value).toLowerCase();
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function isVisible(element) {
@@ -860,18 +879,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         position: relative !important;
         margin: 8px 10px 12px !important;
         padding: 10px 12px !important;
-        border: 1px solid rgba(148, 163, 184, 0.35) !important;
+        border: 1px solid rgba(148, 163, 184, 0.32) !important;
         border-left: 3px solid #64748b !important;
         border-radius: 10px !important;
         background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
-        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05) !important;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.045) !important;
       }
 
       .${STATUS_ROW_CLASS}:focus-within,
       .${STATUS_ROW_CLASS}:hover {
         border-color: rgba(100, 116, 139, 0.46) !important;
         border-left-color: #475569 !important;
-        box-shadow: 0 3px 10px rgba(15, 23, 42, 0.07) !important;
+        box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06) !important;
       }
 
       .${STATUS_ROW_CLASS} .${STATUS_LABEL_CLASS} {
@@ -882,27 +901,60 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         padding: 2px 8px !important;
         border-radius: 999px !important;
         color: #334155 !important;
-        background: rgba(100, 116, 139, 0.09) !important;
+        background: rgba(100, 116, 139, 0.08) !important;
         font-weight: 700 !important;
         letter-spacing: 0.01em !important;
       }
 
-      .${STATUS_MENU_PAPER_CLASS},
-      .${STATUS_MENU_CLASS} {
-        max-height: 132px !important;
+      .${STATUS_DROPDOWN_CLASS} {
+        max-height: 230px !important;
         overflow-y: auto !important;
         scrollbar-width: thin !important;
       }
 
-      .${STATUS_MENU_CLASS} [role="option"],
-      .${STATUS_MENU_CLASS} [role="menuitem"],
-      .${STATUS_MENU_CLASS} li {
-        min-height: 36px !important;
+      .${QUICKBAR_CLASS} {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 10 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 4px !important;
+        padding: 7px !important;
+        margin: 0 !important;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.28) !important;
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05) !important;
       }
 
-      .${STATUS_MENU_CLASS} .better-freshdesk-status-priority-option {
-        font-weight: 700 !important;
-        background: rgba(15, 23, 42, 0.035) !important;
+      .${QUICKBUTTON_CLASS} {
+        width: 100% !important;
+        min-height: 30px !important;
+        padding: 5px 9px !important;
+        border: 1px solid rgba(100, 116, 139, 0.24) !important;
+        border-radius: 7px !important;
+        background: #ffffff !important;
+        color: #1f2937 !important;
+        font-size: 12px !important;
+        font-weight: 650 !important;
+        text-align: left !important;
+        cursor: pointer !important;
+        transition: background 120ms ease, border-color 120ms ease, transform 120ms ease !important;
+      }
+
+      .${QUICKBUTTON_CLASS}:hover {
+        background: #f1f5f9 !important;
+        border-color: rgba(71, 85, 105, 0.42) !important;
+        transform: translateY(-1px) !important;
+      }
+
+      .${QUICKBUTTON_CLASS}:active {
+        transform: translateY(0) !important;
+      }
+
+      .${STATUS_DROPDOWN_CLASS} [role="option"],
+      .${STATUS_DROPDOWN_CLASS} [role="menuitem"],
+      .${STATUS_DROPDOWN_CLASS} li {
+        min-height: 34px !important;
       }
     `;
 
@@ -1045,66 +1097,179 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return cleanText(element.innerText || element.textContent || '');
   }
 
-  function findStatusMenuContainers() {
-    const possibleMenus = Array.from(document.querySelectorAll(
-      '[role="listbox"], [role="menu"], ul, .MuiMenu-list, .ember-basic-dropdown-content'
-    )).filter(isVisible);
+  function isStatusDropdown(dropdown) {
+    if (!dropdown || !isVisible(dropdown)) return false;
 
-    return possibleMenus.filter(menu => {
-      const text = normalizeText(menu.innerText || menu.textContent || '');
-      return PRIORITY_STATUS_ORDER.every(status => text.includes(status.toLowerCase()));
+    if (!dropdown.classList.contains('ticket-properties-dropdown') &&
+        !dropdown.classList.contains('ember-power-select-dropdown') &&
+        !dropdown.querySelector('[role="listbox"]')) {
+      return false;
+    }
+
+    const text = normalizeText(dropdown.innerText || dropdown.textContent || '');
+
+    return STATUS_HINTS.some(status => text.includes(status.toLowerCase()));
+  }
+
+  function findStatusDropdowns() {
+    return Array.from(document.querySelectorAll(
+      '.ticket-properties-dropdown, .ember-power-select-dropdown, .ember-basic-dropdown-content, [role="listbox"]'
+    )).filter(isStatusDropdown);
+  }
+
+  function findCurrentStatusDropdown() {
+    const dropdowns = findStatusDropdowns();
+
+    if (!dropdowns.length) return null;
+
+    return dropdowns[dropdowns.length - 1];
+  }
+
+  function findVisibleStatusOption(statusText, dropdown) {
+    const wanted = normalizeText(statusText);
+    const root = dropdown || document;
+
+    return Array.from(root.querySelectorAll('li, [role="option"], [role="menuitem"]'))
+      .filter(isVisible)
+      .find(option => normalizeText(getOptionText(option)) === wanted) || null;
+  }
+
+  function realClick(element, logMessage) {
+    if (!element || !isVisible(element)) return false;
+
+    element.scrollIntoView({
+      block: 'center',
+      inline: 'center'
+    });
+
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+
+    if (logMessage) {
+      console.log(logMessage);
+    }
+
+    return true;
+  }
+
+  function getScrollTargets(dropdown) {
+    return Array.from(new Set([
+      dropdown,
+      dropdown.querySelector('[role="listbox"]'),
+      dropdown.querySelector('.ember-power-select-options'),
+      dropdown.querySelector('[data-test-id^="vertical-options-count"]')
+    ].filter(Boolean)));
+  }
+
+  function scrollTarget(target, delta) {
+    try {
+      target.scrollTop += delta;
+      target.dispatchEvent(new Event('scroll', { bubbles: true }));
+      target.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: delta,
+        view: window
+      }));
+    } catch (error) {
+      // Ignore scrolling errors.
+    }
+  }
+
+  async function selectStatusOption(statusText) {
+    const dropdown = findCurrentStatusDropdown();
+
+    if (!dropdown) {
+      console.log('[Better Freshdesk] Status dropdown not found.');
+      return false;
+    }
+
+    dropdown.classList.add(STATUS_DROPDOWN_CLASS);
+
+    let option = findVisibleStatusOption(statusText, dropdown);
+
+    if (option) {
+      return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
+    }
+
+    const targets = getScrollTargets(dropdown);
+
+    for (let pass = 0; pass < 36; pass += 1) {
+      targets.forEach(target => scrollTarget(target, -120));
+      await delay(45);
+
+      option = findVisibleStatusOption(statusText, dropdown);
+      if (option) {
+        return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
+      }
+    }
+
+    for (let pass = 0; pass < 72; pass += 1) {
+      targets.forEach(target => scrollTarget(target, 120));
+      await delay(45);
+
+      option = findVisibleStatusOption(statusText, dropdown);
+      if (option) {
+        return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
+      }
+    }
+
+    console.log('[Better Freshdesk] Could not find status option:', statusText);
+    return false;
+  }
+
+  function buildQuickStatusBar(dropdown) {
+    if (!dropdown || dropdown.querySelector(`.${QUICKBAR_CLASS}`)) return;
+
+    const bar = document.createElement('div');
+    bar.className = QUICKBAR_CLASS;
+
+    PRIORITY_STATUS_ORDER.forEach(status => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = QUICKBUTTON_CLASS;
+      button.textContent = status;
+      button.setAttribute('data-better-freshdesk-status', status);
+
+      button.addEventListener('mousedown', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        selectStatusOption(status);
+      }, true);
+
+      bar.appendChild(button);
+    });
+
+    const listbox = dropdown.querySelector('[role="listbox"], .ember-power-select-options');
+
+    if (listbox) {
+      dropdown.insertBefore(bar, listbox);
+    } else {
+      dropdown.prepend(bar);
+    }
+  }
+
+  function enhanceStatusDropdowns() {
+    const dropdowns = findStatusDropdowns();
+
+    dropdowns.forEach(dropdown => {
+      dropdown.classList.add(STATUS_DROPDOWN_CLASS);
+      buildQuickStatusBar(dropdown);
     });
   }
 
-  function getMenuItems(menu) {
-    return Array.from(menu.querySelectorAll('li, [role="option"], [role="menuitem"]'))
-      .filter(isVisible)
-      .filter(item => cleanText(item.innerText || item.textContent || ''));
-  }
-
-  function findItemByExactText(items, wantedText) {
-    const wanted = normalizeText(wantedText);
-
-    return items.find(item => normalizeText(getOptionText(item)) === wanted) || null;
-  }
-
-  function markMenuAsStatusMenu(menu) {
-    menu.classList.add(STATUS_MENU_CLASS);
-
-    const paper = menu.closest('.MuiPaper-root, .MuiPopover-paper, .ember-basic-dropdown-content');
-    if (paper) {
-      paper.classList.add(STATUS_MENU_PAPER_CLASS);
-    }
-  }
-
-  function reorderStatusMenu() {
-    const menus = findStatusMenuContainers();
-
-    for (const menu of menus) {
-      markMenuAsStatusMenu(menu);
-
-      const items = getMenuItems(menu);
-      const priorityItems = PRIORITY_STATUS_ORDER
-        .map(status => findItemByExactText(items, status))
-        .filter(Boolean);
-
-      if (priorityItems.length < PRIORITY_STATUS_ORDER.length) continue;
-
-      priorityItems.forEach(item => {
-        item.classList.add('better-freshdesk-status-priority-option');
-      });
-
-      for (let i = priorityItems.length - 1; i >= 0; i -= 1) {
-        menu.prepend(priorityItems[i]);
-      }
-    }
-  }
-
-  function scheduleMenuReorder() {
-    setTimeout(reorderStatusMenu, 50);
-    setTimeout(reorderStatusMenu, 150);
-    setTimeout(reorderStatusMenu, 350);
-    setTimeout(reorderStatusMenu, 700);
+  function scheduleDropdownEnhancement() {
+    setTimeout(enhanceStatusDropdowns, 30);
+    setTimeout(enhanceStatusDropdowns, 120);
+    setTimeout(enhanceStatusDropdowns, 300);
+    setTimeout(enhanceStatusDropdowns, 700);
   }
 
   function installObserver() {
@@ -1114,8 +1279,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       clearTimeout(timer);
       timer = setTimeout(function () {
         moveStatusBelowProperties();
-        reorderStatusMenu();
-      }, 250);
+        enhanceStatusDropdowns();
+      }, 200);
     });
 
     observer.observe(document.body || document.documentElement, {
@@ -1127,14 +1292,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   document.addEventListener('click', function (event) {
     const row = event.target.closest(`.${STATUS_ROW_CLASS}`);
+
     if (row) {
-      scheduleMenuReorder();
+      scheduleDropdownEnhancement();
       return;
     }
 
     const text = normalizeText(event.target.innerText || event.target.textContent || '');
+
     if (text === 'status' || event.target.closest('[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], .ember-basic-dropdown-trigger')) {
-      scheduleMenuReorder();
+      scheduleDropdownEnhancement();
     }
   }, true);
 
@@ -1145,12 +1312,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     moveStatusBelowProperties();
-    reorderStatusMenu();
+    enhanceStatusDropdowns();
     installObserver();
 
     setInterval(function () {
       moveStatusBelowProperties();
-      reorderStatusMenu();
+      enhanceStatusDropdowns();
     }, 1500);
   }
 
