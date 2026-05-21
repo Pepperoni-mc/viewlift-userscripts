@@ -1,4 +1,4 @@
-# ViewLift Userscripts
+[# ViewLift Userscripts
 
 Tampermonkey scripts for ViewLift CMS and Freshdesk workflows.
 
@@ -17,3 +17,4 @@ Tampermonkey scripts for ViewLift CMS and Freshdesk workflows.
 Scripts update through Tampermonkey using their `@updateURL` and `@downloadURL`.
 
 When editing a script, increase the `@version` value before committing.
+](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js)
