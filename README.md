@@ -6,7 +6,9 @@ Tampermonkey scripts for ViewLift CMS and Freshdesk workflows.
 
 ### Better Freshdesk
 
-Combines Freshdesk improvements into one script:
+Combines Freshdesk improvements into one script.
+
+Features:
 
 - Auto-bolds standard support text like `Technical Support Team` and `Regards,`
 - Cleans duplicated greetings, repeated paragraphs, excessive spacing, and quoted reply markers after clicking `Apply`
@@ -19,42 +21,28 @@ https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts
 
 ---
 
-### ViewLift Snapshot Tool
+### Better CMS
 
-Adds a camera button next to the customer name in ViewLift CMS.
+Combines CMS tools into one script.
 
 Features:
 
-- Takes a real browser tab snapshot
-- Copies the screenshot to clipboard
+- Adds the refund capture panel
+- Captures customer email, Freshdesk ticket URL, CMS user URL, payment handler, and refund amount
+- Saves the selected refunder permanently, so you do not need to select `Sebastian`, `Eric`, or `Esteban` every time
+- Auto-fills the cancellation reason after clicking `Cancel`
+- Starts the percentage refund workflow after clicking the action icon
+- Selects 100% refund
+- Selects the `ROTH` refund reason
+- Adds the Freshdesk ticket URL to additional comments when available
+- Adds the camera snapshot button next to the customer name
 - Shows the payment handler badge next to the camera button
-- Hides the camera button, payment badge, and refund capture panel from the screenshot
+- Hides the camera button, payment badge, and refund panel from screenshots
 - Works across internal CMS navigation without needing to refresh
 
 Install:
 
-https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/viewlift-snapshot.user.js
-
----
-
-### Refund Capture Tool
-
-Adds a floating refund capture panel for Freshdesk and ViewLift CMS.
-
-Features:
-
-- Captures customer email
-- Captures Freshdesk ticket URL
-- Captures CMS user URL
-- Captures payment handler
-- Captures amount/refund-related values
-- Copies a formatted spreadsheet row
-- Syncs data across Freshdesk and CMS tabs
-- Works across internal CMS navigation without needing to refresh
-
-Install:
-
-https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/refund-capture-tool.user.js
+https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js
 
 ---
 
@@ -69,19 +57,10 @@ If Tampermonkey does not open automatically, copy the raw URL and paste it into 
 
 ---
 
-## Updating
+## Recommended Setup
 
-Tampermonkey updates these scripts from GitHub using the `@updateURL` and `@downloadURL` metadata fields.
+Use only these active scripts:
 
-When editing a script:
-
-1. Open the `.user.js` file in GitHub.
-2. Click the pencil/edit button.
-3. Make your changes.
-4. Increase the `@version` number.
-5. Commit the change to `main`.
-
-Example:
-
-```javascript
-// @version      1.0
+```text
+Better Freshdesk
+Better CMS
