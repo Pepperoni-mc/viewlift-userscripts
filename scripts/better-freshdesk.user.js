@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.6
+// @version      1.7
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and custom Status picker.
 // @match        https://viewlift.freshdesk.com/*
@@ -963,6 +963,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         border: 1px solid rgba(148, 163, 184, 0.22) !important;
         border-radius: 8px !important;
         box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05) !important;
+        position: relative !important;
+        z-index: 2 !important;
       }
 
       .${QUICKBUTTON_CLASS} {
@@ -1021,15 +1023,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
       .${NATIVE_HIDDEN_CLASS} {
         position: absolute !important;
-        left: -99999px !important;
+        left: 0 !important;
         top: 0 !important;
-        width: 1px !important;
-        max-width: 1px !important;
-        height: 180px !important;
-        max-height: 180px !important;
+        width: 100% !important;
+        min-width: 160px !important;
+        max-width: none !important;
+        height: 260px !important;
+        max-height: 260px !important;
         overflow: auto !important;
         opacity: 0 !important;
         pointer-events: none !important;
+        z-index: 0 !important;
       }
 
       .${STATUS_DROPDOWN_CLASS} [role="option"],
@@ -1273,6 +1277,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
     element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 
+    try {
+      element.click();
+    } catch (error) {
+      // Ignore native click errors.
+    }
+
     if (logMessage) {
       console.log(logMessage);
     }
@@ -1299,9 +1309,40 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         deltaY: delta,
         view: window
       }));
+      target.dispatchEvent(new UIEvent('scroll', {
+        bubbles: true,
+        cancelable: false,
+        view: window
+      }));
     } catch (error) {
       // Ignore scrolling errors.
     }
+  }
+
+  function jumpScrollTargets(dropdown, position) {
+    const targets = getScrollTargets(dropdown);
+
+    targets.forEach(target => {
+      try {
+        if (position === 'top') {
+          target.scrollTop = 0;
+        } else if (position === 'bottom') {
+          target.scrollTop = target.scrollHeight || 99999;
+        }
+
+        target.dispatchEvent(new Event('scroll', { bubbles: true }));
+        target.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaY: position === 'top' ? -9999 : 9999,
+          view: window
+        }));
+      } catch (error) {
+        // Ignore scrolling errors.
+      }
+    });
+
+    return targets;
   }
 
   async function selectStatusOption(statusText) {
@@ -1322,11 +1363,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
     }
 
-    const targets = getScrollTargets(dropdown);
+    let targets = jumpScrollTargets(dropdown, 'top');
+    await delay(90);
 
-    for (let pass = 0; pass < 36; pass += 1) {
-      targets.forEach(target => scrollTarget(target, -120));
-      await delay(45);
+    option = findVisibleStatusOption(statusText, dropdown);
+    if (option) {
+      return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
+    }
+
+    for (let pass = 0; pass < 90; pass += 1) {
+      targets.forEach(target => scrollTarget(target, 80));
+      await delay(35);
 
       option = findVisibleStatusOption(statusText, dropdown);
       if (option) {
@@ -1334,9 +1381,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       }
     }
 
-    for (let pass = 0; pass < 72; pass += 1) {
-      targets.forEach(target => scrollTarget(target, 120));
-      await delay(45);
+    targets = jumpScrollTargets(dropdown, 'bottom');
+    await delay(90);
+
+    option = findVisibleStatusOption(statusText, dropdown);
+    if (option) {
+      return realClick(option, '[Better Freshdesk] Status selected: ' + statusText);
+    }
+
+    for (let pass = 0; pass < 90; pass += 1) {
+      targets.forEach(target => scrollTarget(target, -80));
+      await delay(35);
 
       option = findVisibleStatusOption(statusText, dropdown);
       if (option) {
