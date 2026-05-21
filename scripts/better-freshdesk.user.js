@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.1
+// @version      1.2
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and improved Status placement.
+// @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and improved Status placement/menu.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -804,7 +804,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 })();
 
 /* ============================================================
- * Feature 4: Move Freshdesk Status field below Properties
+ * Feature 4: Better Freshdesk Status Placement and Menu Order
  * ============================================================ */
 
 (function () {
@@ -813,14 +813,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
   const STYLE_ID = 'better-freshdesk-status-style';
-  const MOVED_CLASS = 'better-freshdesk-status-top';
+  const STATUS_ROW_CLASS = 'better-freshdesk-status-row';
   const STATUS_LABEL_CLASS = 'better-freshdesk-status-label';
+  const STATUS_MENU_CLASS = 'better-freshdesk-status-menu';
+  const STATUS_MENU_PAPER_CLASS = 'better-freshdesk-status-menu-paper';
+
+  const PRIORITY_STATUS_ORDER = [
+    'Waiting on End User',
+    'Resolved',
+    'Open'
+  ];
 
   function cleanText(value) {
     return String(value || '')
       .replace(/\u00a0/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function normalizeText(value) {
+    return cleanText(value).toLowerCase();
   }
 
   function isVisible(element) {
@@ -844,32 +856,53 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      .${MOVED_CLASS} {
+      .${STATUS_ROW_CLASS} {
+        position: relative !important;
         margin: 8px 10px 12px !important;
         padding: 10px 12px !important;
-        border: 1px solid rgba(11, 92, 171, 0.18) !important;
-        border-left: 3px solid #0b5cab !important;
+        border: 1px solid rgba(148, 163, 184, 0.35) !important;
+        border-left: 3px solid #64748b !important;
         border-radius: 10px !important;
-        background: linear-gradient(180deg, #f8fbff 0%, #f1f7ff 100%) !important;
-        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05) !important;
       }
 
-      .${MOVED_CLASS} .${STATUS_LABEL_CLASS},
-      .${MOVED_CLASS} label,
-      .${MOVED_CLASS} [data-test-id*="label"],
-      .${MOVED_CLASS} [class*="label"] {
-        color: #0b5cab !important;
-        font-weight: 700 !important;
+      .${STATUS_ROW_CLASS}:focus-within,
+      .${STATUS_ROW_CLASS}:hover {
+        border-color: rgba(100, 116, 139, 0.46) !important;
+        border-left-color: #475569 !important;
+        box-shadow: 0 3px 10px rgba(15, 23, 42, 0.07) !important;
       }
 
-      .${MOVED_CLASS} .${STATUS_LABEL_CLASS} {
+      .${STATUS_ROW_CLASS} .${STATUS_LABEL_CLASS} {
         display: inline-flex !important;
         align-items: center !important;
-        gap: 6px !important;
-        padding: 2px 7px !important;
-        margin-bottom: 4px !important;
+        width: fit-content !important;
+        margin-bottom: 5px !important;
+        padding: 2px 8px !important;
         border-radius: 999px !important;
-        background: rgba(11, 92, 171, 0.08) !important;
+        color: #334155 !important;
+        background: rgba(100, 116, 139, 0.09) !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.01em !important;
+      }
+
+      .${STATUS_MENU_PAPER_CLASS},
+      .${STATUS_MENU_CLASS} {
+        max-height: 132px !important;
+        overflow-y: auto !important;
+        scrollbar-width: thin !important;
+      }
+
+      .${STATUS_MENU_CLASS} [role="option"],
+      .${STATUS_MENU_CLASS} [role="menuitem"],
+      .${STATUS_MENU_CLASS} li {
+        min-height: 36px !important;
+      }
+
+      .${STATUS_MENU_CLASS} .better-freshdesk-status-priority-option {
+        font-weight: 700 !important;
+        background: rgba(15, 23, 42, 0.035) !important;
       }
     `;
 
@@ -884,72 +917,108 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     );
   }
 
-  function getPropertiesWrapper() {
+  function getPropertiesPanel() {
     return (
       document.querySelector('.ticket-properties-wrapper') ||
       document.querySelector('[data-test-id*="ticket-properties"]') ||
+      document.querySelector('[data-test-id*="properties"]') ||
       document.body
     );
   }
 
-  function hasInteractiveControl(element) {
+  function isStatusLabel(element) {
+    if (!element || !isVisible(element)) return false;
+    if (element.closest('#refund-capture-panel, #viewlift-open-cms-header-button')) return false;
+    if (element.closest('.status-cards-container')) return false;
+    if (element.matches('[data-test-id="ticket-status"]')) return false;
+
+    return cleanText(element.textContent) === 'Status';
+  }
+
+  function hasStatusControl(element) {
+    if (!element) return false;
+
     return Boolean(element.querySelector(
-      'button, [role="button"], [role="combobox"], input, textarea, select, .ember-basic-dropdown-trigger, [data-ebd-id]'
+      'button, [role="button"], [role="combobox"], input, textarea, select, .ember-basic-dropdown-trigger, [data-ebd-id], [aria-haspopup="listbox"], [aria-haspopup="menu"]'
     ));
   }
 
-  function isBadStatusCandidate(element) {
-    if (!element) return true;
-    if (element.closest('#refund-capture-panel, #viewlift-open-cms-header-button')) return true;
-    if (element.closest('.status-cards-container')) return true;
-    if (element.matches('[data-test-id="ticket-status"]')) return true;
-
-    const text = cleanText(element.textContent);
-    return text !== 'Status';
+  function exactStatusLabelCount(element) {
+    return Array.from(element.querySelectorAll('label, span, div, p'))
+      .filter(child => cleanText(child.textContent) === 'Status')
+      .length;
   }
 
-  function findBestStatusRow(label) {
-    let node = label;
+  function scoreStatusCandidate(candidate, label) {
+    if (!candidate || candidate === document.body || candidate === document.documentElement) return -1;
+    if (!isVisible(candidate)) return -1;
+    if (candidate.closest('#refund-capture-panel, #viewlift-open-cms-header-button')) return -1;
 
-    for (let depth = 0; node && depth < 8; depth += 1) {
-      node = node.parentElement;
+    const text = cleanText(candidate.innerText || candidate.textContent || '');
+    const rect = candidate.getBoundingClientRect();
 
-      if (!node || node === document.body) break;
-      if (node.classList.contains(MOVED_CLASS)) return node;
+    if (!text) return -1;
+    if (!candidate.contains(label)) return -1;
+    if (text.includes('Properties') && text.length > 120) return -1;
 
-      const text = cleanText(node.innerText || node.textContent || '');
-      if (!text || text.length > 900) continue;
+    const labelCount = exactStatusLabelCount(candidate);
+    if (labelCount !== 1) return -1;
 
-      const containsStatusLabel = Array.from(node.querySelectorAll('label, span, div, p'))
-        .some(child => cleanText(child.textContent) === 'Status');
+    let score = 0;
 
-      if (!containsStatusLabel) continue;
+    if (hasStatusControl(candidate)) score += 80;
 
-      if (hasInteractiveControl(node)) {
-        return node;
-      }
-    }
+    const classAndAttrs = [
+      candidate.className,
+      candidate.getAttribute('data-test-id'),
+      candidate.getAttribute('data-test'),
+      candidate.getAttribute('id')
+    ].filter(Boolean).join(' ').toLowerCase();
 
-    return null;
+    if (/field|property|control|form|select|dropdown|status/.test(classAndAttrs)) score += 30;
+
+    if (rect.height > 24 && rect.height < 140) score += 30;
+    if (rect.width > 120 && rect.width < 900) score += 15;
+    if (text.length < 220) score += 25;
+    if (candidate.children.length <= 8) score += 10;
+
+    if (rect.height >= 180) score -= 120;
+    if (text.length >= 350) score -= 140;
+    if (candidate.querySelectorAll('input, button, [role="button"], [role="combobox"], select, textarea').length > 4) score -= 80;
+
+    return score;
   }
 
   function findStatusRow() {
-    const wrapper = getPropertiesWrapper();
+    const panel = getPropertiesPanel();
+    const labels = Array.from(panel.querySelectorAll('label, span, div, p')).filter(isStatusLabel);
 
-    const labels = Array.from(wrapper.querySelectorAll('label, span, div, p'))
-      .filter(isVisible)
-      .filter(element => !isBadStatusCandidate(element));
+    let best = null;
+    let bestScore = -1;
+    let bestLabel = null;
 
     for (const label of labels) {
-      const row = findBestStatusRow(label);
+      let node = label;
 
-      if (row && isVisible(row)) {
-        label.classList.add(STATUS_LABEL_CLASS);
-        return row;
+      for (let depth = 0; node && depth < 7; depth += 1) {
+        node = node.parentElement;
+        const score = scoreStatusCandidate(node, label);
+
+        if (score > bestScore) {
+          best = node;
+          bestScore = score;
+          bestLabel = label;
+        }
       }
     }
 
-    return null;
+    if (!best || bestScore < 70) return null;
+
+    if (bestLabel) {
+      bestLabel.classList.add(STATUS_LABEL_CLASS);
+    }
+
+    return best;
   }
 
   function moveStatusBelowProperties() {
@@ -961,11 +1030,81 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const row = findStatusRow();
     if (!row) return;
 
-    row.classList.add(MOVED_CLASS);
+    document.querySelectorAll(`.${STATUS_ROW_CLASS}`).forEach(existing => {
+      if (existing !== row) existing.classList.remove(STATUS_ROW_CLASS);
+    });
+
+    row.classList.add(STATUS_ROW_CLASS);
 
     if (row.previousElementSibling === sticky) return;
 
     sticky.insertAdjacentElement('afterend', row);
+  }
+
+  function getOptionText(element) {
+    return cleanText(element.innerText || element.textContent || '');
+  }
+
+  function findStatusMenuContainers() {
+    const possibleMenus = Array.from(document.querySelectorAll(
+      '[role="listbox"], [role="menu"], ul, .MuiMenu-list, .ember-basic-dropdown-content'
+    )).filter(isVisible);
+
+    return possibleMenus.filter(menu => {
+      const text = normalizeText(menu.innerText || menu.textContent || '');
+      return PRIORITY_STATUS_ORDER.every(status => text.includes(status.toLowerCase()));
+    });
+  }
+
+  function getMenuItems(menu) {
+    return Array.from(menu.querySelectorAll('li, [role="option"], [role="menuitem"]'))
+      .filter(isVisible)
+      .filter(item => cleanText(item.innerText || item.textContent || ''));
+  }
+
+  function findItemByExactText(items, wantedText) {
+    const wanted = normalizeText(wantedText);
+
+    return items.find(item => normalizeText(getOptionText(item)) === wanted) || null;
+  }
+
+  function markMenuAsStatusMenu(menu) {
+    menu.classList.add(STATUS_MENU_CLASS);
+
+    const paper = menu.closest('.MuiPaper-root, .MuiPopover-paper, .ember-basic-dropdown-content');
+    if (paper) {
+      paper.classList.add(STATUS_MENU_PAPER_CLASS);
+    }
+  }
+
+  function reorderStatusMenu() {
+    const menus = findStatusMenuContainers();
+
+    for (const menu of menus) {
+      markMenuAsStatusMenu(menu);
+
+      const items = getMenuItems(menu);
+      const priorityItems = PRIORITY_STATUS_ORDER
+        .map(status => findItemByExactText(items, status))
+        .filter(Boolean);
+
+      if (priorityItems.length < PRIORITY_STATUS_ORDER.length) continue;
+
+      priorityItems.forEach(item => {
+        item.classList.add('better-freshdesk-status-priority-option');
+      });
+
+      for (let i = priorityItems.length - 1; i >= 0; i -= 1) {
+        menu.prepend(priorityItems[i]);
+      }
+    }
+  }
+
+  function scheduleMenuReorder() {
+    setTimeout(reorderStatusMenu, 50);
+    setTimeout(reorderStatusMenu, 150);
+    setTimeout(reorderStatusMenu, 350);
+    setTimeout(reorderStatusMenu, 700);
   }
 
   function installObserver() {
@@ -973,7 +1112,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const observer = new MutationObserver(function () {
       clearTimeout(timer);
-      timer = setTimeout(moveStatusBelowProperties, 250);
+      timer = setTimeout(function () {
+        moveStatusBelowProperties();
+        reorderStatusMenu();
+      }, 250);
     });
 
     observer.observe(document.body || document.documentElement, {
@@ -983,6 +1125,19 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     });
   }
 
+  document.addEventListener('click', function (event) {
+    const row = event.target.closest(`.${STATUS_ROW_CLASS}`);
+    if (row) {
+      scheduleMenuReorder();
+      return;
+    }
+
+    const text = normalizeText(event.target.innerText || event.target.textContent || '');
+    if (text === 'status' || event.target.closest('[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], .ember-basic-dropdown-trigger')) {
+      scheduleMenuReorder();
+    }
+  }, true);
+
   function init() {
     if (!document.body) {
       setTimeout(init, 300);
@@ -990,9 +1145,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     moveStatusBelowProperties();
+    reorderStatusMenu();
     installObserver();
 
-    setInterval(moveStatusBelowProperties, 1500);
+    setInterval(function () {
+      moveStatusBelowProperties();
+      reorderStatusMenu();
+    }, 1500);
   }
 
   init();
