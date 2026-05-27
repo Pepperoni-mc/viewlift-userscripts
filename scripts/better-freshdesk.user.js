@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.6
+// @version      2.7
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, stable bold handling, restored Apply cleanup, canned response protection, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, one-time formatting cleanup, canned response protection, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -469,9 +469,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   document.addEventListener("keydown", handleCannedCommandKeydown, true);
   document.addEventListener("paste", handlePaste, true);
   document.addEventListener("input", handleChange, true);
-  document.addEventListener("keyup", handleChange, true);
-
-  window.setInterval(scanEditors, 3000);
 })();
 }
 
@@ -497,6 +494,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     let lastEditor = null;
     let forceRewriteUntil = 0;
     let forceRewriteSequence = 0;
+    let scheduledCleanRunId = 0;
     const lastForcedRewriteFingerprint = new WeakMap();
     const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
     const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
@@ -939,17 +937,57 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function scheduleClean() {
-        setTimeout(tryClickRemoveButton, 300);
-        setTimeout(tryClickRemoveButton, 800);
-        setTimeout(tryClickRemoveButton, 1500);
-        setTimeout(tryClickRemoveButton, 2500);
+        const runId = ++scheduledCleanRunId;
+        const startedAt = Date.now();
+        let lastText = '';
+        let stableChecks = 0;
 
-        setTimeout(cleanCurrentEditor, 400);
-        setTimeout(cleanCurrentEditor, 900);
-        setTimeout(cleanCurrentEditor, 1600);
-        setTimeout(cleanCurrentEditor, 2600);
-        setTimeout(cleanCurrentEditor, 4000);
-        setTimeout(cleanCurrentEditor, 5500);
+        function checkUntilStableThenClean() {
+            if (runId !== scheduledCleanRunId) return;
+
+            tryClickRemoveButton();
+
+            const editor = getEditor();
+
+            if (!editor) {
+                if (Date.now() - startedAt < 5000) {
+                    setTimeout(checkUntilStableThenClean, 250);
+                }
+
+                return;
+            }
+
+            if (isCannedResponseModeActive(editor)) {
+                console.log('[Freshdesk Canned Response] Editor is locked, skipping scheduled cleanup');
+                return;
+            }
+
+            const currentText = editor.innerText || editor.textContent || '';
+
+            if (!currentText.trim()) {
+                if (Date.now() - startedAt < 5000) {
+                    setTimeout(checkUntilStableThenClean, 250);
+                }
+
+                return;
+            }
+
+            if (currentText === lastText) {
+                stableChecks += 1;
+            } else {
+                lastText = currentText;
+                stableChecks = 0;
+            }
+
+            if (stableChecks >= 1 || Date.now() - startedAt >= 2500) {
+                cleanCurrentEditor();
+                return;
+            }
+
+            setTimeout(checkUntilStableThenClean, 250);
+        }
+
+        setTimeout(checkUntilStableThenClean, 300);
     }
 
     document.addEventListener('keydown', handleCannedCommandKeydown, true);
@@ -980,12 +1018,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const observer = new MutationObserver(function () {
         tryClickRemoveButton();
-
-        const editor = getEditor();
-
-        if (editor && !isCannedResponseModeActive(editor)) {
-            removeInlineFontFormatting(editor);
-        }
     });
 
     observer.observe(document.body, {
