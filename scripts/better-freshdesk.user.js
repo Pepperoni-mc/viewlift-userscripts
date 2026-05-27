@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.8
+// @version      2.5
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, clean replies after Apply, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, stable bold handling, restored Apply cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -22,17 +22,225 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   "use strict";
 
   const processing = new WeakSet();
+  const pastedEditors = new WeakMap();
+  const PASTE_PROTECTION_MS = 250;
+  const EDITOR_FONT_STYLE_ID = 'better-freshdesk-editor-font-normalizer-style';
 
   function getEditor(element) {
     if (!element || !element.closest) return null;
     return element.closest('[contenteditable="true"]');
   }
 
+  function addEditorFontNormalizerStyles() {
+    if (document.getElementById(EDITOR_FONT_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = EDITOR_FONT_STYLE_ID;
+    style.textContent = `
+      .fr-element.fr-view[contenteditable="true"],
+      .fr-element[contenteditable="true"],
+      [contenteditable="true"][role="textbox"] {
+        font-family: inherit !important;
+      }
+
+      .fr-element.fr-view[contenteditable="true"] *,
+      .fr-element[contenteditable="true"] *,
+      [contenteditable="true"][role="textbox"] * {
+        font-family: inherit !important;
+        font-size: inherit !important;
+        line-height: inherit !important;
+      }
+
+      .fr-element.fr-view[contenteditable="true"] p,
+      .fr-element.fr-view[contenteditable="true"] div,
+      .fr-element[contenteditable="true"] p,
+      .fr-element[contenteditable="true"] div,
+      [contenteditable="true"][role="textbox"] p,
+      [contenteditable="true"][role="textbox"] div {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  function markEditorAsRecentlyPasted(editor) {
+    if (!editor) return;
+    pastedEditors.set(editor, Date.now() + PASTE_PROTECTION_MS);
+  }
+
+  function isRecentlyPasted(editor) {
+    const protectedUntil = pastedEditors.get(editor);
+    return Boolean(protectedUntil && Date.now() < protectedUntil);
+  }
+
+  function unwrapFontTags(root) {
+    if (!root || !root.querySelectorAll) return;
+
+    root.querySelectorAll('font').forEach(function (fontNode) {
+      const span = document.createElement('span');
+
+      while (fontNode.firstChild) {
+        span.appendChild(fontNode.firstChild);
+      }
+
+      fontNode.parentNode.replaceChild(span, fontNode);
+    });
+  }
+
+  function removeInlineFontFormatting(root) {
+    if (!root || !root.querySelectorAll) return;
+
+    root.querySelectorAll('[style]').forEach(function (element) {
+      element.style.removeProperty('font-family');
+      element.style.removeProperty('font-size');
+      element.style.removeProperty('line-height');
+      element.style.removeProperty('margin');
+      element.style.removeProperty('margin-top');
+      element.style.removeProperty('margin-bottom');
+      element.style.removeProperty('padding-top');
+      element.style.removeProperty('padding-bottom');
+      element.style.removeProperty('mso-line-height-rule');
+      element.style.removeProperty('mso-fareast-font-family');
+      element.style.removeProperty('mso-bidi-font-family');
+
+      if (!element.getAttribute('style') || !element.getAttribute('style').trim()) {
+        element.removeAttribute('style');
+      }
+    });
+  }
+
+  function cleanText(value) {
+    return String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function isEmptyBlock(element) {
+    if (!element || element.nodeType !== 1) return false;
+
+    return cleanText(element.innerText || element.textContent || '') === '';
+  }
+
+  function isGreetingLine(text) {
+    return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
+  }
+
+  function normalizeGreetingSpacing(editor) {
+    if (!editor || !editor.children) return;
+
+    const children = Array.from(editor.children);
+
+    for (const child of children) {
+      if (!isGreetingLine(child.innerText || child.textContent || '')) continue;
+
+      let next = child.nextElementSibling;
+      let keptOneBlankLine = false;
+
+      while (next && isEmptyBlock(next)) {
+        const current = next;
+        next = current.nextElementSibling;
+
+        if (!keptOneBlankLine) {
+          keptOneBlankLine = true;
+          continue;
+        }
+
+        current.remove();
+      }
+
+      return;
+    }
+  }
+
+  function getNextNonEmptyTextNode(root, textNode) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let current;
+    let found = false;
+
+    while ((current = walker.nextNode())) {
+      if (current === textNode) {
+        found = true;
+        continue;
+      }
+
+      if (found && cleanText(current.nodeValue)) {
+        return current;
+      }
+    }
+
+    return null;
+  }
+
+  function boldStandaloneTheBeforeSignature(editor) {
+    if (!editor) return;
+
+    const walker = document.createTreeWalker(
+      editor,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: function (node) {
+          if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement && node.parentElement.closest('strong, b, code, pre, script, style')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+
+          return cleanText(node.nodeValue) === 'The'
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_REJECT;
+        }
+      }
+    );
+
+    const textNodes = [];
+    let node;
+
+    while ((node = walker.nextNode())) {
+      textNodes.push(node);
+    }
+
+    textNodes.forEach(function (textNode) {
+      const nextTextNode = getNextNonEmptyTextNode(editor, textNode);
+
+      if (!nextTextNode) return;
+
+      if (/^Technical Support Team\b/.test(cleanText(nextTextNode.nodeValue))) {
+        textNode.parentNode.replaceChild(makeBoldNode(textNode.nodeValue), textNode);
+      }
+    });
+  }
+
+  function normalizeEditorFormatting(editor) {
+    if (!editor) return;
+
+    addEditorFontNormalizerStyles();
+    unwrapFontTags(editor);
+    removeInlineFontFormatting(editor);
+    normalizeGreetingSpacing(editor);
+    boldStandaloneTheBeforeSignature(editor);
+  }
+
+  function normalizeEditorFont(editor) {
+    normalizeEditorFormatting(editor);
+  }
+
+  function shouldSkipEditor(editor) {
+    if (!editor) return true;
+
+    if (isRecentlyPasted(editor)) {
+      return true;
+    }
+
+    return false;
+  }
+
   function shouldIgnoreNode(node) {
     if (!node || !node.parentElement) return true;
 
     return Boolean(
-      node.parentElement.closest("strong, b, code, pre, script, style")
+      node.parentElement.closest("strong, b, a, code, pre, script, style")
     );
   }
 
@@ -43,7 +251,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function buildBoldPattern() {
-    return /(^|[\r\n])(\s*)(The Technical Support Team)\b|(Technical Support Team)|(Regards,)/gi;
+    return /(The Technical Support Team)|(Technical Support Team)|(Regards,)/g;
   }
 
   function replaceLongDashCharacters(text) {
@@ -80,17 +288,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         fragment.appendChild(document.createTextNode(before));
       }
 
-      if (match[3]) {
-        const linePrefix = (match[1] || "") + (match[2] || "");
-
-        if (linePrefix) {
-          fragment.appendChild(document.createTextNode(linePrefix));
-        }
-
-        fragment.appendChild(makeBoldNode(match[3]));
-      } else {
-        fragment.appendChild(makeBoldNode(match[0]));
-      }
+      fragment.appendChild(makeBoldNode(match[0]));
 
       lastIndex = match.index + match[0].length;
     }
@@ -107,6 +305,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function processEditor(editor) {
     if (!editor || processing.has(editor)) return;
+    if (shouldSkipEditor(editor)) return;
+
+    normalizeEditorFormatting(editor);
 
     processing.add(editor);
 
@@ -146,9 +347,25 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       textNodes.forEach(function (textNode) {
         replaceMatchesInTextNode(textNode, boldPattern);
       });
+
+      normalizeGreetingSpacing(editor);
+      boldStandaloneTheBeforeSignature(editor);
     } finally {
       processing.delete(editor);
     }
+  }
+
+  function handlePaste(event) {
+    const editor = getEditor(event.target);
+
+    if (!editor) return;
+
+    markEditorAsRecentlyPasted(editor);
+
+    window.setTimeout(function () {
+      normalizeEditorFormatting(editor);
+      processEditor(editor);
+    }, PASTE_PROTECTION_MS + 50);
   }
 
   function handleChange(event) {
@@ -162,16 +379,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function scanEditors() {
+    addEditorFontNormalizerStyles();
+
     document.querySelectorAll('[contenteditable="true"]').forEach(function (editor) {
+      normalizeEditorFormatting(editor);
       processEditor(editor);
     });
   }
 
+  addEditorFontNormalizerStyles();
+
+  document.addEventListener("paste", handlePaste, true);
   document.addEventListener("input", handleChange, true);
-  document.addEventListener("paste", handleChange, true);
   document.addEventListener("keyup", handleChange, true);
 
-  window.setInterval(scanEditors, 1500);
+  window.setInterval(scanEditors, 3000);
 })();
 }
 
@@ -195,6 +417,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     let shouldRemoveQuotedMarker = false;
     let lastEditor = null;
+    let forceRewriteUntil = 0;
+    let forceRewriteSequence = 0;
+    const lastForcedRewriteFingerprint = new WeakMap();
 
     function tryClickRemoveButton() {
         if (!shouldRemoveQuotedMarker) return;
@@ -244,6 +469,46 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         return null;
+    }
+
+    function removeInlineFontFormatting(editor) {
+        if (!editor || !editor.querySelectorAll) return;
+
+        editor.querySelectorAll('font').forEach(function (fontNode) {
+            const span = document.createElement('span');
+
+            while (fontNode.firstChild) {
+                span.appendChild(fontNode.firstChild);
+            }
+
+            fontNode.parentNode.replaceChild(span, fontNode);
+        });
+
+        editor.querySelectorAll('[style]').forEach(function (element) {
+            element.style.removeProperty('font-family');
+            element.style.removeProperty('font-size');
+            element.style.removeProperty('line-height');
+            element.style.removeProperty('margin');
+            element.style.removeProperty('margin-top');
+            element.style.removeProperty('margin-bottom');
+            element.style.removeProperty('padding-top');
+            element.style.removeProperty('padding-bottom');
+            element.style.removeProperty('mso-line-height-rule');
+            element.style.removeProperty('mso-fareast-font-family');
+            element.style.removeProperty('mso-bidi-font-family');
+
+            if (!element.getAttribute('style') || !element.getAttribute('style').trim()) {
+                element.removeAttribute('style');
+            }
+        });
+    }
+
+    function editorHasProtectedRichFormatting(editor) {
+        if (!editor || !editor.querySelector) return false;
+
+        return Boolean(editor.querySelector(
+            'a, ul, ol, li, table, blockquote, img'
+        ));
     }
 
     function splitQuotedThread(text) {
@@ -342,6 +607,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return lines.join('\n');
     }
 
+    function normalizeGreetingSpacingInText(text) {
+        return text.replace(
+            /^((?:hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
+            '$1\n\n'
+        );
+    }
+
     function cleanReplyText(rawText) {
         if (!rawText) return rawText;
 
@@ -352,6 +624,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             .replace(/[ \t]+\n/g, '\n')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
+
+        text = normalizeGreetingSpacingInText(text);
 
         const parts = splitQuotedThread(text);
 
@@ -381,14 +655,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             .replace(/>/g, '&gt;');
     }
 
+    function isGreetingParagraph(text) {
+        return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
+            String(text || '').replace(/\s+/g, ' ').trim()
+        );
+    }
+
     function textToFreshdeskHtml(text) {
-        return text
+        const paragraphs = text
             .split(/\n{2,}/)
-            .map(paragraph => {
-                const cleanParagraph = escapeHtml(paragraph.trim()).replace(/\n/g, '<br>');
-                return `<div>${cleanParagraph}</div>`;
-            })
-            .join('<div><br></div>');
+            .map(paragraph => paragraph.trim())
+            .filter(Boolean);
+
+        const htmlParts = paragraphs.map(paragraph => {
+            const cleanParagraph = escapeHtml(paragraph).replace(/\n/g, '<br>');
+            return `<div>${cleanParagraph}</div>`;
+        });
+
+        return htmlParts.join('<div><br></div>');
     }
 
     function cleanCurrentEditor() {
@@ -399,14 +683,38 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
-        const originalText = editor.innerText || editor.textContent || '';
-        const cleanedText = cleanReplyText(originalText);
+        removeInlineFontFormatting(editor);
 
-        if (!cleanedText || cleanedText === originalText.trim()) {
+        const forceRewrite = shouldForceRewrite();
+
+        if (editorHasProtectedRichFormatting(editor) && !forceRewrite) {
+            console.log('[Freshdesk Cleaner] Link, list, table, blockquote, or image detected, skipping HTML rewrite');
             return;
         }
 
+        const originalText = editor.innerText || editor.textContent || '';
+        const cleanedText = cleanReplyText(originalText);
+
+        if (!cleanedText) {
+            return;
+        }
+
+        if (!forceRewrite && cleanedText === originalText.trim()) {
+            return;
+        }
+
+        if (forceRewrite) {
+            const fingerprint = forceRewriteSequence + '|' + cleanedText;
+
+            if (lastForcedRewriteFingerprint.get(editor) === fingerprint) {
+                return;
+            }
+
+            lastForcedRewriteFingerprint.set(editor, fingerprint);
+        }
+
         editor.innerHTML = textToFreshdeskHtml(cleanedText);
+        removeInlineFontFormatting(editor);
 
         editor.dispatchEvent(new Event('input', { bubbles: true }));
         editor.dispatchEvent(new Event('change', { bubbles: true }));
@@ -437,6 +745,42 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return /\b(apply|aplicar)\b/.test(text);
     }
 
+    function isReplyButton(element) {
+        const button = element.closest(
+            'button, [role="button"], input[type="button"], input[type="submit"], a'
+        );
+
+        if (!button) return false;
+
+        if (button.matches('button[data-test-email-action="reply"]')) {
+            return true;
+        }
+
+        const text = [
+            button.innerText,
+            button.textContent,
+            button.value,
+            button.getAttribute('aria-label'),
+            button.getAttribute('title'),
+            button.getAttribute('data-test-email-action')
+        ]
+            .filter(Boolean)
+            .join(' ')
+            .trim()
+            .toLowerCase();
+
+        return /\b(reply|responder)\b/.test(text);
+    }
+
+    function markForceRewrite() {
+        forceRewriteSequence += 1;
+        forceRewriteUntil = Date.now() + 10000;
+    }
+
+    function shouldForceRewrite() {
+        return Date.now() < forceRewriteUntil;
+    }
+
     function scheduleClean() {
         setTimeout(tryClickRemoveButton, 300);
         setTimeout(tryClickRemoveButton, 800);
@@ -447,6 +791,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         setTimeout(cleanCurrentEditor, 900);
         setTimeout(cleanCurrentEditor, 1600);
         setTimeout(cleanCurrentEditor, 2600);
+        setTimeout(cleanCurrentEditor, 4000);
+        setTimeout(cleanCurrentEditor, 5500);
     }
 
     document.addEventListener('focusin', function (event) {
@@ -458,20 +804,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.addEventListener('click', function (event) {
         const replyBox = event.target.closest(replyBoxSelector);
 
-        if (replyBox) {
+        if (replyBox || isReplyButton(event.target)) {
             shouldRemoveQuotedMarker = true;
+            markForceRewrite();
             scheduleClean();
             return;
         }
 
         if (isApplyButton(event.target)) {
             shouldRemoveQuotedMarker = true;
+            markForceRewrite();
             scheduleClean();
         }
     }, true);
 
     const observer = new MutationObserver(function () {
         tryClickRemoveButton();
+
+        const editor = getEditor();
+
+        if (editor) {
+            removeInlineFontFormatting(editor);
+        }
     });
 
     observer.observe(document.body, {
@@ -483,6 +837,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.addEventListener('keydown', function (event) {
         if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'l') {
             event.preventDefault();
+            markForceRewrite();
             cleanCurrentEditor();
         }
     }, true);
