@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.5
+// @version      2.6
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, stable bold handling, restored Apply cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, stable bold handling, restored Apply cleanup, canned response protection, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -25,10 +25,79 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const pastedEditors = new WeakMap();
   const PASTE_PROTECTION_MS = 250;
   const EDITOR_FONT_STYLE_ID = 'better-freshdesk-editor-font-normalizer-style';
+  const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
+  const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
+  const CANNED_RESPONSE_PROTECTION_MS = 15000;
 
   function getEditor(element) {
     if (!element || !element.closest) return null;
     return element.closest('[contenteditable="true"]');
+  }
+
+  function markCannedResponseMode(editor) {
+    if (editor && editor.setAttribute) {
+      editor.setAttribute(CANNED_RESPONSE_LOCK_ATTR, 'yes');
+    }
+
+    window[CANNED_RESPONSE_GLOBAL_KEY] = Date.now() + CANNED_RESPONSE_PROTECTION_MS;
+
+    console.log('[Freshdesk Canned Response] Canned response mode detected, skipping editor rewrites');
+  }
+
+  function isCannedResponseModeActive(editor) {
+    const globalUntil = Number(window[CANNED_RESPONSE_GLOBAL_KEY] || 0);
+
+    return Boolean(
+      (editor && editor.getAttribute && editor.getAttribute(CANNED_RESPONSE_LOCK_ATTR) === 'yes') ||
+      Date.now() < globalUntil
+    );
+  }
+
+  function getLastNonEmptyLine(text) {
+    const lines = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    return lines.length ? lines[lines.length - 1] : '';
+  }
+
+  function lastLineIsCannedCommand(editor) {
+    if (!editor) return false;
+
+    const lastLine = getLastNonEmptyLine(editor.innerText || editor.textContent || '');
+
+    return /^\/c?$/i.test(lastLine);
+  }
+
+  function slashKeyLooksLikeCommandContext(editor) {
+    if (!editor) return false;
+
+    const text = String(editor.innerText || editor.textContent || '');
+
+    return text.trim() === '' || /[\s\n]$/.test(text);
+  }
+
+  function handleCannedCommandKeydown(event) {
+    const editor = getEditor(event.target);
+
+    if (!editor) return;
+
+    if (event.key === '/' && slashKeyLooksLikeCommandContext(editor)) {
+      markCannedResponseMode(editor);
+    }
+  }
+
+  function handleCannedCommandInput(event) {
+    const editor = getEditor(event.target);
+
+    if (!editor) return;
+
+    if (lastLineIsCannedCommand(editor)) {
+      markCannedResponseMode(editor);
+    }
   }
 
   function addEditorFontNormalizerStyles() {
@@ -229,6 +298,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function shouldSkipEditor(editor) {
     if (!editor) return true;
 
+    if (isCannedResponseModeActive(editor)) {
+      return true;
+    }
+
     if (isRecentlyPasted(editor)) {
       return true;
     }
@@ -373,6 +446,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     if (!editor) return;
 
+    handleCannedCommandInput(event);
+
     window.setTimeout(function () {
       processEditor(editor);
     }, 50);
@@ -382,6 +457,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     addEditorFontNormalizerStyles();
 
     document.querySelectorAll('[contenteditable="true"]').forEach(function (editor) {
+      if (isCannedResponseModeActive(editor)) return;
+
       normalizeEditorFormatting(editor);
       processEditor(editor);
     });
@@ -389,6 +466,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   addEditorFontNormalizerStyles();
 
+  document.addEventListener("keydown", handleCannedCommandKeydown, true);
   document.addEventListener("paste", handlePaste, true);
   document.addEventListener("input", handleChange, true);
   document.addEventListener("keyup", handleChange, true);
@@ -420,6 +498,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     let forceRewriteUntil = 0;
     let forceRewriteSequence = 0;
     const lastForcedRewriteFingerprint = new WeakMap();
+    const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
+    const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
+    const CANNED_RESPONSE_PROTECTION_MS = 15000;
 
     function tryClickRemoveButton() {
         if (!shouldRemoveQuotedMarker) return;
@@ -469,6 +550,77 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         return null;
+    }
+
+    function getEditorFromEventTarget(target) {
+        if (!target || !target.closest) return null;
+        return target.closest('[contenteditable="true"]');
+    }
+
+    function markCannedResponseMode(editor) {
+        if (editor && editor.setAttribute) {
+            editor.setAttribute(CANNED_RESPONSE_LOCK_ATTR, 'yes');
+        }
+
+        window[CANNED_RESPONSE_GLOBAL_KEY] = Date.now() + CANNED_RESPONSE_PROTECTION_MS;
+
+        console.log('[Freshdesk Canned Response] Canned response mode detected, skipping cleaner rewrites');
+    }
+
+    function isCannedResponseModeActive(editor) {
+        const globalUntil = Number(window[CANNED_RESPONSE_GLOBAL_KEY] || 0);
+
+        return Boolean(
+            (editor && editor.getAttribute && editor.getAttribute(CANNED_RESPONSE_LOCK_ATTR) === 'yes') ||
+            Date.now() < globalUntil
+        );
+    }
+
+    function getLastNonEmptyLine(text) {
+        const lines = String(text || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n')
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+
+        return lines.length ? lines[lines.length - 1] : '';
+    }
+
+    function lastLineIsCannedCommand(editor) {
+        if (!editor) return false;
+
+        const lastLine = getLastNonEmptyLine(editor.innerText || editor.textContent || '');
+
+        return /^\/c?$/i.test(lastLine);
+    }
+
+    function slashKeyLooksLikeCommandContext(editor) {
+        if (!editor) return false;
+
+        const text = String(editor.innerText || editor.textContent || '');
+
+        return text.trim() === '' || /[\s\n]$/.test(text);
+    }
+
+    function handleCannedCommandKeydown(event) {
+        const editor = getEditorFromEventTarget(event.target);
+
+        if (!editor) return;
+
+        if (event.key === '/' && slashKeyLooksLikeCommandContext(editor)) {
+            markCannedResponseMode(editor);
+        }
+    }
+
+    function handleCannedCommandInput(event) {
+        const editor = getEditorFromEventTarget(event.target);
+
+        if (!editor) return;
+
+        if (lastLineIsCannedCommand(editor)) {
+            markCannedResponseMode(editor);
+        }
     }
 
     function removeInlineFontFormatting(editor) {
@@ -683,6 +835,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
+        if (isCannedResponseModeActive(editor)) {
+            console.log('[Freshdesk Canned Response] Editor is locked, skipping cleaner rewrite');
+            return;
+        }
+
         removeInlineFontFormatting(editor);
 
         const forceRewrite = shouldForceRewrite();
@@ -795,6 +952,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         setTimeout(cleanCurrentEditor, 5500);
     }
 
+    document.addEventListener('keydown', handleCannedCommandKeydown, true);
+    document.addEventListener('input', handleCannedCommandInput, true);
+
     document.addEventListener('focusin', function (event) {
         if (event.target && event.target.isContentEditable) {
             lastEditor = event.target;
@@ -823,7 +983,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         const editor = getEditor();
 
-        if (editor) {
+        if (editor && !isCannedResponseModeActive(editor)) {
             removeInlineFontFormatting(editor);
         }
     });
