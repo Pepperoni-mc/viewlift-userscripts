@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.7
+// @version      3.0
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, one-time formatting cleanup, canned response protection, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, canned response protection, caret placement fix, Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -37,6 +37,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function markCannedResponseMode(editor) {
     if (editor && editor.setAttribute) {
       editor.setAttribute(CANNED_RESPONSE_LOCK_ATTR, 'yes');
+
+      window.setTimeout(function () {
+        if (Date.now() >= Number(window[CANNED_RESPONSE_GLOBAL_KEY] || 0)) {
+          editor.removeAttribute(CANNED_RESPONSE_LOCK_ATTR);
+        }
+      }, CANNED_RESPONSE_PROTECTION_MS + 250);
     }
 
     window[CANNED_RESPONSE_GLOBAL_KEY] = Date.now() + CANNED_RESPONSE_PROTECTION_MS;
@@ -473,7 +479,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 }
 
 /* ============================================================
- * Feature 2: Freshdesk Clean Reply After Apply
+ * Feature 2: Freshdesk Reply Template Cleanup and Apply Duplicate Cleanup
  * ============================================================ */
 
 if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWith('/a/tickets/')) {
@@ -495,6 +501,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     let forceRewriteUntil = 0;
     let forceRewriteSequence = 0;
     let scheduledCleanRunId = 0;
+    let lastForceRewriteReason = '';
     const lastForcedRewriteFingerprint = new WeakMap();
     const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
     const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
@@ -558,11 +565,25 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function markCannedResponseMode(editor) {
         if (editor && editor.setAttribute) {
             editor.setAttribute(CANNED_RESPONSE_LOCK_ATTR, 'yes');
+
+            window.setTimeout(function () {
+                if (Date.now() >= Number(window[CANNED_RESPONSE_GLOBAL_KEY] || 0)) {
+                    editor.removeAttribute(CANNED_RESPONSE_LOCK_ATTR);
+                }
+            }, CANNED_RESPONSE_PROTECTION_MS + 250);
         }
 
         window[CANNED_RESPONSE_GLOBAL_KEY] = Date.now() + CANNED_RESPONSE_PROTECTION_MS;
 
         console.log('[Freshdesk Canned Response] Canned response mode detected, skipping cleaner rewrites');
+    }
+
+    function clearCannedResponseMode(editor) {
+        if (editor && editor.removeAttribute) {
+            editor.removeAttribute(CANNED_RESPONSE_LOCK_ATTR);
+        }
+
+        window[CANNED_RESPONSE_GLOBAL_KEY] = 0;
     }
 
     function isCannedResponseModeActive(editor) {
@@ -764,6 +785,75 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         );
     }
 
+    function removeRepeatedTopGreeting(text) {
+        const lines = text.split('\n');
+        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
+
+        let firstGreetingIndex = -1;
+        let firstGreetingText = '';
+
+        for (let index = 0; index < lines.length; index += 1) {
+            const normalized = normalizeText(lines[index]);
+
+            if (!normalized) continue;
+
+            if (firstGreetingIndex === -1) {
+                if (greetingRegex.test(normalized)) {
+                    firstGreetingIndex = index;
+                    firstGreetingText = normalized;
+                }
+
+                continue;
+            }
+
+            if (normalized === firstGreetingText && greetingRegex.test(normalized)) {
+                lines.splice(firstGreetingIndex, index - firstGreetingIndex);
+                return lines.join('\n').replace(/^\n+/, '');
+            }
+
+            break;
+        }
+
+        return text;
+    }
+
+    function truncateAfterFirstSignature(text) {
+        const signaturePattern = /(^|\n)(\s*Regards,\s*\n\s*The Technical Support Team\b[\s\S]*?)(?=\n\s*\S)/i;
+        const match = signaturePattern.exec(text);
+
+        if (!match) {
+            return text;
+        }
+
+        const endIndex = match.index + match[0].length;
+        const kept = text.slice(0, endIndex).trim();
+        const removed = text.slice(endIndex).trim();
+
+        if (!removed) {
+            return text;
+        }
+
+        return kept;
+    }
+
+    function removeDefaultTemplateAfterAppliedScenario(text) {
+        const defaultTemplatePattern = /\n{2,}\s*Thank you for contacting the Technical Support Team\.\s*\n{2,}\s*Regards,\s*\n\s*The Technical Support Team\s*$/i;
+
+        return text.replace(defaultTemplatePattern, '').trim();
+    }
+
+    function cleanAppliedScenarioDuplicates(text) {
+        let cleaned = text;
+
+        cleaned = removeRepeatedTopGreeting(cleaned);
+        cleaned = removeDefaultTemplateAfterAppliedScenario(cleaned);
+        cleaned = truncateAfterFirstSignature(cleaned);
+
+        return cleaned
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
     function cleanReplyText(rawText) {
         if (!rawText) return rawText;
 
@@ -785,6 +875,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         reply = removeDuplicateGreeting(reply);
         reply = removeDuplicateParagraphs(reply);
+        reply = cleanAppliedScenarioDuplicates(reply);
 
         reply = reply
             .replace(/\n{3,}/g, '\n\n')
@@ -809,6 +900,117 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
             String(text || '').replace(/\s+/g, ' ').trim()
         );
+    }
+
+    function cleanBlockText(value) {
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function isEmptyEditorBlock(element) {
+        return Boolean(element && element.nodeType === 1 && cleanBlockText(element.innerText || element.textContent || '') === '');
+    }
+
+    function isSignatureBlock(element) {
+        const text = cleanBlockText(element ? element.innerText || element.textContent || '' : '');
+
+        return text === 'Regards,' || text === 'The Technical Support Team';
+    }
+
+    function createBlankEditorBlock() {
+        const blank = document.createElement('div');
+        blank.innerHTML = '<br>';
+        return blank;
+    }
+
+    function placeCaretInsideBlock(block) {
+        if (!block) return;
+
+        block.focus && block.focus();
+
+        const range = document.createRange();
+        range.selectNodeContents(block);
+        range.collapse(true);
+
+        const selection = window.getSelection();
+
+        if (!selection) return;
+
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+
+    function placeCaretAtEnd(editor) {
+        if (!editor) return;
+
+        editor.focus();
+
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+
+        const selection = window.getSelection();
+
+        if (!selection) return;
+
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+
+    function placeCaretAtReplyInsertionPoint(editor) {
+        if (!editor || !editor.children) return;
+
+        editor.focus();
+
+        const children = Array.from(editor.children);
+        const greetingIndex = children.findIndex(child => isGreetingParagraph(child.innerText || child.textContent || ''));
+        const signatureIndex = children.findIndex(isSignatureBlock);
+
+        if (greetingIndex !== -1 && signatureIndex !== -1 && signatureIndex > greetingIndex) {
+            const betweenGreetingAndSignature = children
+                .slice(greetingIndex + 1, signatureIndex)
+                .filter(child => child.parentNode === editor);
+
+            const emptyBodyBlock = betweenGreetingAndSignature.find(isEmptyEditorBlock);
+
+            if (emptyBodyBlock) {
+                placeCaretInsideBlock(emptyBodyBlock);
+                return;
+            }
+
+            const blank = createBlankEditorBlock();
+            editor.insertBefore(blank, children[signatureIndex]);
+            placeCaretInsideBlock(blank);
+            return;
+        }
+
+        if (signatureIndex !== -1) {
+            const beforeSignature = children[signatureIndex - 1];
+
+            if (beforeSignature && isEmptyEditorBlock(beforeSignature)) {
+                placeCaretInsideBlock(beforeSignature);
+                return;
+            }
+
+            const blank = createBlankEditorBlock();
+            editor.insertBefore(blank, children[signatureIndex]);
+            placeCaretInsideBlock(blank);
+            return;
+        }
+
+        placeCaretAtEnd(editor);
+    }
+
+    function restoreCaretAfterForcedCleanup(editor) {
+        if (!editor) return;
+
+        window.setTimeout(function () {
+            if (!document.contains(editor)) return;
+
+            placeCaretAtReplyInsertionPoint(editor);
+        }, 0);
     }
 
     function textToFreshdeskHtml(text) {
@@ -875,6 +1077,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         editor.dispatchEvent(new Event('change', { bubbles: true }));
         editor.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 
+        if (forceRewrite) {
+            restoreCaretAfterForcedCleanup(editor);
+        }
+
         console.log('[Freshdesk Cleaner] Reply cleaned after Apply');
     }
 
@@ -927,9 +1133,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return /\b(reply|responder)\b/.test(text);
     }
 
-    function markForceRewrite() {
+    function markForceRewrite(reason) {
         forceRewriteSequence += 1;
         forceRewriteUntil = Date.now() + 10000;
+        lastForceRewriteReason = reason || '';
     }
 
     function shouldForceRewrite() {
@@ -1004,14 +1211,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         if (replyBox || isReplyButton(event.target)) {
             shouldRemoveQuotedMarker = true;
-            markForceRewrite();
+            markForceRewrite('reply');
             scheduleClean();
             return;
         }
 
         if (isApplyButton(event.target)) {
             shouldRemoveQuotedMarker = true;
-            markForceRewrite();
+            clearCannedResponseMode(getEditor());
+            markForceRewrite('apply');
             scheduleClean();
         }
     }, true);
@@ -1029,7 +1237,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.addEventListener('keydown', function (event) {
         if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'l') {
             event.preventDefault();
-            markForceRewrite();
+            clearCannedResponseMode(getEditor());
+            markForceRewrite('manual');
             cleanCurrentEditor();
         }
     }, true);
