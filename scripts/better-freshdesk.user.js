@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0
+// @version      3.1
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, canned response protection, caret placement fix, Apply duplicate cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -837,9 +837,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function removeDefaultTemplateAfterAppliedScenario(text) {
-        const defaultTemplatePattern = /\n{2,}\s*Thank you for contacting the Technical Support Team\.\s*\n{2,}\s*Regards,\s*\n\s*The Technical Support Team\s*$/i;
+        const defaultTemplatePattern = /\n+\s*Thank you for contacting the Technical Support Team\.\s*\n+\s*Regards,\s*\n\s*The Technical Support Team\s*$/i;
 
         return text.replace(defaultTemplatePattern, '').trim();
+    }
+
+    function shouldRunApplyDuplicateCleanup() {
+        return lastForceRewriteReason === 'apply' || lastForceRewriteReason === 'manual';
     }
 
     function cleanAppliedScenarioDuplicates(text) {
@@ -847,7 +851,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         cleaned = removeRepeatedTopGreeting(cleaned);
         cleaned = removeDefaultTemplateAfterAppliedScenario(cleaned);
-        cleaned = truncateAfterFirstSignature(cleaned);
 
         return cleaned
             .replace(/\n{3,}/g, '\n\n')
@@ -875,7 +878,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         reply = removeDuplicateGreeting(reply);
         reply = removeDuplicateParagraphs(reply);
-        reply = cleanAppliedScenarioDuplicates(reply);
+
+        if (shouldRunApplyDuplicateCleanup()) {
+            reply = cleanAppliedScenarioDuplicates(reply);
+        }
 
         reply = reply
             .replace(/\n{3,}/g, '\n\n')
