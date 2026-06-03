@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.1
+// @version      3.3
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text, normalized reply spacing, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, improved R shortcut cleanup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -319,7 +319,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (!node || !node.parentElement) return true;
 
     return Boolean(
-      node.parentElement.closest("strong, b, a, code, pre, script, style")
+      node.parentElement.closest("strong, b, code, pre, script, style")
     );
   }
 
@@ -330,7 +330,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function buildBoldPattern() {
-    return /(The Technical Support Team)|(Technical Support Team)|(Regards,)/g;
+    return /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})|(The Technical Support Team)|(Technical Support Team)|(Regards,)/g;
   }
 
   function replaceLongDashCharacters(text) {
@@ -405,6 +405,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
             if (
               /[\u2013\u2014]/.test(node.nodeValue) ||
+              /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(node.nodeValue) ||
               lowerText.includes("technical support team") ||
               lowerText.includes("regards,")
             ) {
@@ -501,6 +502,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     let forceRewriteUntil = 0;
     let forceRewriteSequence = 0;
     let scheduledCleanRunId = 0;
+    let pendingReplyShortcutUntil = 0;
+    let pendingReplyShortcutHandled = false;
     let lastForceRewriteReason = '';
     const lastForcedRewriteFingerprint = new WeakMap();
     const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
@@ -555,6 +558,33 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         return null;
+    }
+
+    function getVisibleEditors() {
+        const seen = new Set();
+        const editors = [];
+
+        for (const selector of editorSelectors) {
+            Array.from(document.querySelectorAll(selector)).forEach(editor => {
+                if (seen.has(editor)) return;
+                seen.add(editor);
+
+                if (isVisible(editor)) {
+                    editors.push(editor);
+                }
+            });
+        }
+
+        return editors;
+    }
+
+    function getNewestVisibleEditor() {
+        const editors = getVisibleEditors();
+
+        if (!editors.length) return null;
+
+        lastEditor = editors[editors.length - 1];
+        return lastEditor;
     }
 
     function getEditorFromEventTarget(target) {
@@ -1139,6 +1169,60 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return /\b(reply|responder)\b/.test(text);
     }
 
+    function isTypingTarget(element) {
+        if (!element) return false;
+
+        const editable = element.closest
+            ? element.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+            : null;
+
+        return Boolean(editable);
+    }
+
+    function isReplyShortcut(event) {
+        if (!event || event.repeat) return false;
+        if (event.ctrlKey || event.altKey || event.metaKey) return false;
+        if (isTypingTarget(event.target)) return false;
+
+        return String(event.key || '').toLowerCase() === 'r';
+    }
+
+    function markPendingReplyShortcut() {
+        pendingReplyShortcutUntil = Date.now() + 10000;
+        pendingReplyShortcutHandled = false;
+    }
+
+    function hasPendingReplyShortcut() {
+        return !pendingReplyShortcutHandled && Date.now() < pendingReplyShortcutUntil;
+    }
+
+    function runReplyShortcutCleanupWhenEditorAppears() {
+        if (!hasPendingReplyShortcut()) return;
+
+        const editor = getNewestVisibleEditor();
+
+        if (!editor) {
+            return;
+        }
+
+        pendingReplyShortcutHandled = true;
+        shouldRemoveQuotedMarker = true;
+        markForceRewrite('reply-shortcut');
+        scheduleClean();
+    }
+
+    function handleReplyShortcutKeydown(event) {
+        if (!isReplyShortcut(event)) return;
+
+        markPendingReplyShortcut();
+
+        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 250);
+        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 700);
+        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 1200);
+        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 2000);
+        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 3500);
+    }
+
     function markForceRewrite(reason) {
         forceRewriteSequence += 1;
         forceRewriteUntil = Date.now() + 10000;
@@ -1160,7 +1244,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
             tryClickRemoveButton();
 
-            const editor = getEditor();
+            const editor = getEditor() || getNewestVisibleEditor();
 
             if (!editor) {
                 if (Date.now() - startedAt < 5000) {
@@ -1204,6 +1288,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     document.addEventListener('keydown', handleCannedCommandKeydown, true);
+    document.addEventListener('keydown', handleReplyShortcutKeydown, true);
     document.addEventListener('input', handleCannedCommandInput, true);
 
     document.addEventListener('focusin', function (event) {
@@ -1232,6 +1317,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const observer = new MutationObserver(function () {
         tryClickRemoveButton();
+
+        if (hasPendingReplyShortcut()) {
+            window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 100);
+        }
     });
 
     observer.observe(document.body, {
