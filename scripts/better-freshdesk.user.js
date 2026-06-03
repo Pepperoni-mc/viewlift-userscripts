@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.3
+// @version      3.8
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, improved R shortcut cleanup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, improved R shortcut cleanup, fixed X summary/edit shortcut with exact selectors, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -1223,6 +1223,208 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 3500);
     }
 
+    function getButtonSearchText(element) {
+        return [
+            element.innerText,
+            element.textContent,
+            element.value,
+            element.getAttribute('aria-label'),
+            element.getAttribute('title'),
+            element.getAttribute('data-test-id'),
+            element.getAttribute('data-testid'),
+            element.getAttribute('data-test'),
+            element.getAttribute('id'),
+            element.className
+        ]
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    function isClickableVisible(element) {
+        if (!element || element.nodeType !== 1) return false;
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+
+        return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0' &&
+            !element.disabled &&
+            element.getAttribute('aria-disabled') !== 'true'
+        );
+    }
+
+    function findSummaryButton() {
+        const editSummaryButton = document.querySelector(
+            'button[data-test-conversation-actions="edit-summary"], [role="button"][data-test-conversation-actions="edit-summary"]'
+        );
+
+        if (editSummaryButton && isClickableVisible(editSummaryButton)) {
+            return editSummaryButton;
+        }
+
+        const addSummaryButton = document.querySelector(
+            'button[data-test-id="add-summary-button"], [role="button"][data-test-id="add-summary-button"]'
+        );
+
+        if (addSummaryButton && isClickableVisible(addSummaryButton)) {
+            return addSummaryButton;
+        }
+
+        return Array.from(document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], a'))
+            .filter(element => {
+                if (!isClickableVisible(element)) return false;
+                if (element.closest('[contenteditable="true"], [role="textbox"], input, textarea, select')) return false;
+
+                const text = getButtonSearchText(element);
+
+                if (/\b(edit)\b/.test(text) && /\b(summary)\b/.test(text)) {
+                    return true;
+                }
+
+                return /\b(summary|summarize|summarise|resumen)\b/.test(text);
+            })[0] || null;
+    }
+
+    function dispatchButtonEvent(element, type, options) {
+        if (!element) return false;
+
+        const eventOptions = Object.assign({
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            button: 0,
+            buttons: type === 'mousedown' || type === 'pointerdown' ? 1 : 0,
+            detail: type === 'click' ? 1 : 0
+        }, options || {});
+
+        if (type.indexOf('pointer') === 0 && typeof PointerEvent === 'function') {
+            return element.dispatchEvent(new PointerEvent(type, Object.assign({
+                pointerId: 1,
+                pointerType: 'mouse',
+                isPrimary: true
+            }, eventOptions)));
+        }
+
+        return element.dispatchEvent(new MouseEvent(type, eventOptions));
+    }
+
+    function nativeButtonClick(element) {
+        if (!element) return false;
+
+        try {
+            if (element instanceof HTMLButtonElement) {
+                HTMLButtonElement.prototype.click.call(element);
+                return true;
+            }
+
+            if (element instanceof HTMLAnchorElement) {
+                HTMLAnchorElement.prototype.click.call(element);
+                return true;
+            }
+
+            if (typeof element.click === 'function') {
+                element.click();
+                return true;
+            }
+        } catch (error) {
+            console.error('[Freshdesk Summary Shortcut] Native click failed', error);
+        }
+
+        return false;
+    }
+
+    function realClickElement(element, logMessage) {
+        if (!element || !isClickableVisible(element)) return false;
+
+        element.scrollIntoView({
+            block: 'center',
+            inline: 'center'
+        });
+
+        element.focus && element.focus();
+
+        const rect = element.getBoundingClientRect();
+        const eventOptions = {
+            clientX: Math.round(rect.left + rect.width / 2),
+            clientY: Math.round(rect.top + rect.height / 2),
+            screenX: Math.round(window.screenX + rect.left + rect.width / 2),
+            screenY: Math.round(window.screenY + rect.top + rect.height / 2)
+        };
+
+        const innerTarget = element.querySelector('.nucleus-button__icon, svg, span') || element;
+
+        try {
+            nativeButtonClick(element);
+
+            dispatchButtonEvent(element, 'pointerover', eventOptions);
+            dispatchButtonEvent(element, 'mouseover', eventOptions);
+            dispatchButtonEvent(element, 'pointerdown', eventOptions);
+            dispatchButtonEvent(element, 'mousedown', eventOptions);
+            dispatchButtonEvent(innerTarget, 'pointerdown', eventOptions);
+            dispatchButtonEvent(innerTarget, 'mousedown', eventOptions);
+            dispatchButtonEvent(innerTarget, 'pointerup', eventOptions);
+            dispatchButtonEvent(innerTarget, 'mouseup', eventOptions);
+            dispatchButtonEvent(element, 'pointerup', eventOptions);
+            dispatchButtonEvent(element, 'mouseup', eventOptions);
+            dispatchButtonEvent(innerTarget, 'click', eventOptions);
+            dispatchButtonEvent(element, 'click', eventOptions);
+
+            window.setTimeout(function () {
+                nativeButtonClick(element);
+                dispatchButtonEvent(element, 'click', eventOptions);
+            }, 75);
+
+            if (logMessage) {
+                console.log(logMessage);
+            }
+
+            return true;
+        } catch (error) {
+            console.error('[Freshdesk Summary Shortcut] Click failed', error);
+            return false;
+        }
+    }
+
+    function isSummaryShortcut(event) {
+        if (!event || event.repeat) return false;
+        if (event.ctrlKey || event.altKey || event.metaKey) return false;
+        if (isTypingTarget(event.target)) return false;
+
+        return String(event.key || '').toLowerCase() === 'x';
+    }
+
+    function clickSummaryButtonFromShortcut() {
+        const summaryButton = findSummaryButton();
+
+        if (!summaryButton) {
+            console.log('[Freshdesk Summary Shortcut] Summary button not found');
+            return false;
+        }
+
+        return realClickElement(summaryButton, '[Freshdesk Summary Shortcut] Summary button clicked');
+    }
+
+    function handleSummaryShortcutKeydown(event) {
+        if (!isSummaryShortcut(event)) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        if (clickSummaryButtonFromShortcut()) return;
+
+        window.setTimeout(clickSummaryButtonFromShortcut, 100);
+        window.setTimeout(clickSummaryButtonFromShortcut, 300);
+        window.setTimeout(clickSummaryButtonFromShortcut, 700);
+    }
+
     function markForceRewrite(reason) {
         forceRewriteSequence += 1;
         forceRewriteUntil = Date.now() + 10000;
@@ -1289,6 +1491,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     document.addEventListener('keydown', handleCannedCommandKeydown, true);
     document.addEventListener('keydown', handleReplyShortcutKeydown, true);
+    document.addEventListener('keydown', handleSummaryShortcutKeydown, true);
     document.addEventListener('input', handleCannedCommandInput, true);
 
     document.addEventListener('focusin', function (event) {
