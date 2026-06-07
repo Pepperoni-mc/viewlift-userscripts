@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      1.4
+// @version      1.9
 // @author       Happy, Potato
-// @description  ViewLift CMS tools: refund capture, cancellation reason autofill, refund workflow helper, and real snapshot capture.
+// @description  ViewLift CMS tools: refund capture, LIV Golf email filtering, forced SCHN/LIV Golf blank refund column, refund-specific currency-code amounts, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -42,6 +42,7 @@
     cmsUserId: 'CMS User ID',
     payment: 'Payment Handler',
     amount: 'Amount Refunded',
+    client: 'Refund Client',
     activeTicket: 'Refund Active Ticket',
     activeEmail: 'Refund Active Email',
     lastSource: 'Refund Last Capture Source',
@@ -51,6 +52,7 @@
 
   const BLOCKED_EMAILS = [
     'sc-appsupport@spacecityhn.com',
+    'support@livgolfplus.com',
     'customersupport@altitudeplus.com',
     'customer.support@altitudeplus.com',
     'support@altitudeplus.com'
@@ -80,7 +82,10 @@
     { re: /\bVIZIO\b/i, value: 'Vizio' }
   ];
 
-  const AMOUNT_RE = /(?:USD|US\$|\$|€|£)\s*\d{1,5}(?:,\d{3})*(?:\.\d{2})?|\d{1,5}(?:,\d{3})*(?:\.\d{2})\s*(?:USD|EUR|GBP)/i;
+  const CURRENCY_CODE_RE_SOURCE = '(?:USD|ZAR|EUR|GBP|CAD|AUD|NZD|BRL|MXN|ARS|CLP|COP|PEN|INR|JPY|KRW|SGD|HKD|CHF|SEK|NOK|DKK|PLN)';
+  const CURRENCY_CODE_RE = new RegExp('\\b' + CURRENCY_CODE_RE_SOURCE + '\\b', 'i');
+  const AMOUNT_RE = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|€|£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'i');
+  const AMOUNT_RE_GLOBAL = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|€|£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'ig');
   const BARE_AMOUNT_RE = /^\d{1,5}(?:,\d{3})*(?:\.\d{2})$/;
 
   let lastRefundToolUrl = location.href;
@@ -169,6 +174,7 @@
     if (BLOCKED_EMAILS.includes(lower)) return true;
     if (lower.includes('customersupport@altitudeplus.com')) return true;
     if (lower.includes('sc-appsupport@spacecityhn.com')) return true;
+    if (lower.includes('support@livgolfplus.com')) return true;
 
     return false;
   }
@@ -278,6 +284,36 @@
     return lines;
   }
 
+  function collectDeepTextFromRoot(root, chunks, depth = 0) {
+    if (!root || depth > 6) return;
+
+    const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+
+    for (const element of elements) {
+      if (isIgnoredElement(element)) continue;
+
+      if (element.matches && element.matches('input, textarea, select')) {
+        const value = cleanText(element.value);
+        if (value) chunks.push(value);
+      }
+
+      const text = cleanText(element.innerText || element.textContent || '');
+      if (text) chunks.push(text);
+
+      if (element.shadowRoot) {
+        collectDeepTextFromRoot(element.shadowRoot, chunks, depth + 1);
+      }
+    }
+  }
+
+  function getDeepPageTextOutsidePanel() {
+    const chunks = [];
+
+    collectDeepTextFromRoot(document, chunks, 0);
+
+    return chunks.join('\n');
+  }
+
   function queryOutsidePanel(selector) {
     return Array.from(document.querySelectorAll(selector)).filter(element => !isIgnoredElement(element));
   }
@@ -382,6 +418,7 @@
     return cleanText(value)
       .replace(/^amount\s*:?\s*/i, '')
       .replace(/^amount refunded\s*:?\s*/i, '')
+      .replace(/^refunded amount\s*:?\s*/i, '')
       .replace(/^refund amount\s*:?\s*/i, '')
       .replace(/^price\s*:?\s*/i, '')
       .replace(/^total\s*:?\s*/i, '')
@@ -389,9 +426,57 @@
       .trim();
   }
 
+  function normalizeCurrencyCode(value, context = '') {
+    const combined = `${value || ''} ${context || ''}`;
+    const codeMatch = combined.match(CURRENCY_CODE_RE);
+
+    if (codeMatch) return codeMatch[0].toUpperCase();
+
+    if (/US\$/i.test(combined)) return 'USD';
+    if (/\$/.test(combined)) return 'USD';
+    if (/€/.test(combined)) return 'EUR';
+    if (/£/.test(combined)) return 'GBP';
+    if (/(^|\s)R\s*\d/i.test(combined)) return 'ZAR';
+
+    return '';
+  }
+
+  function normalizeRefundAmountDisplay(value, context = '') {
+    const raw = cleanAmount(value);
+    const numberMatch = raw.match(/\d{1,5}(?:,\d{3})*(?:\.\d{2})?/);
+
+    if (!numberMatch) return raw;
+
+    const currencyCode = normalizeCurrencyCode(raw, context);
+
+    if (!currencyCode) return raw;
+
+    return `${currencyCode} ${numberMatch[0]}`;
+  }
+
   function findAmountInText(text) {
-    const match = cleanText(text).match(AMOUNT_RE);
-    return match ? cleanAmount(match[0]) : '';
+    const cleaned = cleanText(text);
+    const match = cleaned.match(AMOUNT_RE);
+    return match ? normalizeRefundAmountDisplay(match[0], cleaned) : '';
+  }
+
+  function findAllAmountsInText(text) {
+    const cleaned = cleanText(text);
+    const matches = cleaned.match(AMOUNT_RE_GLOBAL) || [];
+    const seen = new Set();
+    const amounts = [];
+
+    for (const match of matches) {
+      const normalized = normalizeRefundAmountDisplay(match, cleaned);
+      const key = normalized.toLowerCase();
+
+      if (!normalized || seen.has(key)) continue;
+
+      seen.add(key);
+      amounts.push(normalized);
+    }
+
+    return amounts;
   }
 
   function isBareAmount(text) {
@@ -422,6 +507,69 @@
     return '';
   }
 
+  function findAmountAfterLabel(lines, labelRegexes) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = cleanText(lines[i]);
+      if (!labelRegexes.some(regex => regex.test(line))) continue;
+
+      const block = lines
+        .slice(i, Math.min(lines.length, i + 10))
+        .map(cleanText)
+        .filter(Boolean);
+
+      const joinedBlock = block.join(' ');
+      const amountFromBlock = findAmountInText(joinedBlock);
+
+      if (amountFromBlock) return amountFromBlock;
+
+      for (let j = i + 1; j < Math.min(lines.length, i + 10); j++) {
+        const candidate = cleanText(lines[j]);
+        const amount = findAmountInText(candidate);
+
+        if (amount) return amount;
+
+        if (isBareAmount(candidate)) {
+          return normalizeRefundAmountDisplay(candidate, joinedBlock);
+        }
+      }
+    }
+
+    return '';
+  }
+
+  function findRefundAmountInBillingLines(lines) {
+    const refundLabelRegexes = [
+      /^amount refunded\b/i,
+      /^refunded amount\b/i,
+      /^refund amount\b/i,
+      /^total refunded\b/i,
+      /^refund total\b/i
+    ];
+
+    const exactLabelAmount = findAmountAfterLabel(lines, refundLabelRegexes);
+
+    if (exactLabelAmount) return exactLabelAmount;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = cleanText(lines[i]);
+
+      if (!/\brefund(?:ed|s|ing)?\b/i.test(line)) continue;
+      if (/\b(reason|policy|status|button|action|request)\b/i.test(line) && !AMOUNT_RE.test(line)) continue;
+
+      const nearbyBlock = lines
+        .slice(Math.max(0, i - 3), Math.min(lines.length, i + 8))
+        .map(cleanText)
+        .filter(Boolean)
+        .join(' ');
+
+      const amounts = findAllAmountsInText(nearbyBlock);
+
+      if (amounts.length) return amounts[0];
+    }
+
+    return '';
+  }
+
   function getRefundDataFromCMS() {
     const data = {
       amount: '',
@@ -442,33 +590,13 @@
       value => findPaymentHandlerInText(value)
     );
 
-    data.amount = findValueAfterLabel(
-      lines,
-      [
-        /^amount refunded\b/i,
-        /^refund amount\b/i,
-        /^price\b/i,
-        /^total\b/i,
-        /^charge\b/i
-      ],
-      value => findAmountInText(value) || (isBareAmount(value) ? cleanAmount(value) : '')
-    );
+    data.amount = findRefundAmountInBillingLines(lines);
 
     if (!data.payment) {
       for (const line of lines) {
         const payment = findPaymentHandlerInText(line);
         if (payment) {
           data.payment = payment;
-          break;
-        }
-      }
-    }
-
-    if (!data.amount) {
-      for (const line of lines) {
-        const amount = findAmountInText(line);
-        if (amount) {
-          data.amount = amount;
           break;
         }
       }
@@ -517,10 +645,15 @@
     const ticketURL = isFreshdeskHost() ? getFreshdeskTicketURL() : '';
     const email = findEmailOnPage();
     const cmsURL = findCMSUrlOnPage();
+    const clientKey = captureRefundClientKey();
 
     maybeResetForFreshdeskContext(ticketURL, email);
 
     let changed = false;
+
+    if (clientKey) {
+      changed = safeSet(STORAGE_KEYS.client, clientKey) || changed;
+    }
 
     if (isFreshdeskHost()) {
       if (ticketURL) changed = safeSet(STORAGE_KEYS.freshdesk, ticketURL) || changed;
@@ -598,6 +731,83 @@
     setFieldValue('refund-amount', safeGet(STORAGE_KEYS.amount, ''), forceOverwrite);
 
     markAllFieldStates();
+  }
+
+  function detectRefundClientKeyFromText(text) {
+    const context = String(text || '').toLowerCase();
+
+    if (
+      /(^|[^a-z0-9])liv\s*golf([^a-z0-9]|$)/i.test(context) ||
+      context.includes('livgolf') ||
+      context.includes('liv golf plus') ||
+      context.includes('livgolfplus') ||
+      context.includes('livgolfplus.com') ||
+      context.includes('support@livgolfplus.com')
+    ) {
+      return 'livgolf';
+    }
+
+    if (
+      /(^|[^a-z0-9])schn([^a-z0-9]|$)/i.test(context) ||
+      context.includes('spacecityhn.com') ||
+      context.includes('space city home network') ||
+      context.includes('sc-appsupport@spacecityhn.com')
+    ) {
+      return 'schn';
+    }
+
+    return '';
+  }
+
+  function getRefundClientContextText() {
+    const values = [
+      location.href,
+      document.title,
+      safeGet(STORAGE_KEYS.client, ''),
+      safeGet(STORAGE_KEYS.email, ''),
+      safeGet(STORAGE_KEYS.activeEmail, ''),
+      safeGet(STORAGE_KEYS.cms, ''),
+      document.getElementById('refund-email')?.value || '',
+      document.getElementById('refund-cms')?.value || '',
+      document.body?.innerText || '',
+      getDeepPageTextOutsidePanel()
+    ];
+
+    return values
+      .map(value => String(value || '').toLowerCase())
+      .join('\n');
+  }
+
+  function captureRefundClientKey() {
+    const clientKey = detectRefundClientKeyFromText(getRefundClientContextText());
+
+    if (clientKey) {
+      forceSet(STORAGE_KEYS.client, clientKey);
+    }
+
+    return clientKey;
+  }
+
+  function getRefundClientKey() {
+    const liveClient = captureRefundClientKey();
+
+    if (liveClient === 'schn' || liveClient === 'livgolf') {
+      return liveClient;
+    }
+
+    const storedClient = safeGet(STORAGE_KEYS.client, '');
+
+    if (storedClient === 'schn' || storedClient === 'livgolf') {
+      return storedClient;
+    }
+
+    return '';
+  }
+
+  function shouldAddBlankColumnBetweenRefunderAndDate() {
+    const clientKey = getRefundClientKey();
+
+    return clientKey === 'schn' || clientKey === 'livgolf';
   }
 
   function markFieldState(field) {
@@ -800,9 +1010,14 @@
       document.getElementById('refund-reason').value,
       document.getElementById('refund-tag').value,
       document.getElementById('refund-amount').value,
-      document.getElementById('refund-refunder').value,
-      document.getElementById('refund-date').value
+      document.getElementById('refund-refunder').value
     ];
+
+    if (shouldAddBlankColumnBetweenRefunderAndDate()) {
+      row.push('');
+    }
+
+    row.push(document.getElementById('refund-date').value);
 
     GM_setClipboard(row.join('\t'));
     setStatus('Copied to clipboard.');
