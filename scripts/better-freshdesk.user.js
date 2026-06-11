@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.8
+// @version      3.9
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, improved R shortcut cleanup, fixed X summary/edit shortcut with exact selectors, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -1592,28 +1592,189 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         );
     }
 
-    function getCustomerEmailFromContactInfo() {
+    const CMS_SEARCH_BLOCKED_EMAILS = [
+        'support@livgolfplus.com',
+        'sc-appsupport@spacecityhn.com',
+        'customersupport@altitudeplus.com',
+        'customer.support@altitudeplus.com',
+        'support@altitudeplus.com',
+        'noreply@viewlift.com',
+        'no-reply@viewlift.com'
+    ];
+
+    function isBlockedCmsSearchEmail(email) {
+        const lower = cleanText(email).toLowerCase();
+
+        if (!lower) return true;
+
+        return CMS_SEARCH_BLOCKED_EMAILS.some(blocked => lower === blocked || lower.includes(blocked));
+    }
+
+    function extractBestCustomerEmailFromText(text) {
+        const matches = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
+
+        for (const match of matches) {
+            const email = cleanText(match);
+
+            if (email && !isBlockedCmsSearchEmail(email)) {
+                return email;
+            }
+        }
+
+        return '';
+    }
+
+    function getVisibleText(element) {
+        if (!element) return '';
+
+        return cleanText(element.innerText || element.textContent || '');
+    }
+
+    function collectTextFromRoot(root, chunks, depth = 0) {
+        if (!root || depth > 6) return;
+
+        const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+
+        for (const element of elements) {
+            if (!element) continue;
+
+            if (element.closest && element.closest('#viewlift-open-cms-header-button, #refund-capture-panel')) {
+                continue;
+            }
+
+            if (element.matches && element.matches('input, textarea')) {
+                const value = cleanText(element.value || '');
+                if (value) chunks.push(value);
+            }
+
+            const text = getVisibleText(element);
+
+            if (text) chunks.push(text);
+
+            const href = element.getAttribute ? element.getAttribute('href') || '' : '';
+            const mailtoMatch = href.match(/^mailto:(.+)$/i);
+
+            if (mailtoMatch) chunks.push(mailtoMatch[1]);
+
+            if (element.shadowRoot) {
+                collectTextFromRoot(element.shadowRoot, chunks, depth + 1);
+            }
+        }
+    }
+
+    function findEmailNearLabelInLines(lines) {
+        for (let i = 0; i < lines.length; i += 1) {
+            const line = cleanText(lines[i]);
+
+            if (!/^email$/i.test(line) && !/\bemail\b/i.test(line)) {
+                continue;
+            }
+
+            for (let j = i; j < Math.min(lines.length, i + 12); j += 1) {
+                const email = extractBestCustomerEmailFromText(lines[j]);
+
+                if (email) return email;
+            }
+        }
+
+        return '';
+    }
+
+    function getContactInfoRoots() {
+        const roots = [];
+
         const contactApps = Array.from(
             document.querySelectorAll('mfe-application[app-id="fw-unified-mfe--contact-info"]')
         );
 
         for (const app of contactApps) {
-            const root = app.shadowRoot;
+            roots.push(app);
 
-            if (!root) continue;
-
-            const emailNodes = Array.from(root.querySelectorAll('p.break-all'));
-
-            for (const node of emailNodes) {
-                const email = extractEmailFromText(node.innerText || node.textContent || '');
-
-                if (email) {
-                    return email;
-                }
+            if (app.shadowRoot) {
+                roots.push(app.shadowRoot);
             }
         }
 
-        console.log('[CMS Search] Contact info email not found in p.break-all.');
+        Array.from(document.querySelectorAll('[data-test-id*="contact" i], [class*="contact" i], [aria-label*="contact" i]')).forEach(element => {
+            roots.push(element);
+
+            if (element.shadowRoot) {
+                roots.push(element.shadowRoot);
+            }
+        });
+
+        return roots;
+    }
+
+    function findEmailInContactInfoRoots() {
+        const roots = getContactInfoRoots();
+
+        for (const root of roots) {
+            const directNodes = root.querySelectorAll
+                ? Array.from(root.querySelectorAll('p.break-all, [class~="break-all"], [class*="break-all"], a[href^="mailto:"], [data-test-id*="email" i], [class*="email" i]'))
+                : [];
+
+            for (const node of directNodes) {
+                const text = [
+                    node.innerText,
+                    node.textContent,
+                    node.getAttribute ? node.getAttribute('href') : ''
+                ].filter(Boolean).join(' ');
+
+                const email = extractBestCustomerEmailFromText(text);
+
+                if (email) return email;
+            }
+
+            const chunks = [];
+            collectTextFromRoot(root, chunks, 0);
+
+            const labelEmail = findEmailNearLabelInLines(chunks);
+
+            if (labelEmail) return labelEmail;
+
+            const fallbackEmail = extractBestCustomerEmailFromText(chunks.join('\n'));
+
+            if (fallbackEmail) return fallbackEmail;
+        }
+
+        return '';
+    }
+
+    function findEmailInFreshdeskTicketText() {
+        const chunks = [];
+        collectTextFromRoot(document, chunks, 0);
+
+        const contactInfoIndex = chunks.findIndex(line => /^contact info$/i.test(cleanText(line)));
+
+        if (contactInfoIndex !== -1) {
+            const contactBlock = chunks.slice(contactInfoIndex, contactInfoIndex + 120);
+            const labelEmail = findEmailNearLabelInLines(contactBlock);
+
+            if (labelEmail) return labelEmail;
+
+            const fallbackEmail = extractBestCustomerEmailFromText(contactBlock.join('\n'));
+
+            if (fallbackEmail) return fallbackEmail;
+        }
+
+        return extractBestCustomerEmailFromText(chunks.join('\n'));
+    }
+
+    function getCustomerEmailFromContactInfo() {
+        const contactInfoEmail = findEmailInContactInfoRoots();
+
+        if (contactInfoEmail) {
+            return contactInfoEmail;
+        }
+
+        const fallbackEmail = findEmailInFreshdeskTicketText();
+
+        if (fallbackEmail) {
+            return fallbackEmail;
+        }
+
+        console.log('[CMS Search] Contact info email not found. Checked break-all nodes, mailto links, contact roots, shadow DOM, and visible ticket text.');
 
         return '';
     }
@@ -1679,7 +1840,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             const email = getCustomerEmailFromContactInfo();
 
             if (!email) {
-                alert('No pude encontrar el email en Contact info. Abre Contact info y vuelve a intentar.');
+                alert('No pude encontrar el email del cliente. Abre Contact info o copia el email visible en el ticket y vuelve a intentar.');
                 return;
             }
 
