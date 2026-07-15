@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.3
+// @version      2.4
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
@@ -1847,7 +1847,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 (function () {
     'use strict';
 
-    const CANCELLATION_REASON = 'User did not use the service and requested a refund and a cancellation';
+    const LEGACY_CANCELLATION_REASON = 'User did not use the service and requested a refund and a cancellation';
 
     let shouldFillReason = false;
     let fillAttempts = 0;
@@ -1869,17 +1869,47 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
     }
 
     function isCancelButton(element) {
-        const button = element.closest('button');
+        const button = element?.closest?.('button');
 
         if (!button || !isVisible(button)) return false;
 
         const text = (button.innerText || button.textContent || '').trim().toLowerCase();
 
-        return (
+        const isLegacyCancelButton = (
             text === 'cancel' &&
             button.className.includes('MuiButton') &&
             button.className.includes('Error')
         );
+
+        return isLegacyCancelButton || text === 'initiate cancellation';
+    }
+
+    function getFreshdeskTicketURL() {
+        const liveValue = String(
+            document.getElementById('refund-freshdesk')?.value || ''
+        ).trim();
+
+        if (/^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(liveValue)) {
+            return liveValue;
+        }
+
+        try {
+            const storedValue = String(GM_getValue('Freshdesk ID', '') || '').trim();
+
+            return /^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(storedValue)
+                ? storedValue
+                : '';
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function getCancellationReasonValue() {
+        if (/^\/v5\/customer-support(?:\/|$)/i.test(location.pathname)) {
+            return getFreshdeskTicketURL();
+        }
+
+        return LEGACY_CANCELLATION_REASON;
     }
 
     function setNativeValue(element, value) {
@@ -1890,10 +1920,16 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
         const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
 
+        const previousValue = element.value;
+
         if (descriptor && descriptor.set) {
             descriptor.set.call(element, value);
         } else {
             element.value = value;
+        }
+
+        if (element._valueTracker) {
+            element._valueTracker.setValue(previousValue);
         }
 
         element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1989,6 +2025,18 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
         fillAttempts += 1;
 
+        const reasonValue = getCancellationReasonValue();
+
+        if (!reasonValue) {
+            if (fillAttempts >= maxFillAttempts) {
+                shouldFillReason = false;
+                fillAttempts = 0;
+                console.warn('[ViewLift Cancel Reason] Freshdesk ticket was not available.');
+            }
+
+            return;
+        }
+
         const field = getBestReasonField();
 
         if (!field) {
@@ -2003,19 +2051,19 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
         if (field.isContentEditable) {
             field.focus();
-            field.innerText = CANCELLATION_REASON;
+            field.innerText = reasonValue;
             field.dispatchEvent(new Event('input', { bubbles: true }));
             field.dispatchEvent(new Event('change', { bubbles: true }));
             field.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
         } else {
             field.focus();
-            setNativeValue(field, CANCELLATION_REASON);
+            setNativeValue(field, reasonValue);
         }
 
         shouldFillReason = false;
         fillAttempts = 0;
 
-        console.log('[ViewLift Cancel Reason] Cancellation reason filled');
+        console.log('[ViewLift Cancel Reason] Cancellation reason filled:', reasonValue);
     }
 
     function scheduleFillReason() {
