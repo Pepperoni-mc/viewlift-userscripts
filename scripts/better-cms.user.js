@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.4
+// @version      2.5
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
@@ -2384,7 +2384,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
 /* ============================================================
  * Feature 3: CMS v5 Percentage Refund Workflow
- * Opens Refund > % Refund and prepares the Issue Refund form.
+ * Opens Refund > Percentage and prepares the Issue Refund form.
  * The final Issue Refund button is intentionally not clicked.
  * ============================================================ */
 
@@ -2398,7 +2398,6 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
     const REFUND_PERCENTAGE = '100';
     const REFUND_REASON_VALUE = 'ROTH';
-    const COMMENT_PREFIX = 'Customer wanted a refund: ';
     const WORKFLOW_TIMEOUT_MS = 20000;
 
     let workflowActive = false;
@@ -2444,8 +2443,16 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         internalClick = true;
 
         try {
+            if (typeof window.PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, view: window }));
+                element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, view: window }));
+                element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+            }
             element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
             element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+            if (typeof window.PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+            }
             element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
             element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         } finally {
@@ -2479,13 +2486,23 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         return element.value === value;
     }
 
+    function isPercentageRefundOption(element) {
+        if (!element) return false;
+
+        const item = element.closest?.(
+            '[data-slot="dropdown-menu-item"], [role="menuitem"], [role="option"], [data-radix-collection-item]'
+        );
+        if (!item) return false;
+
+        const text = getText(item).toLowerCase();
+        return text === 'percentage' || text === '% refund' ||
+            text.includes('percentage refund') || text.includes('% refund');
+    }
+
     function getPercentageRefundOption() {
         return Array.from(document.querySelectorAll(
             '[data-slot="dropdown-menu-item"], [role="menuitem"], [role="option"], [data-radix-collection-item]'
-        )).filter(isVisible).find(item => {
-            const text = getText(item).toLowerCase();
-            return text === '% refund' || text.includes('% refund') || text.includes('percentage refund');
-        }) || null;
+        )).filter(isVisible).find(isPercentageRefundOption) || null;
     }
 
     function getIssueRefundDialog() {
@@ -2531,20 +2548,24 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         return options.find(option => {
             const value = cleanText(option.getAttribute('data-value') || '').toUpperCase();
             return value === REFUND_REASON_VALUE || getText(option).toLowerCase().includes('roth');
-        }) || options.find(option => {
-            const text = getText(option).toLowerCase();
-            return text === 'other' || text.includes('other reason');
         }) || null;
     }
 
-    function getFreshdeskURL() {
+    function extractFreshdeskTicketId(value) {
+        const text = cleanText(value);
+        const urlMatch = text.match(/viewlift\.freshdesk\.com\/(?:a\/)?tickets\/(\d+)/i);
+        if (urlMatch) return urlMatch[1];
+        return /^\d+$/.test(text) ? text : '';
+    }
+
+    function getFreshdeskTicketId() {
         const liveValue = cleanText(document.getElementById('refund-freshdesk')?.value || '');
-        if (/^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(liveValue)) return liveValue;
+        const liveTicketId = extractFreshdeskTicketId(liveValue);
+        if (liveTicketId) return liveTicketId;
 
         try {
             const storedValue = cleanText(GM_getValue('Freshdesk ID', ''));
-            return /^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(storedValue)
-                ? storedValue : '';
+            return extractFreshdeskTicketId(storedValue);
         } catch (error) {
             return '';
         }
@@ -2567,7 +2588,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         if (!percentageOptionClicked) {
             const option = getPercentageRefundOption();
             if (option) {
-                percentageOptionClicked = realClick(option, '[Better CMS Refund] % Refund selected.');
+                percentageOptionClicked = realClick(option, '[Better CMS Refund] Percentage selected.');
                 scheduleRun(150);
                 return;
             }
@@ -2596,9 +2617,9 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
             const textarea = dialog.querySelector(
                 'textarea[placeholder*="more details" i], textarea[placeholder*="refund" i], textarea'
             );
-            const ticket = getFreshdeskURL();
-            if (textarea && ticket) {
-                commentsFilled = setControlledValue(textarea, COMMENT_PREFIX + ticket);
+            const ticketId = getFreshdeskTicketId();
+            if (textarea && ticketId) {
+                commentsFilled = setControlledValue(textarea, ticketId);
             }
         }
 
@@ -2629,10 +2650,10 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         scheduleRun(150);
     }
 
-    function startWorkflow() {
+    function startWorkflow(percentageAlreadySelected = false) {
         workflowActive = true;
         workflowStartedAt = Date.now();
-        percentageOptionClicked = false;
+        percentageOptionClicked = percentageAlreadySelected;
         percentageFilled = false;
         reasonSelected = false;
         commentsFilled = false;
@@ -2642,7 +2663,16 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
     }
 
     document.addEventListener('click', function (event) {
-        if (!internalClick && isRefundTrigger(event.target)) startWorkflow();
+        if (internalClick) return;
+
+        if (isRefundTrigger(event.target)) {
+            startWorkflow(false);
+            return;
+        }
+
+        if (isPercentageRefundOption(event.target)) {
+            startWorkflow(true);
+        }
     }, true);
 
     const observer = new MutationObserver(function () {
