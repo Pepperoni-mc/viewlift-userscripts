@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.9
+// @version      3.11
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
 // @match        https://viewlift.freshdesk.com/*
@@ -1551,7 +1551,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 (function () {
     'use strict';
 
-    const CMS_USERS_URL = 'https://cms.viewlift.com/users';
+    const CMS_USERS_URL = 'https://cms.viewlift.com/v5/customer-support';
     const BUTTON_ID = 'viewlift-open-cms-header-button';
 
     function isFreshdeskPage() {
@@ -1560,7 +1560,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function isCMSUsersPage() {
         return location.hostname === 'cms.viewlift.com' &&
-            location.pathname.startsWith('/users');
+            /^\/v5\/customer-support(?:\/|$)/i.test(location.pathname);
     }
 
     function cleanText(value) {
@@ -1912,7 +1912,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function getSearchUserInput() {
-        const exact = document.querySelector('input[placeholder="Search user"]');
+        const exact = document.querySelector(
+            'input[placeholder="Search"], input[placeholder="Search user"]'
+        );
 
         if (exact && isVisible(exact)) {
             return exact;
