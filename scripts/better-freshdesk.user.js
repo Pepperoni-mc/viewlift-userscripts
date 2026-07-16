@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.15
+// @version      3.16
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -10,7 +10,7 @@
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_setClipboard
 // ==/UserScript==
 
 /* ============================================================
@@ -200,7 +200,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function isGreetingLine(text) {
-    return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
+    return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
   }
 
   function normalizeGreetingSpacing(editor) {
@@ -490,6 +490,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   const STYLE_ID = 'better-freshdesk-requester-email-style';
   const EMAIL_BADGE_ID = 'better-freshdesk-requester-email';
+  const COPY_FEEDBACK_ID = 'better-freshdesk-copy-feedback';
   const TICKET_PATH_PATTERN = /\/a\/tickets\/(\d+)/i;
   const CUSTOMER_EMAIL_BLOCKLIST = new Set([
     'support@livgolfplus.com',
@@ -542,12 +543,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         overflow: hidden !important;
         text-overflow: ellipsis !important;
         vertical-align: middle !important;
+        cursor: copy !important;
+        user-select: text !important;
       }
 
-      #${EMAIL_BADGE_ID}::before {
-        content: '•' !important;
-        margin-right: 7px !important;
-        color: #94a3b8 !important;
+      #${EMAIL_BADGE_ID}[data-copied="yes"] {
+        color: #15803d !important;
+      }
+
+      #${COPY_FEEDBACK_ID} {
+        display: inline-flex !important;
+        margin-left: 6px !important;
+        color: #15803d !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        line-height: 1.35 !important;
+        white-space: nowrap !important;
+        vertical-align: middle !important;
       }
     `;
 
@@ -691,6 +703,90 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.querySelectorAll('#' + EMAIL_BADGE_ID).forEach(function (badge) {
       badge.remove();
     });
+
+    document.querySelectorAll('#' + COPY_FEEDBACK_ID).forEach(function (feedback) {
+      feedback.remove();
+    });
+  }
+
+  function fallbackCopyToClipboard(text) {
+    const textarea = document.createElement('textarea');
+
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    let copied = false;
+
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      copied = false;
+    }
+
+    textarea.remove();
+    return copied;
+  }
+
+  function showCopiedFeedback(badge) {
+    badge.setAttribute('title', 'Copied to clipboard');
+    badge.setAttribute('data-copied', 'yes');
+
+    document.querySelectorAll('#' + COPY_FEEDBACK_ID).forEach(function (feedback) {
+      feedback.remove();
+    });
+
+    const feedback = document.createElement('span');
+    feedback.id = COPY_FEEDBACK_ID;
+    feedback.textContent = 'Copied';
+    feedback.setAttribute('role', 'status');
+    badge.insertAdjacentElement('afterend', feedback);
+
+    window.setTimeout(function () {
+      if (!badge.isConnected) return;
+
+      badge.setAttribute('title', 'Click to copy requester email');
+      badge.removeAttribute('data-copied');
+      feedback.remove();
+    }, 1200);
+  }
+
+  function copyEmailToClipboard(email, badge) {
+    if (!email) return;
+
+    if (typeof GM_setClipboard === 'function') {
+      try {
+        GM_setClipboard(email, 'text');
+        showCopiedFeedback(badge);
+        return;
+      } catch (error) {
+        // Continue with the browser clipboard fallbacks.
+      }
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(email)
+        .then(function () {
+          showCopiedFeedback(badge);
+        })
+        .catch(function () {
+          if (fallbackCopyToClipboard(email)) {
+            showCopiedFeedback(badge);
+          }
+        });
+
+      return;
+    }
+
+    if (fallbackCopyToClipboard(email)) {
+      showCopiedFeedback(badge);
+    }
   }
 
   function renderRequesterEmail() {
@@ -715,8 +811,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (!badge) {
       badge = document.createElement('span');
       badge.id = EMAIL_BADGE_ID;
-      badge.setAttribute('title', 'Requester email');
+      badge.setAttribute('title', 'Click to copy requester email');
       badge.setAttribute('aria-label', 'Requester email: ' + email);
+
+      badge.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        copyEmailToClipboard(badge.textContent, badge);
+      });
     }
 
     badge.textContent = email;
@@ -1109,7 +1211,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function splitQuotedThread(text) {
         const quotePatterns = [
             /^On .+ wrote:\s*$/im,
-            /^El .+ escribió:\s*$/im,
+            /^El .+ escribiÃ³:\s*$/im,
             /^From:\s.+$/im,
             /^De:\s.+$/im,
             /^-----Original Message-----/im,
@@ -1193,7 +1295,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const firstLine = normalizeText(lines[firstIndex]);
         const secondLine = normalizeText(lines[secondIndex]);
 
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
 
         if (firstLine === secondLine && greetingRegex.test(firstLine)) {
             lines.splice(secondIndex, 1);
@@ -1204,14 +1306,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function normalizeGreetingSpacingInText(text) {
         return text.replace(
-            /^((?:hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
+            /^((?:hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
             '$1\n\n'
         );
     }
 
     function removeRepeatedTopGreeting(text) {
         const lines = text.split('\n');
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
 
         let firstGreetingIndex = -1;
         let firstGreetingText = '';
@@ -1327,7 +1429,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function isGreetingParagraph(text) {
-        return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
+        return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
             String(text || '').replace(/\s+/g, ' ').trim()
         );
     }
