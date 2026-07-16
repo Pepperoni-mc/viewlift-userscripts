@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.5
+// @version      2.6
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
