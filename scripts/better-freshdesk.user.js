@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.12
+// @version      3.14
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, and requester email in the ticket header.
+// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -587,6 +587,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function getRequesterEmail() {
     const candidates = new Map();
 
+    if (typeof window.__betterFreshdeskGetCustomerEmail === 'function') {
+      addEmailCandidate(candidates, window.__betterFreshdeskGetCustomerEmail(), 180);
+    }
+
     document.querySelectorAll('a[href^="mailto:" i]').forEach(function (link) {
       const href = link.getAttribute('href') || '';
       const email = decodeURIComponent(href.replace(/^mailto:/i, '').split('?')[0]);
@@ -643,6 +647,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function getHeaderTicketIdElement(ticketId) {
+    const breadcrumbId = document.querySelector('[data-test-id="breadcrumb-item"]');
+
+    if (
+      breadcrumbId &&
+      cleanText(breadcrumbId.textContent) === ticketId &&
+      !breadcrumbId.closest('#' + EMAIL_BADGE_ID)
+    ) {
+      return breadcrumbId;
+    }
+
     const ticketHrefPattern = new RegExp('/a/tickets/' + ticketId + '(?:[/?#]|$)', 'i');
     const exactMatches = Array.from(document.querySelectorAll('a, button, span, div, p'))
       .filter(function (element) {
@@ -738,6 +752,122 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     });
 
     setInterval(renderRequesterEmail, 1500);
+  }
+
+  init();
+})();
+
+/* ============================================================
+ * Feature 6: Freshdesk Header Clutter Removal
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+  const STYLE_ID = 'better-freshdesk-header-cleanup-style';
+
+  const removalRules = [
+    {
+      selector: '[data-test-id="freddy-copilot-trigger"]',
+      getTarget: function (element) {
+        return element.closest('.position--relative.ml-16.mr-16') ||
+          element.closest('.position--relative') ||
+          element;
+      }
+    },
+    {
+      selector: 'marketplace-viewer',
+      getTarget: function (element) {
+        return element.closest('.header-primary__user .ml-16') ||
+          element.closest('.ember-view') ||
+          element;
+      }
+    },
+    {
+      selector: '[data-test-id="help-and-support"]',
+      getTarget: function (element) {
+        return element.closest('.global-help-and-support') ||
+          element.closest('.ember-basic-dropdown') ||
+          element;
+      }
+    },
+    {
+      selector: '#irisDropdown, [data-test-dropdown-link="irisDropdown"]',
+      getTarget: function (element) {
+        return element.closest('div.global-notification') ||
+          element.closest('.ember-basic-dropdown') ||
+          element;
+      }
+    },
+    {
+      selector: '[data-test-id="trial-plan-button"]',
+      getTarget: function (element) {
+        return element.closest('.ml-16.element-inline') || element;
+      }
+    },
+    {
+      selector: '[data-testid="omnibar-trigger-button"], #omnibar-trigger-button',
+      getTarget: function (element) {
+        return element.closest('.trigger-button-container') || element;
+      }
+    }
+  ];
+
+  function addStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      [data-test-id="freddy-copilot-trigger"],
+      marketplace-viewer,
+      .header-primary__user .global-help-and-support,
+      .header-primary__user div.global-notification,
+      [data-test-id="trial-plan-button"],
+      .trigger-button-container:has([data-testid="omnibar-trigger-button"]),
+      .trigger-button-container:has(#omnibar-trigger-button) {
+        display: none !important;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  function removeHeaderClutter() {
+    removalRules.forEach(function (rule) {
+      document.querySelectorAll(rule.selector).forEach(function (element) {
+        const target = rule.getTarget(element);
+
+        if (target && target !== document.body && target !== document.documentElement) {
+          target.remove();
+        }
+      });
+    });
+  }
+
+  function init() {
+    if (!document.body) {
+      setTimeout(init, 200);
+      return;
+    }
+
+    addStyles();
+    removeHeaderClutter();
+
+    let timer = null;
+    const observer = new MutationObserver(function () {
+      clearTimeout(timer);
+      timer = setTimeout(removeHeaderClutter, 60);
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    setInterval(removeHeaderClutter, 2000);
   }
 
   init();
@@ -2281,6 +2411,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             subtree: true
         });
     }
+
+    window.__betterFreshdeskGetCustomerEmail = getCustomerEmailFromContactInfo;
 
 })();
 
