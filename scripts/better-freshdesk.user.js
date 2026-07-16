@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.11
+// @version      3.12
 // @author       Happy
-// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, and highlighted Status placement.
+// @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, and requester email in the ticket header.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
@@ -200,7 +200,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function isGreetingLine(text) {
-    return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
+    return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
   }
 
   function normalizeGreetingSpacing(editor) {
@@ -480,6 +480,270 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 }
 
 /* ============================================================
+ * Feature 5: Requester Email in Ticket Header
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+  const STYLE_ID = 'better-freshdesk-requester-email-style';
+  const EMAIL_BADGE_ID = 'better-freshdesk-requester-email';
+  const TICKET_PATH_PATTERN = /\/a\/tickets\/(\d+)/i;
+  const CUSTOMER_EMAIL_BLOCKLIST = new Set([
+    'support@livgolfplus.com',
+    'sc-appsupport@spacecityhn.com',
+    'customersupport@altitudeplus.com',
+    'customer.support@altitudeplus.com',
+    'support@altitudeplus.com',
+    'noreply@viewlift.com',
+    'no-reply@viewlift.com'
+  ]);
+
+  function cleanText(value) {
+    return String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function isVisible(element) {
+    if (!element || element.nodeType !== 1) return false;
+
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.opacity !== '0'
+    );
+  }
+
+  function addStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${EMAIL_BADGE_ID} {
+        display: inline-flex !important;
+        align-items: center !important;
+        max-width: min(360px, 42vw) !important;
+        margin-left: 10px !important;
+        color: #475569 !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        line-height: 1.35 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        vertical-align: middle !important;
+      }
+
+      #${EMAIL_BADGE_ID}::before {
+        content: 'â€¢' !important;
+        margin-right: 7px !important;
+        color: #94a3b8 !important;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  function getTicketId() {
+    const match = location.pathname.match(TICKET_PATH_PATTERN);
+    return match ? match[1] : '';
+  }
+
+  function extractEmails(value) {
+    return String(value || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  }
+
+  function isCustomerEmail(email) {
+    const normalized = cleanText(email).toLowerCase();
+
+    return Boolean(
+      normalized &&
+      !CUSTOMER_EMAIL_BLOCKLIST.has(normalized) &&
+      !/^(noreply|no-reply|donotreply|do-not-reply)@/i.test(normalized)
+    );
+  }
+
+  function addEmailCandidate(candidates, email, score) {
+    const normalized = cleanText(email).toLowerCase();
+
+    if (!isCustomerEmail(normalized)) return;
+
+    const existing = candidates.get(normalized);
+    if (!existing || score > existing.score) {
+      candidates.set(normalized, { email: normalized, score });
+    }
+  }
+
+  function getRequesterEmail() {
+    const candidates = new Map();
+
+    document.querySelectorAll('a[href^="mailto:" i]').forEach(function (link) {
+      const href = link.getAttribute('href') || '';
+      const email = decodeURIComponent(href.replace(/^mailto:/i, '').split('?')[0]);
+      extractEmails(email).forEach(function (match) {
+        addEmailCandidate(candidates, match, 120);
+      });
+    });
+
+    const prioritySelector = [
+      '[data-test-id*="email" i]',
+      '[data-testid*="email" i]',
+      '[class*="email" i]',
+      '[class*="contact" i]'
+    ].join(',');
+
+    document.querySelectorAll(prioritySelector).forEach(function (element) {
+      if (element.closest('#' + EMAIL_BADGE_ID)) return;
+
+      const attributes = [
+        element.getAttribute('data-test-id'),
+        element.getAttribute('data-testid'),
+        element.className
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      const score = /email/.test(attributes) ? 105 : 90;
+      extractEmails(element.textContent).forEach(function (match) {
+        addEmailCandidate(candidates, match, score);
+      });
+    });
+
+    const lines = String(document.body && document.body.innerText || '')
+      .split(/\r?\n/)
+      .map(cleanText)
+      .filter(Boolean);
+
+    lines.forEach(function (line) {
+      const emails = extractEmails(line);
+      if (!emails.length) return;
+
+      const isContactLine = /^(to|from|email|e-mail)\s*:/i.test(line);
+      const score = isContactLine ? 100 : 45;
+
+      emails.forEach(function (match) {
+        addEmailCandidate(candidates, match, score);
+      });
+    });
+
+    const best = Array.from(candidates.values())
+      .sort(function (left, right) {
+        return right.score - left.score;
+      })[0];
+
+    return best ? best.email : '';
+  }
+
+  function getHeaderTicketIdElement(ticketId) {
+    const ticketHrefPattern = new RegExp('/a/tickets/' + ticketId + '(?:[/?#]|$)', 'i');
+    const exactMatches = Array.from(document.querySelectorAll('a, button, span, div, p'))
+      .filter(function (element) {
+        if (!isVisible(element)) return false;
+        if (element.closest('#' + EMAIL_BADGE_ID)) return false;
+        return cleanText(element.textContent) === ticketId;
+      });
+
+    const ranked = exactMatches.map(function (element) {
+      const href = element.getAttribute('href') || '';
+      let score = 0;
+
+      if (element.matches('a')) score += 50;
+      if (ticketHrefPattern.test(href)) score += 200;
+      if (element.parentElement && element.parentElement.matches('a')) score += 160;
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 180 && rect.height < 50) score += 20;
+
+      return { element, score };
+    }).sort(function (left, right) {
+      return right.score - left.score;
+    });
+
+    if (!ranked.length) return null;
+
+    const best = ranked[0].element;
+    return best.matches('a') ? best : best.closest('a') || best;
+  }
+
+  function removeEmailBadge() {
+    document.querySelectorAll('#' + EMAIL_BADGE_ID).forEach(function (badge) {
+      badge.remove();
+    });
+  }
+
+  function renderRequesterEmail() {
+    const ticketId = getTicketId();
+
+    if (!ticketId) {
+      removeEmailBadge();
+      return;
+    }
+
+    const ticketIdElement = getHeaderTicketIdElement(ticketId);
+    if (!ticketIdElement) return;
+
+    const email = getRequesterEmail();
+    if (!email) {
+      removeEmailBadge();
+      return;
+    }
+
+    let badge = document.getElementById(EMAIL_BADGE_ID);
+
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.id = EMAIL_BADGE_ID;
+      badge.setAttribute('title', 'Requester email');
+      badge.setAttribute('aria-label', 'Requester email: ' + email);
+    }
+
+    badge.textContent = email;
+    badge.setAttribute('aria-label', 'Requester email: ' + email);
+
+    if (badge.parentElement !== ticketIdElement.parentElement || badge.previousElementSibling !== ticketIdElement) {
+      badge.remove();
+      ticketIdElement.insertAdjacentElement('afterend', badge);
+    }
+  }
+
+  function init() {
+    if (!document.body) {
+      setTimeout(init, 300);
+      return;
+    }
+
+    addStyles();
+
+    let timer = null;
+    const scheduleRender = function () {
+      clearTimeout(timer);
+      timer = setTimeout(renderRequesterEmail, 180);
+    };
+
+    scheduleRender();
+
+    const observer = new MutationObserver(scheduleRender);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+
+    setInterval(renderRequesterEmail, 1500);
+  }
+
+  init();
+})();
+
+/* ============================================================
  * Feature 2: Freshdesk Reply Template Cleanup and Apply Duplicate Cleanup
  * ============================================================ */
 
@@ -715,7 +979,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function splitQuotedThread(text) {
         const quotePatterns = [
             /^On .+ wrote:\s*$/im,
-            /^El .+ escribió:\s*$/im,
+            /^El .+ escribiÃ³:\s*$/im,
             /^From:\s.+$/im,
             /^De:\s.+$/im,
             /^-----Original Message-----/im,
@@ -799,7 +1063,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const firstLine = normalizeText(lines[firstIndex]);
         const secondLine = normalizeText(lines[secondIndex]);
 
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
 
         if (firstLine === secondLine && greetingRegex.test(firstLine)) {
             lines.splice(secondIndex, 1);
@@ -810,14 +1074,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function normalizeGreetingSpacingInText(text) {
         return text.replace(
-            /^((?:hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
+            /^((?:hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
             '$1\n\n'
         );
     }
 
     function removeRepeatedTopGreeting(text) {
         const lines = text.split('\n');
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
 
         let firstGreetingIndex = -1;
         let firstGreetingText = '';
@@ -933,7 +1197,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function isGreetingParagraph(text) {
-        return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
+        return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
             String(text || '').replace(/\s+/g, ' ').trim()
         );
     }
