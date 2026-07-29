@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.6
+// @version      2.7
 // @author       Happy, Potato
 // @description  ViewLift CMS tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, and real snapshot capture.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
+// @match        https://cms-gcp.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
+// @match        https://cms.monumentalsportsnetwork.com/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js
 // @run-at       document-idle
@@ -66,9 +68,9 @@
     'processor'
   ];
 
-  const CMS_HOST_RE = /^cms(?:-qcp)?\.viewlift\.com$/i;
+  const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
   const CMS_USER_ID_RE = /\/(?:users\/(?:search\/)?|v5\/customer-support\/user\/)([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const CMS_USER_URL_RE = /https:\/\/cms(?:-qcp)?\.viewlift\.com\/(?:users\/(?:search\/)?|v5\/customer-support\/user\/)(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
+  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/(?:users\/(?:search\/)?|v5\/customer-support\/user\/)(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 
   const PAYMENT_PATTERNS = [
@@ -84,8 +86,8 @@
 
   const CURRENCY_CODE_RE_SOURCE = '(?:USD|ZAR|EUR|GBP|CAD|AUD|NZD|BRL|MXN|ARS|CLP|COP|PEN|INR|JPY|KRW|SGD|HKD|CHF|SEK|NOK|DKK|PLN)';
   const CURRENCY_CODE_RE = new RegExp('\\b' + CURRENCY_CODE_RE_SOURCE + '\\b', 'i');
-  const AMOUNT_RE = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|€|£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'i');
-  const AMOUNT_RE_GLOBAL = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|€|£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'ig');
+  const AMOUNT_RE = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|â‚¬|Â£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'i');
+  const AMOUNT_RE_GLOBAL = new RegExp('(?:' + CURRENCY_CODE_RE_SOURCE + '|US\\$|\\$|â‚¬|Â£|R)\\s*\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})?|\\d{1,5}(?:,\\d{3})*(?:\\.\\d{2})\\s*' + CURRENCY_CODE_RE_SOURCE, 'ig');
   const BARE_AMOUNT_RE = /^\d{1,5}(?:,\d{3})*(?:\.\d{2})$/;
 
   let lastRefundToolUrl = location.href;
@@ -235,7 +237,7 @@
     const id = getCMSUserIdFromURL(url);
     if (!id) return cleanText(url);
 
-    const hostMatch = String(url || '').match(/^https:\/\/(cms(?:-qcp)?\.viewlift\.com)/i);
+    const hostMatch = String(url || '').match(/^https:\/\/((?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com))/i);
     const host = hostMatch ? hostMatch[1].toLowerCase() : location.hostname.toLowerCase();
 
     return `https://${host}/v5/customer-support/user/${id}?tab=overview`;
@@ -395,7 +397,7 @@
       const id = getCMSUserIdFromURL(location.href);
       if (id) return normalizeCMSUrl(location.href);
 
-      if (/^https:\/\/cms(?:-qcp)?\.viewlift\.com\/(?:users\/search|v5\/customer-support\/user)\//i.test(location.href)) {
+      if (/^https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/(?:users\/search|v5\/customer-support\/user)\//i.test(location.href)) {
         return normalizeCMSUrl(location.href);
       }
     }
@@ -435,8 +437,8 @@
 
     if (/US\$/i.test(combined)) return 'USD';
     if (/\$/.test(combined)) return 'USD';
-    if (/€/.test(combined)) return 'EUR';
-    if (/£/.test(combined)) return 'GBP';
+    if (/â‚¬/.test(combined)) return 'EUR';
+    if (/Â£/.test(combined)) return 'GBP';
     if (/(^|\s)R\s*\d/i.test(combined)) return 'ZAR';
 
     return '';
@@ -1842,7 +1844,7 @@
  * ============================================================ */
 
 
-if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
+if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
 
 (function () {
     'use strict';
@@ -2107,7 +2109,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
  * by the Refund Capture Tool.
  * ============================================================ */
 
-if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
+if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
 
 (function () {
     'use strict';
@@ -2388,7 +2390,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
  * The final Issue Refund button is intentionally not clicked.
  * ============================================================ */
 
-if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
+if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
 
 (function () {
     'use strict';
@@ -2704,7 +2706,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 (function () {
     'use strict';
 
-    if (!/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
+    if (!/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
         return;
     }
 
@@ -2729,7 +2731,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
  * ============================================================ */
 
 
-if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
+if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
 
 (function () {
     "use strict";
@@ -2929,7 +2931,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
             button = document.createElement("button");
             button.id = BUTTON_ID;
             button.type = "button";
-            button.textContent = "📸";
+            button.textContent = "ðŸ“¸";
             button.title = "Copy page snapshot";
             button.setAttribute("aria-label", "Copy page snapshot");
             button.addEventListener("click", captureRealTabSnapshot);
@@ -3181,7 +3183,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
         const button = document.getElementById(BUTTON_ID);
         if (!button) return;
 
-        const originalText = "📸";
+        const originalText = "ðŸ“¸";
         let restoreHiddenElements = null;
         let stream;
 
@@ -3247,7 +3249,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
             button.disabled = false;
             button.style.opacity = "1";
-            button.textContent = "✅";
+            button.textContent = "âœ…";
 
             setTimeout(() => {
                 button.textContent = originalText;
@@ -3266,7 +3268,7 @@ if (/^cms(?:-qcp)?\.viewlift\.com$/i.test(location.hostname)) {
 
             button.disabled = false;
             button.style.opacity = "1";
-            button.textContent = "⚠️";
+            button.textContent = "âš ï¸";
 
             alert(
                 "Snapshot failed.\n\n" +
