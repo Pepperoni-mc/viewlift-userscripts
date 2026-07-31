@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.27
+// @version      3.28
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -923,39 +923,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function updateStats() {
     const cached = getCachedProgress();
-    if (cached) {
-      render(cached.today + ' / ' + cached.goal + ' goal', cached.today >= cached.goal ? 'goal' : '', 'Ticket Tracker local: ' + cached.today + ' de ' + cached.goal);
+    if (!cached) {
+      render('Tracker: —', '', 'Instala/activa SCHN+ Case Tracker 1.5; el contador aparecerá al registrar el próximo ticket.');
       return;
     }
-    const key = getStoredTrackerKey();
-    if (!key) {
-      render('Tracker: â€”', 'error', 'Configura la API key desde el menÃº de Tampermonkey');
-      return;
-    }
-    if (typeof GM_xmlhttpRequest !== 'function') {
-      render('Tracker: â€”', 'error', 'GM_xmlhttpRequest no estÃ¡ disponible');
-      return;
-    }
-    GM_xmlhttpRequest({
-      method: 'GET',
-      url: API_URL,
-      headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' },
-      onload: function (response) {
-        try {
-          if (response.status < 200 || response.status >= 300) {
-            render('Tracker: HTTP ' + response.status, 'error', 'Ticket Tracker respondió HTTP ' + response.status + '. Revisa la API key.');
-            return;
-          }
-          const data = JSON.parse(response.responseText || '{}');
-          const today = Number(data.today_count ?? data.today ?? data.count ?? 0);
-          const goal = Number(data.daily_goal ?? data.goal ?? 0);
-          render(today + ' / ' + goal + ' goal', goal > 0 && today >= goal ? 'goal' : '', 'Ticket Tracker: ' + today + ' de ' + goal + '. Click para abrir.');
-        } catch (error) {
-          render('Tracker: error', 'error', 'No se pudo leer Ticket Tracker');
-        }
-      },
-      onerror: function () { render('Tracker: error', 'error', 'No se pudo conectar con Ticket Tracker'); }
-    });
+    render(cached.today + ' / ' + cached.goal + ' goal', cached.today >= cached.goal ? 'goal' : '', 'Ticket Tracker local: ' + cached.today + ' de ' + cached.goal);
   }
 
   function init() {
