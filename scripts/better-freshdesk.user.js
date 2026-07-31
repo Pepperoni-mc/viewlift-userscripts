@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26
+// @version      3.27
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -870,7 +870,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Set Tracker API Key', setTrackerApiKey);
-    GM_registerMenuCommand('Set API Key (SCHN+ Tracker)', setTrackerApiKey);
   }
 
   function addStyles() {
