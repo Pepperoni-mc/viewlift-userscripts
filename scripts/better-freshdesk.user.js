@@ -760,7 +760,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
-    // Keep the high-frequency order predictable: brand, CMS, customer, next, agent, refund.
+    // Keep the high-frequency order predictable: client, CMS, email, agent, next, refund.
     if (cms) toolbar.appendChild(cms);
     toolbar.appendChild(email);
 
@@ -777,6 +777,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     if (agent) toolbar.appendChild(agent);
+    if (next) toolbar.appendChild(next);
 
     let launcher = document.getElementById(REFUND_LAUNCHER_ID);
     if (!launcher) {
@@ -899,7 +900,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' },
       onload: function (response) {
         try {
-          if (response.status < 200 || response.status >= 300) throw new Error('HTTP ' + response.status);
+          if (response.status < 200 || response.status >= 300) {
+            render('Tracker: HTTP ' + response.status, 'error', 'Ticket Tracker respondió HTTP ' + response.status + '. Revisa la API key.');
+            return;
+          }
           const data = JSON.parse(response.responseText || '{}');
           const today = Number(data.today_count ?? data.today ?? data.count ?? 0);
           const goal = Number(data.daily_goal ?? data.goal ?? 0);
