@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.23
+// @version      3.24
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -827,18 +827,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function clean(value) { return String(value == null ? '' : value).trim(); }
 
+  // Use the same legacy key name as SCHN+ Case Tracker when values are shared.
+  function getStoredTrackerKey() {
+    return clean(GM_getValue(KEY_NAME, '')) || clean(GM_getValue('api_key', ''));
+  }
+
   function setTrackerApiKey() {
-    const current = clean(GM_getValue(KEY_NAME, ''));
+    const current = getStoredTrackerKey();
     const value = window.prompt('Tracker API key (se guarda solo en Tampermonkey):', current);
     if (value === null) return;
     const next = clean(value);
-    if (next) GM_setValue(KEY_NAME, next);
-    else GM_deleteValue(KEY_NAME);
+    if (next) {
+      GM_setValue(KEY_NAME, next);
+      GM_setValue('api_key', next);
+    } else {
+      GM_deleteValue(KEY_NAME);
+      GM_deleteValue('api_key');
+    }
     updateStats();
   }
 
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Set Tracker API Key', setTrackerApiKey);
+    GM_registerMenuCommand('Set API Key (SCHN+ Tracker)', setTrackerApiKey);
   }
 
   function addStyles() {
@@ -870,7 +881,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       badge.id = BADGE_ID;
       badge.type = 'button';
       badge.title = 'Open Ticket Tracker';
-      badge.addEventListener('click', () => window.open('http://135.181.37.72:3001/tracker', '_blank'));
+      badge.addEventListener('click', () => {
+        if (!getStoredTrackerKey()) {
+          setTrackerApiKey();
+          return;
+        }
+        window.open('http://135.181.37.72:3001/tracker', '_blank');
+      });
     }
     if (badge.parentElement !== slot) slot.appendChild(badge);
     return badge;
@@ -885,7 +902,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function updateStats() {
-    const key = clean(GM_getValue(KEY_NAME, ''));
+    const key = getStoredTrackerKey();
     if (!key) {
       render('Tracker: â€”', 'error', 'Configura la API key desde el menÃº de Tampermonkey');
       return;
