@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.7
+// @version      2.8
 // @author       Happy, Potato
-// @description  ViewLift CMS tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, and real snapshot capture.
+// @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-gcp.viewlift.com/*
@@ -2101,6 +2101,1161 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 })();
 
 }
+
+/* ============================================================
+ * Feature 9: Freshdesk Set Agent
+ * Source: Better Freshdesk My Agent 1.1
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+    const BUTTON_ID = 'better-freshdesk-my-agent-button';
+    const MENU_ID = 'better-freshdesk-my-agent-menu';
+    const STYLE_ID = 'better-freshdesk-my-agent-style';
+    const TOAST_ID = 'better-freshdesk-my-agent-toast';
+    const STORAGE_KEY = 'betterFreshdeskMyAgentName';
+    const CMS_BUTTON_ID = 'viewlift-open-cms-header-button';
+    const OWNER_VALUE = 'better-cms-set-agent-1.1';
+    const FALLBACK_AGENT_NAMES = [
+        'Adrian Fernandez',
+        'Ankur Prabhakar',
+        'Erick Ramirez',
+        'Esteban Ramirez',
+        'Fan Assist',
+        'Gerald Eduardo Calero Valverde',
+        'rajnish kumar',
+        'Sebastian Rojas Grant',
+        'Vernon Steven Maithand Raude'
+    ];
+
+    let actionInProgress = false;
+    let installTimer = null;
+
+    function isTicketPage() {
+        return /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
+    }
+
+    function cleanAgentText(value) {
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function normalizeAgentName(value) {
+        return cleanAgentText(value).toLowerCase();
+    }
+
+    function isUsableAgentElement(element) {
+        if (!element || !element.isConnected) return false;
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+
+        return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0'
+        );
+    }
+
+    function getSavedAgentName() {
+        try {
+            return cleanAgentText(GM_getValue(STORAGE_KEY, ''));
+        } catch (error) {
+            try {
+                return cleanAgentText(localStorage.getItem(STORAGE_KEY) || '');
+            } catch (storageError) {
+                return '';
+            }
+        }
+    }
+
+    function saveAgentName(agentName) {
+        const cleanedName = cleanAgentText(agentName);
+
+        if (!cleanedName) return false;
+
+        try {
+            GM_setValue(STORAGE_KEY, cleanedName);
+        } catch (error) {
+            try {
+                localStorage.setItem(STORAGE_KEY, cleanedName);
+            } catch (storageError) {
+                console.error('[Set Agent] Could not save the agent name.', storageError);
+                return false;
+            }
+        }
+
+        updateSetAgentButton();
+        return true;
+    }
+
+    function addSetAgentStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            #${BUTTON_ID} {
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                height: 32px !important;
+                margin-right: 6px !important;
+                padding: 0 10px !important;
+                border: 1px solid #475569 !important;
+                border-radius: 6px !important;
+                background: #475569 !important;
+                color: #fff !important;
+                font-size: 12px !important;
+                font-weight: 600 !important;
+                line-height: 30px !important;
+                white-space: nowrap !important;
+                cursor: pointer !important;
+            }
+
+            #${BUTTON_ID}:hover {
+                border-color: #334155 !important;
+                background: #334155 !important;
+            }
+
+            #${BUTTON_ID}[data-configured="no"] {
+                border-color: #b45309 !important;
+                background: #b45309 !important;
+            }
+
+            #${BUTTON_ID}[data-busy="yes"] {
+                opacity: .72 !important;
+                cursor: wait !important;
+            }
+
+            #${MENU_ID} {
+                position: fixed !important;
+                z-index: 2147483646 !important;
+                width: 280px !important;
+                max-height: min(470px, calc(100vh - 24px)) !important;
+                overflow: hidden !important;
+                border: 1px solid #cbd5e1 !important;
+                border-radius: 10px !important;
+                background: #fff !important;
+                color: #0f172a !important;
+                box-shadow: 0 16px 38px rgba(15, 23, 42, .24) !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+            }
+
+            #${MENU_ID} .set-agent-header {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: space-between !important;
+                padding: 12px 14px 9px !important;
+                border-bottom: 1px solid #e2e8f0 !important;
+            }
+
+            #${MENU_ID} .set-agent-title {
+                font-size: 13px !important;
+                font-weight: 700 !important;
+            }
+
+            #${MENU_ID} .set-agent-close {
+                width: 26px !important;
+                height: 26px !important;
+                padding: 0 !important;
+                border: 0 !important;
+                border-radius: 5px !important;
+                background: transparent !important;
+                color: #64748b !important;
+                cursor: pointer !important;
+            }
+
+            #${MENU_ID} .set-agent-help {
+                margin: 0 !important;
+                padding: 9px 14px !important;
+                color: #64748b !important;
+                font-size: 11px !important;
+                line-height: 1.4 !important;
+            }
+
+            #${MENU_ID} .set-agent-options {
+                max-height: 310px !important;
+                overflow-y: auto !important;
+                padding: 4px 8px 8px !important;
+            }
+
+            #${MENU_ID} .set-agent-option {
+                display: block !important;
+                width: 100% !important;
+                padding: 9px 10px !important;
+                border: 0 !important;
+                border-radius: 6px !important;
+                background: transparent !important;
+                color: #1e293b !important;
+                font-size: 12px !important;
+                line-height: 1.35 !important;
+                text-align: left !important;
+                cursor: pointer !important;
+            }
+
+            #${MENU_ID} .set-agent-option:hover,
+            #${MENU_ID} .set-agent-option[data-selected="yes"] {
+                background: #e8f1ff !important;
+                color: #0b5cab !important;
+            }
+
+            #${MENU_ID} .set-agent-custom {
+                display: flex !important;
+                gap: 6px !important;
+                padding: 10px !important;
+                border-top: 1px solid #e2e8f0 !important;
+            }
+
+            #${MENU_ID} .set-agent-custom input {
+                min-width: 0 !important;
+                flex: 1 1 auto !important;
+                height: 32px !important;
+                padding: 0 9px !important;
+                border: 1px solid #cbd5e1 !important;
+                border-radius: 6px !important;
+                color: #0f172a !important;
+                font-size: 12px !important;
+            }
+
+            #${MENU_ID} .set-agent-custom button {
+                height: 32px !important;
+                padding: 0 10px !important;
+                border: 1px solid #0b5cab !important;
+                border-radius: 6px !important;
+                background: #0b5cab !important;
+                color: #fff !important;
+                font-size: 12px !important;
+                font-weight: 600 !important;
+                cursor: pointer !important;
+            }
+
+            #${TOAST_ID} {
+                position: fixed !important;
+                z-index: 2147483647 !important;
+                right: 22px !important;
+                bottom: 22px !important;
+                max-width: 380px !important;
+                padding: 11px 14px !important;
+                border-radius: 8px !important;
+                background: #0f172a !important;
+                color: #fff !important;
+                box-shadow: 0 10px 28px rgba(15, 23, 42, .28) !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+                font-size: 12px !important;
+                font-weight: 600 !important;
+                line-height: 1.4 !important;
+            }
+
+            #${TOAST_ID}[data-type="success"] { background: #166534 !important; }
+            #${TOAST_ID}[data-type="warning"] { background: #92400e !important; }
+            #${TOAST_ID}[data-type="error"] { background: #991b1b !important; }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function showSetAgentToast(message, type = 'success', duration = 2800) {
+        const oldToast = document.getElementById(TOAST_ID);
+
+        if (oldToast) oldToast.remove();
+
+        const toast = document.createElement('div');
+        toast.id = TOAST_ID;
+        toast.textContent = message;
+        toast.setAttribute('data-type', type);
+        toast.setAttribute('role', 'status');
+        document.body.appendChild(toast);
+
+        setTimeout(() => toast.remove(), duration);
+    }
+
+    function updateSetAgentButton() {
+        const button = document.getElementById(BUTTON_ID);
+
+        if (!button || button.getAttribute('data-busy') === 'yes') return;
+
+        const savedAgentName = getSavedAgentName();
+        button.textContent = 'Set Agent';
+        button.setAttribute('data-configured', savedAgentName ? 'yes' : 'no');
+        button.setAttribute(
+            'title',
+            savedAgentName
+                ? `Click to set Agent Name to ${savedAgentName}. Right-click or Shift-click to change it.`
+                : 'Click to choose your Agent Name.'
+        );
+        button.setAttribute(
+            'aria-label',
+            savedAgentName
+                ? `Set Agent Name to ${savedAgentName}`
+                : 'Configure Set Agent'
+        );
+    }
+
+    function setSetAgentBusy(isBusy, label) {
+        const button = document.getElementById(BUTTON_ID);
+
+        if (!button) return;
+
+        if (isBusy) {
+            button.setAttribute('data-busy', 'yes');
+            button.disabled = true;
+            button.textContent = label || 'Working...';
+            return;
+        }
+
+        button.removeAttribute('data-busy');
+        button.disabled = false;
+        updateSetAgentButton();
+    }
+
+    function clickAgentElement(element) {
+        if (!element || !element.isConnected) return false;
+
+        try {
+            element.scrollIntoView({
+                block: 'center',
+                inline: 'nearest'
+            });
+        } catch (error) {
+            // Continue when the element cannot be scrolled.
+        }
+
+        try {
+            element.dispatchEvent(new MouseEvent('mouseover', {
+                bubbles: true,
+                cancelable: true
+            }));
+            element.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                cancelable: true
+            }));
+            element.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                cancelable: true
+            }));
+        } catch (error) {
+            console.warn('[Set Agent] Synthetic mouse events were not available.', error);
+        }
+
+        try {
+            element.click();
+            return true;
+        } catch (error) {
+            console.error('[Set Agent] Native click failed.', error);
+            return false;
+        }
+    }
+
+    function getAgentLabels() {
+        return Array.from(document.querySelectorAll([
+            'label',
+            '[data-test-id*="label" i]',
+            '[class*="label" i]',
+            'span',
+            'p'
+        ].join(','))).filter(element => {
+            if (element.closest(`#${MENU_ID}, #${BUTTON_ID}`)) return false;
+            if (!isUsableAgentElement(element)) return false;
+
+            const text = cleanAgentText(element.textContent).replace(/\s*\*+\s*$/, '');
+
+            return /^agent\s+name$/i.test(text);
+        });
+    }
+
+    function getAgentTriggers(root) {
+        if (!root || !root.querySelectorAll) return [];
+
+        return Array.from(root.querySelectorAll([
+            '.ember-power-select-trigger',
+            '[id^="ember-power-select-trigger-"]',
+            '[role="button"][aria-owns*="ember-basic-dropdown-content"]'
+        ].join(','))).filter(element => {
+            return !element.closest(`#${MENU_ID}`) && isUsableAgentElement(element);
+        });
+    }
+
+    function distanceFromAgentLabel(label, trigger) {
+        const labelRect = label.getBoundingClientRect();
+        const triggerRect = trigger.getBoundingClientRect();
+
+        return (
+            Math.abs(triggerRect.top - labelRect.bottom) +
+            Math.abs(triggerRect.left - labelRect.left) * .2
+        );
+    }
+
+    function findTriggerNearAgentLabel(label) {
+        const labelFor = cleanAgentText(label.getAttribute('for') || '');
+
+        if (labelFor) {
+            const associated = document.getElementById(labelFor);
+
+            if (associated) {
+                const trigger =
+                    (associated.matches('.ember-power-select-trigger') && associated) ||
+                    associated.closest('.ember-power-select-trigger') ||
+                    associated.querySelector('.ember-power-select-trigger');
+
+                if (trigger) return trigger;
+            }
+        }
+
+        let ancestor = label.parentElement;
+
+        for (let depth = 0; ancestor && depth < 7; depth += 1) {
+            const triggers = getAgentTriggers(ancestor);
+
+            if (triggers.length === 1) return triggers[0];
+
+            if (triggers.length > 1) {
+                return triggers
+                    .slice()
+                    .sort((first, second) => {
+                        return (
+                            distanceFromAgentLabel(label, first) -
+                            distanceFromAgentLabel(label, second)
+                        );
+                    })[0];
+            }
+
+            ancestor = ancestor.parentElement;
+        }
+
+        return getAgentTriggers(document)
+            .slice()
+            .sort((first, second) => {
+                return (
+                    distanceFromAgentLabel(label, first) -
+                    distanceFromAgentLabel(label, second)
+                );
+            })[0] || null;
+    }
+
+    function findAgentNameTrigger() {
+        for (const label of getAgentLabels()) {
+            const trigger = findTriggerNearAgentLabel(label);
+
+            if (trigger) return trigger;
+        }
+
+        const knownNames = new Set(FALLBACK_AGENT_NAMES.map(normalizeAgentName));
+        const selectedItems = Array.from(
+            document.querySelectorAll('.ember-power-select-selected-item')
+        );
+
+        for (const selectedItem of selectedItems) {
+            if (!knownNames.has(normalizeAgentName(selectedItem.textContent))) continue;
+
+            const trigger =
+                selectedItem.closest('.ember-power-select-trigger') ||
+                selectedItem.parentElement;
+
+            if (trigger) return trigger;
+        }
+
+        return null;
+    }
+
+    function getAgentOptions(trigger) {
+        if (!trigger) return [];
+
+        const triggerId = cleanAgentText(trigger.id || '');
+        const ownedContentId = cleanAgentText(
+            trigger.getAttribute('aria-owns') ||
+            trigger.getAttribute('aria-controls') ||
+            ''
+        );
+
+        if (triggerId) {
+            const lists = Array.from(
+                document.querySelectorAll('.ember-power-select-options[aria-controls]')
+            ).filter(list => list.getAttribute('aria-controls') === triggerId);
+
+            for (const list of lists) {
+                const options = Array.from(
+                    list.querySelectorAll('.ember-power-select-option, [role="option"]')
+                );
+
+                if (options.length) return options;
+            }
+        }
+
+        if (ownedContentId) {
+            const ownedContent = document.getElementById(ownedContentId);
+
+            if (ownedContent) {
+                const options = Array.from(
+                    ownedContent.querySelectorAll('.ember-power-select-option, [role="option"]')
+                );
+
+                if (options.length) return options;
+            }
+        }
+
+        const dropdowns = Array.from(
+            document.querySelectorAll('.ember-power-select-dropdown')
+        ).filter(isUsableAgentElement);
+
+        if (!dropdowns.length) return [];
+
+        const triggerRect = trigger.getBoundingClientRect();
+        const closestDropdown = dropdowns
+            .slice()
+            .sort((first, second) => {
+                const firstRect = first.getBoundingClientRect();
+                const secondRect = second.getBoundingClientRect();
+                const firstDistance =
+                    Math.abs(firstRect.left - triggerRect.left) +
+                    Math.abs(firstRect.top - triggerRect.bottom);
+                const secondDistance =
+                    Math.abs(secondRect.left - triggerRect.left) +
+                    Math.abs(secondRect.top - triggerRect.bottom);
+
+                return firstDistance - secondDistance;
+            })[0];
+
+        return Array.from(
+            closestDropdown.querySelectorAll('.ember-power-select-option, [role="option"]')
+        );
+    }
+
+    function waitForAgentOptions(trigger, timeout = 3500) {
+        return new Promise(resolve => {
+            const startedAt = Date.now();
+
+            function check() {
+                const options = getAgentOptions(trigger);
+
+                if (options.length || Date.now() - startedAt >= timeout) {
+                    resolve(options);
+                    return;
+                }
+
+                setTimeout(check, 100);
+            }
+
+            check();
+        });
+    }
+
+    async function openAgentOptions() {
+        const trigger = findAgentNameTrigger();
+
+        if (!trigger) {
+            return {
+                trigger: null,
+                options: []
+            };
+        }
+
+        let options = getAgentOptions(trigger);
+
+        if (!options.length) {
+            clickAgentElement(trigger);
+            options = await waitForAgentOptions(trigger);
+        }
+
+        return {
+            trigger: trigger,
+            options: options
+        };
+    }
+
+    function getAgentOptionNames(options) {
+        const names = [];
+        const seen = new Set();
+
+        options.forEach(option => {
+            const name = cleanAgentText(option.textContent);
+            const normalized = normalizeAgentName(name);
+
+            if (!name || name === '--' || !normalized || seen.has(normalized)) return;
+
+            seen.add(normalized);
+            names.push(name);
+        });
+
+        return names;
+    }
+
+    function closeFreshdeskAgentDropdown(trigger) {
+        if (!trigger) return;
+
+        if (
+            trigger.getAttribute('aria-expanded') === 'true' ||
+            getAgentOptions(trigger).length
+        ) {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Escape',
+                code: 'Escape',
+                keyCode: 27,
+                which: 27,
+                bubbles: true,
+                cancelable: true
+            }));
+        }
+    }
+
+    function closeSetAgentMenu() {
+        const menu = document.getElementById(MENU_ID);
+
+        if (menu) menu.remove();
+    }
+
+    function positionSetAgentMenu(menu) {
+        const button = document.getElementById(BUTTON_ID);
+
+        if (!button || !menu) return;
+
+        const buttonRect = button.getBoundingClientRect();
+        const width = 280;
+        const padding = 10;
+        let left = buttonRect.left;
+
+        if (left + width > window.innerWidth - padding) {
+            left = window.innerWidth - width - padding;
+        }
+
+        menu.style.left = `${Math.max(padding, left)}px`;
+        menu.style.top = `${Math.min(
+            buttonRect.bottom + 7,
+            window.innerHeight - menu.offsetHeight - padding
+        )}px`;
+    }
+
+    function showSetAgentMenu(agentNames, message) {
+        closeSetAgentMenu();
+
+        const savedAgentName = getSavedAgentName();
+        const sourceNames = agentNames.length ? agentNames : FALLBACK_AGENT_NAMES;
+        const uniqueNames = [];
+        const seen = new Set();
+
+        sourceNames.forEach(agentName => {
+            const cleanedName = cleanAgentText(agentName);
+            const normalized = normalizeAgentName(cleanedName);
+
+            if (!cleanedName || cleanedName === '--' || seen.has(normalized)) return;
+
+            seen.add(normalized);
+            uniqueNames.push(cleanedName);
+        });
+
+        const menu = document.createElement('div');
+        menu.id = MENU_ID;
+        menu.setAttribute('role', 'dialog');
+        menu.setAttribute('aria-label', 'Configure Set Agent');
+
+        const header = document.createElement('div');
+        header.className = 'set-agent-header';
+
+        const title = document.createElement('div');
+        title.className = 'set-agent-title';
+        title.textContent = 'Choose your Agent Name';
+
+        const closeButton = document.createElement('button');
+        closeButton.className = 'set-agent-close';
+        closeButton.type = 'button';
+        closeButton.textContent = 'X';
+        closeButton.setAttribute('aria-label', 'Close');
+        closeButton.addEventListener('click', closeSetAgentMenu);
+
+        header.appendChild(title);
+        header.appendChild(closeButton);
+        menu.appendChild(header);
+
+        const help = document.createElement('p');
+        help.className = 'set-agent-help';
+        help.textContent = message ||
+            'This selection is saved in Better CMS. Right-click Set Agent to change it later.';
+        menu.appendChild(help);
+
+        const optionsContainer = document.createElement('div');
+        optionsContainer.className = 'set-agent-options';
+
+        uniqueNames.forEach(agentName => {
+            const optionButton = document.createElement('button');
+            optionButton.type = 'button';
+            optionButton.className = 'set-agent-option';
+            optionButton.textContent = agentName;
+            optionButton.setAttribute(
+                'data-selected',
+                normalizeAgentName(agentName) === normalizeAgentName(savedAgentName)
+                    ? 'yes'
+                    : 'no'
+            );
+
+            optionButton.addEventListener('click', () => {
+                if (!saveAgentName(agentName)) {
+                    showSetAgentToast('Could not save the agent name.', 'error');
+                    return;
+                }
+
+                closeSetAgentMenu();
+                showSetAgentToast(`Saved agent: ${agentName}`);
+            });
+
+            optionsContainer.appendChild(optionButton);
+        });
+
+        menu.appendChild(optionsContainer);
+
+        const customRow = document.createElement('div');
+        customRow.className = 'set-agent-custom';
+
+        const customInput = document.createElement('input');
+        customInput.type = 'text';
+        customInput.placeholder = 'Other exact agent name';
+        customInput.value = savedAgentName;
+
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.textContent = 'Save';
+
+        function saveCustomAgentName() {
+            const customName = cleanAgentText(customInput.value);
+
+            if (!customName) {
+                showSetAgentToast('Enter an agent name first.', 'warning');
+                customInput.focus();
+                return;
+            }
+
+            if (!saveAgentName(customName)) {
+                showSetAgentToast('Could not save the agent name.', 'error');
+                return;
+            }
+
+            closeSetAgentMenu();
+            showSetAgentToast(`Saved agent: ${customName}`);
+        }
+
+        saveButton.addEventListener('click', saveCustomAgentName);
+        customInput.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveCustomAgentName();
+            }
+        });
+
+        customRow.appendChild(customInput);
+        customRow.appendChild(saveButton);
+        menu.appendChild(customRow);
+
+        document.body.appendChild(menu);
+        positionSetAgentMenu(menu);
+    }
+
+    async function configureSetAgent() {
+        if (actionInProgress || !isTicketPage()) return;
+
+        actionInProgress = true;
+        setSetAgentBusy(true, 'Loading...');
+        closeSetAgentMenu();
+
+        try {
+            const result = await openAgentOptions();
+            const liveNames = getAgentOptionNames(result.options);
+
+            closeFreshdeskAgentDropdown(result.trigger);
+
+            if (liveNames.length) {
+                showSetAgentMenu(liveNames);
+            } else {
+                showSetAgentMenu(
+                    FALLBACK_AGENT_NAMES,
+                    'Freshdesk did not expose the live list. Choose a known agent or enter the exact name below.'
+                );
+            }
+        } catch (error) {
+            console.error('[Set Agent] Configuration failed.', error);
+            showSetAgentMenu(
+                FALLBACK_AGENT_NAMES,
+                'Freshdesk did not expose the live list. Choose a known agent or enter the exact name below.'
+            );
+        } finally {
+            actionInProgress = false;
+            setSetAgentBusy(false);
+        }
+    }
+
+    function waitForSelectedAgent(trigger, agentName, timeout = 2500) {
+        return new Promise(resolve => {
+            const startedAt = Date.now();
+            const expectedName = normalizeAgentName(agentName);
+
+            function check() {
+                const selectedItem = trigger && trigger.querySelector
+                    ? trigger.querySelector('.ember-power-select-selected-item')
+                    : null;
+                const currentName = normalizeAgentName(
+                    selectedItem
+                        ? selectedItem.textContent
+                        : trigger && trigger.textContent
+                );
+
+                if (
+                    currentName === expectedName ||
+                    Date.now() - startedAt >= timeout
+                ) {
+                    resolve(currentName === expectedName);
+                    return;
+                }
+
+                setTimeout(check, 100);
+            }
+
+            check();
+        });
+    }
+
+    function findAgentUpdateButton(trigger) {
+        const roots = [];
+        const closestRoot = trigger && trigger.closest
+            ? trigger.closest([
+                '.ticket-properties-wrapper',
+                '[data-test-id="ticket-properties-sticky"]',
+                '.ticket-sidebar-sticky',
+                '[data-test-id*="ticket-properties"]',
+                '[data-test-id*="properties"]'
+            ].join(','))
+            : null;
+
+        if (closestRoot) roots.push(closestRoot);
+
+        [
+            document.querySelector('.ticket-properties-wrapper'),
+            document.querySelector('[data-test-id="ticket-properties-sticky"]'),
+            document.querySelector('.ticket-sidebar-sticky')
+        ].filter(Boolean).forEach(root => {
+            if (!roots.includes(root)) roots.push(root);
+        });
+
+        function findInRoot(root) {
+            return Array.from(root.querySelectorAll('button, [role="button"]'))
+                .find(button => {
+                    return (
+                        isUsableAgentElement(button) &&
+                        !button.disabled &&
+                        cleanAgentText(button.textContent).toLowerCase() === 'update'
+                    );
+                }) || null;
+        }
+
+        for (const root of roots) {
+            const button = findInRoot(root);
+
+            if (button) return button;
+        }
+
+        const updateButtons = Array.from(
+            document.querySelectorAll('button, [role="button"]')
+        ).filter(button => {
+            return (
+                isUsableAgentElement(button) &&
+                !button.disabled &&
+                cleanAgentText(button.textContent).toLowerCase() === 'update'
+            );
+        });
+
+        if (updateButtons.length < 2 || !trigger) {
+            return updateButtons[0] || null;
+        }
+
+        const triggerRect = trigger.getBoundingClientRect();
+
+        return updateButtons
+            .slice()
+            .sort((first, second) => {
+                return (
+                    Math.abs(first.getBoundingClientRect().left - triggerRect.left) -
+                    Math.abs(second.getBoundingClientRect().left - triggerRect.left)
+                );
+            })[0] || null;
+    }
+
+    function waitForAgentUpdateButton(trigger, timeout = 2500) {
+        return new Promise(resolve => {
+            const startedAt = Date.now();
+
+            function check() {
+                const updateButton = findAgentUpdateButton(trigger);
+
+                if (updateButton || Date.now() - startedAt >= timeout) {
+                    resolve(updateButton);
+                    return;
+                }
+
+                setTimeout(check, 100);
+            }
+
+            check();
+        });
+    }
+
+    async function applySavedAgent() {
+        if (actionInProgress || !isTicketPage()) return;
+
+        const savedAgentName = getSavedAgentName();
+
+        if (!savedAgentName) {
+            configureSetAgent();
+            return;
+        }
+
+        actionInProgress = true;
+        setSetAgentBusy(true, 'Updating...');
+        closeSetAgentMenu();
+
+        try {
+            const result = await openAgentOptions();
+
+            if (!result.trigger) {
+                showSetAgentToast(
+                    'Agent Name field was not found. Open the ticket properties and try again.',
+                    'error',
+                    4300
+                );
+                return;
+            }
+
+            const selectedItem = result.trigger.querySelector
+                ? result.trigger.querySelector('.ember-power-select-selected-item')
+                : null;
+            const currentName = cleanAgentText(
+                selectedItem
+                    ? selectedItem.textContent
+                    : result.trigger.textContent
+            );
+
+            if (normalizeAgentName(currentName) !== normalizeAgentName(savedAgentName)) {
+                const matchingOption = result.options.find(option => {
+                    return (
+                        normalizeAgentName(option.textContent) ===
+                        normalizeAgentName(savedAgentName)
+                    );
+                });
+
+                if (!matchingOption) {
+                    closeFreshdeskAgentDropdown(result.trigger);
+                    showSetAgentToast(
+                        'Saved agent was not found. Choose it again.',
+                        'warning',
+                        4200
+                    );
+                    showSetAgentMenu(getAgentOptionNames(result.options));
+                    return;
+                }
+
+                if (!clickAgentElement(matchingOption)) {
+                    showSetAgentToast('Could not select the saved agent.', 'error', 4200);
+                    return;
+                }
+
+                const changed = await waitForSelectedAgent(
+                    result.trigger,
+                    savedAgentName
+                );
+
+                if (!changed) {
+                    showSetAgentToast(
+                        'Freshdesk did not confirm the Agent Name change.',
+                        'error',
+                        4200
+                    );
+                    return;
+                }
+            } else {
+                closeFreshdeskAgentDropdown(result.trigger);
+            }
+
+            const updateButton = await waitForAgentUpdateButton(result.trigger);
+
+            if (!updateButton) {
+                showSetAgentToast(
+                    `Agent selected: ${savedAgentName}. Click Update to save it.`,
+                    'warning',
+                    4500
+                );
+                return;
+            }
+
+            clickAgentElement(updateButton);
+            showSetAgentToast(`Agent updated: ${savedAgentName}`);
+        } catch (error) {
+            console.error('[Set Agent] Could not update Agent Name.', error);
+            showSetAgentToast('Could not update Agent Name. Try again.', 'error', 4200);
+        } finally {
+            actionInProgress = false;
+            setSetAgentBusy(false);
+        }
+    }
+
+    function getSetAgentInsertionPoint() {
+        const cmsButton = document.getElementById(CMS_BUTTON_ID);
+
+        if (cmsButton) {
+            return {
+                mode: 'after',
+                element: cmsButton
+            };
+        }
+
+        const mainActionBar = document.querySelector('section#mainactionbar');
+        const leftActions = mainActionBar
+            ? mainActionBar.querySelector('.page-actions__left')
+            : null;
+
+        if (!leftActions) return null;
+
+        const replyButton = leftActions.querySelector(
+            'button[data-test-email-action="reply"]'
+        );
+
+        if (replyButton || leftActions.firstElementChild) {
+            return {
+                mode: 'before',
+                element: replyButton || leftActions.firstElementChild
+            };
+        }
+
+        return {
+            mode: 'append',
+            element: leftActions
+        };
+    }
+
+    function createSetAgentButton() {
+        const button = document.createElement('button');
+        button.id = BUTTON_ID;
+        button.type = 'button';
+        button.className =
+            'nucleus-button nucleus-button--secondary app-icon-btn--text hint--rounded hint--bottom';
+        button.setAttribute('data-set-agent-owner', OWNER_VALUE);
+
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (event.shiftKey) {
+                configureSetAgent();
+                return;
+            }
+
+            applySavedAgent();
+        });
+
+        button.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            configureSetAgent();
+        });
+
+        return button;
+    }
+
+    function installSetAgentButton() {
+        addSetAgentStyles();
+
+        if (!isTicketPage()) {
+            const oldButton = document.getElementById(BUTTON_ID);
+
+            if (
+                oldButton &&
+                oldButton.getAttribute('data-set-agent-owner') === OWNER_VALUE
+            ) {
+                oldButton.remove();
+            }
+
+            closeSetAgentMenu();
+            return;
+        }
+
+        let button = document.getElementById(BUTTON_ID);
+
+        if (
+            button &&
+            button.getAttribute('data-set-agent-owner') !== OWNER_VALUE
+        ) {
+            button.remove();
+            button = null;
+        }
+
+        if (!button) {
+            button = createSetAgentButton();
+        }
+
+        const insertionPoint = getSetAgentInsertionPoint();
+
+        if (!insertionPoint || !insertionPoint.element) return;
+
+        if (
+            insertionPoint.mode === 'after' &&
+            button.previousElementSibling !== insertionPoint.element
+        ) {
+            insertionPoint.element.insertAdjacentElement('afterend', button);
+        } else if (
+            insertionPoint.mode === 'before' &&
+            button.nextElementSibling !== insertionPoint.element
+        ) {
+            insertionPoint.element.insertAdjacentElement('beforebegin', button);
+        } else if (
+            insertionPoint.mode === 'append' &&
+            button.parentElement !== insertionPoint.element
+        ) {
+            insertionPoint.element.appendChild(button);
+        }
+
+        updateSetAgentButton();
+    }
+
+    function scheduleSetAgentInstall() {
+        clearTimeout(installTimer);
+        installTimer = setTimeout(installSetAgentButton, 180);
+    }
+
+    document.addEventListener('click', event => {
+        const menu = document.getElementById(MENU_ID);
+
+        if (!menu) return;
+        if (menu.contains(event.target)) return;
+        if (event.target.closest && event.target.closest(`#${BUTTON_ID}`)) return;
+
+        closeSetAgentMenu();
+    }, true);
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeSetAgentMenu();
+        }
+    }, true);
+
+    window.addEventListener('resize', () => {
+        const menu = document.getElementById(MENU_ID);
+
+        if (menu) positionSetAgentMenu(menu);
+    });
+
+    installSetAgentButton();
+
+    const observer = new MutationObserver(scheduleSetAgentInstall);
+
+    observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+
+    setInterval(installSetAgentButton, 1500);
+})();
 
 
 /* ============================================================
