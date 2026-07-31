@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.8
+// @version      2.8.1
 // @author       Happy, Potato
 // @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
@@ -2552,15 +2552,49 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             document.querySelectorAll('.ember-power-select-selected-item')
         );
 
-        for (const selectedItem of selectedItems) {
-            if (!knownNames.has(normalizeAgentName(selectedItem.textContent))) continue;
+        const emptyTriggers = [];
 
+        for (const selectedItem of selectedItems) {
             const trigger =
                 selectedItem.closest('.ember-power-select-trigger') ||
                 selectedItem.parentElement;
 
-            if (trigger) return trigger;
+            if (!trigger) continue;
+
+            const selectedName = normalizeAgentName(selectedItem.textContent);
+
+            if (knownNames.has(selectedName)) return trigger;
+
+            if (cleanAgentText(selectedItem.textContent) === '--') {
+                let context = trigger;
+                let score = 0;
+
+                for (let depth = 0; context && depth < 6; depth += 1) {
+                    const contextText = cleanAgentText(context.textContent);
+                    const attributes = cleanAgentText([
+                        context.id,
+                        context.getAttribute && context.getAttribute('aria-label'),
+                        context.getAttribute && context.getAttribute('data-test-id'),
+                        context.getAttribute && context.getAttribute('name')
+                    ].filter(Boolean).join(' '));
+
+                    if (/agent\s+name/i.test(contextText)) score += 20 - depth;
+                    if (/agent/i.test(attributes)) score += 12 - depth;
+
+                    context = context.parentElement;
+                }
+
+                emptyTriggers.push({ trigger, score });
+            }
         }
+
+        emptyTriggers.sort((first, second) => second.score - first.score);
+
+        if (emptyTriggers[0] && emptyTriggers[0].score > 0) {
+            return emptyTriggers[0].trigger;
+        }
+
+        if (emptyTriggers.length === 1) return emptyTriggers[0].trigger;
 
         return null;
     }
