@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.19
+// @version      3.20
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -2087,24 +2087,89 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             .trim();
     }
 
-    function getFreshdeskClientName() {
+    function addClientContextText(chunks, value) {
+        const text = cleanText(value);
+
+        if (!text || chunks.includes(text)) return;
+
+        chunks.push(text);
+    }
+
+    function getClientFieldContext() {
+        const chunks = [];
+        const possibleLabels = Array.from(document.querySelectorAll([
+            'label',
+            '[data-test-id*="label" i]',
+            '[class*="label" i]',
+            'span'
+        ].join(',')));
+
+        possibleLabels.forEach(label => {
+            const labelText = cleanText(label.textContent).replace(/\s*\*+\s*$/, '');
+
+            if (!/^client\s+name$/i.test(labelText)) return;
+
+            let container = label.parentElement;
+
+            for (let depth = 0; container && depth < 6; depth += 1) {
+                const selectedValue = container.querySelector(
+                    '.ember-power-select-selected-item, [role="combobox"], select, input'
+                );
+
+                if (selectedValue) {
+                    addClientContextText(
+                        chunks,
+                        selectedValue.value ||
+                        selectedValue.innerText ||
+                        selectedValue.textContent
+                    );
+                    addClientContextText(chunks, container.innerText || container.textContent);
+                    break;
+                }
+
+                container = container.parentElement;
+            }
+        });
+
+        return chunks;
+    }
+
+    function getFreshdeskClientContext() {
+        const primaryChunks = [];
         const preferredSelectors = [
             '[data-test-title="main-title"] a',
             '[data-test-title="main-title"]',
             '.header-primary .breadcrumb-title a',
-            '.header-primary .breadcrumb-title'
+            '.header-primary .breadcrumb-title',
+            '[data-test-id*="ticket-subject" i]',
+            '[data-test-title*="ticket-subject" i]',
+            '[data-test-id*="client" i]',
+            '[data-test-title*="client" i]',
+            '[aria-label*="client" i]',
+            '[name*="client" i]',
+            'a[href^="mailto:"]'
         ];
 
         for (const selector of preferredSelectors) {
             const elements = Array.from(document.querySelectorAll(selector));
 
             for (const element of elements) {
-                const text = cleanText(element.innerText || element.textContent || '');
-
-                if (text && !/^\d+$/.test(text)) {
-                    return text;
-                }
+                addClientContextText(
+                    primaryChunks,
+                    [
+                        element.innerText,
+                        element.textContent,
+                        element.value,
+                        element.getAttribute('href'),
+                        element.getAttribute('aria-label'),
+                        element.getAttribute('title')
+                    ].filter(Boolean).join(' ')
+                );
             }
+        }
+
+        for (const fieldText of getClientFieldContext()) {
+            addClientContextText(primaryChunks, fieldText);
         }
 
         const breadcrumbItems = Array.from(document.querySelectorAll('.header-primary .breadcrumb__item'));
@@ -2115,30 +2180,53 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             const text = cleanText(item.innerText || item.textContent || '');
 
             if (text && !/^\d+$/.test(text)) {
-                return text;
+                addClientContextText(primaryChunks, text);
             }
+        }
+
+        return {
+            primary: primaryChunks.join(' | '),
+            fallback: cleanText(document.body ? document.body.innerText : '')
+        };
+    }
+
+    function getCMSKeyFromClientText(clientText) {
+        const normalized = cleanText(clientText).toLowerCase();
+
+        if (!normalized) return '';
+
+        if (/\bmsn\b|\bmonumental\s+sports\s+network\b/i.test(normalized)) {
+            return 'msn';
+        }
+
+        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\b|\bliv\s*golf(?:\s*(?:\+|plus))?\b|\blivgolf(?:\+|plus)?\b|livgolfplus\.com|\blightning\b/i.test(normalized)) {
+            return 'gcp';
+        }
+
+        if (/\baltitude\b|\bdirt\s*vision\b|\bdirtvision\b|\bvegas\s+golden\s+knights\b|\bvgk\b/i.test(normalized)) {
+            return 'standard';
         }
 
         return '';
     }
 
-    function getCMSUsersURLForClient(clientName) {
-        const normalized = cleanText(clientName).toLowerCase();
+    function getCMSUsersURLForClient(clientContext) {
+        const primaryText = clientContext && clientContext.primary
+            ? clientContext.primary
+            : cleanText(clientContext);
+        const fallbackText = clientContext && clientContext.fallback
+            ? clientContext.fallback
+            : '';
+        const cmsKey =
+            getCMSKeyFromClientText(primaryText) ||
+            getCMSKeyFromClientText(fallbackText) ||
+            'standard';
 
-        if (/\bmsn\b|\bmonumental\s+sports\s+network\b/i.test(normalized)) {
-            return CMS_USERS_URLS.msn;
+        if (cmsKey === 'standard' && !getCMSKeyFromClientText(primaryText) && !getCMSKeyFromClientText(fallbackText)) {
+            console.warn('[CMS Search] Client was not recognized, using the standard CMS:', primaryText || '(empty)');
         }
 
-        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\s*golf(?:\s*plus)?\b|\blivgolf(?:plus)?\b|\blightning\b/i.test(normalized)) {
-            return CMS_USERS_URLS.gcp;
-        }
-
-        if (/\baltitude\b|\bdirt\s*vision\b|\bdirtvision\b|\bvegas\s+golden\s+knights\b|\bvgk\b/i.test(normalized)) {
-            return CMS_USERS_URLS.standard;
-        }
-
-        console.warn('[CMS Search] Client was not recognized, using the standard CMS:', clientName || '(empty)');
-        return CMS_USERS_URLS.standard;
+        return CMS_USERS_URLS[cmsKey];
     }
 
     function extractEmailFromText(text) {
@@ -2414,11 +2502,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 return;
             }
 
-            const clientName = getFreshdeskClientName();
-            const cmsUsersURL = getCMSUsersURLForClient(clientName);
+            const clientContext = getFreshdeskClientContext();
+            const cmsUsersURL = getCMSUsersURLForClient(clientContext);
             const url = cmsUsersURL + '?' + CMS_EMAIL_PARAM + '=' + encodeURIComponent(email);
 
-            console.log('[CMS Search] Opening CMS for:', email, 'Client:', clientName || 'Unknown', 'Destination:', cmsUsersURL);
+            console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', cmsUsersURL);
 
             window.open(url, '_blank');
         });
