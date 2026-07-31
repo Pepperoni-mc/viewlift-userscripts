@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.21
+// @version      3.22
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -16,6 +16,9 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @connect      135.181.37.72
 // ==/UserScript==
 
 /* ============================================================
@@ -749,7 +752,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         event.stopPropagation();
         copyText(email.dataset.email || email.textContent, email);
       });
-      toolbar.appendChild(email);
     }
     const customerEmail = getEmail();
     email.textContent = customerEmail || 'No email';
@@ -758,8 +760,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
+    // Keep the high-frequency order predictable: brand, CMS, customer, next, agent, refund.
     if (cms) toolbar.appendChild(cms);
-    if (agent) toolbar.appendChild(agent);
+    toolbar.appendChild(email);
 
     let next = document.getElementById(NEXT_ID);
     if (!next) {
@@ -775,7 +778,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     let launcher = document.getElementById(REFUND_LAUNCHER_ID);
     if (!launcher) {
-      launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund', 'Open Refund Capture');
+      launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund capture', 'Open Refund Capture');
       launcher.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
@@ -783,6 +786,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
       toolbar.appendChild(launcher);
     }
+
+    if (agent) toolbar.appendChild(agent);
 
     mountRefundPanel(toolbar);
   }
@@ -797,6 +802,124 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const observer = new MutationObserver(() => window.setTimeout(installToolbar, 120));
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     window.setInterval(installToolbar, 1500);
+  }
+
+  init();
+})();
+
+/* ============================================================
+ * Feature 8b: Ticket Tracker goal badge
+ * Reads the private tracker API and shows today's progress in Freshdesk.
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+
+  const API_URL = 'http://135.181.37.72:3001/api/ticket-tracker/stats';
+  const KEY_NAME = 'betterFreshdeskTrackerApiKey';
+  const BADGE_ID = 'better-freshdesk-tracker-goal';
+  const STYLE_ID = 'better-freshdesk-tracker-style';
+  const REFRESH_MS = 30000;
+
+  function clean(value) { return String(value == null ? '' : value).trim(); }
+
+  function setTrackerApiKey() {
+    const current = clean(GM_getValue(KEY_NAME, ''));
+    const value = window.prompt('Tracker API key (se guarda solo en Tampermonkey):', current);
+    if (value === null) return;
+    const next = clean(value);
+    if (next) GM_setValue(KEY_NAME, next);
+    else GM_deleteValue(KEY_NAME);
+    updateStats();
+  }
+
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('Set Tracker API Key', setTrackerApiKey);
+  }
+
+  function addStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${BADGE_ID} { display:inline-flex; align-items:center; gap:6px; min-height:30px; margin-left:8px; padding:0 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; color:#334155; font:600 12px/1.2 Arial,sans-serif; white-space:nowrap; cursor:pointer; }
+      #${BADGE_ID}[data-state="goal"] { color:#166534; background:#f0fdf4; border-color:#bbf7d0; }
+      #${BADGE_ID}[data-state="error"] { color:#92400e; background:#fffbeb; border-color:#fde68a; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function findRightSlot() {
+    return document.querySelector('section#mainactionbar .page-actions__right') ||
+      document.querySelector('section#mainactionbar .detail-pagination') ||
+      document.querySelector('section#mainactionbar .page-actions') ||
+      document.querySelector('section#mainactionbar');
+  }
+
+  function installBadge() {
+    addStyles();
+    const slot = findRightSlot();
+    if (!slot) return null;
+    let badge = document.getElementById(BADGE_ID);
+    if (!badge) {
+      badge = document.createElement('button');
+      badge.id = BADGE_ID;
+      badge.type = 'button';
+      badge.title = 'Open Ticket Tracker';
+      badge.addEventListener('click', () => window.open('http://135.181.37.72:3001/tracker', '_blank'));
+    }
+    if (badge.parentElement !== slot) slot.appendChild(badge);
+    return badge;
+  }
+
+  function render(text, state, title) {
+    const badge = installBadge();
+    if (!badge) return;
+    badge.textContent = text;
+    badge.dataset.state = state || '';
+    badge.title = title || 'Open Ticket Tracker';
+  }
+
+  function updateStats() {
+    const key = clean(GM_getValue(KEY_NAME, ''));
+    if (!key) {
+      render('Tracker: —', 'error', 'Configura la API key desde el menú de Tampermonkey');
+      return;
+    }
+    if (typeof GM_xmlhttpRequest !== 'function') {
+      render('Tracker: —', 'error', 'GM_xmlhttpRequest no está disponible');
+      return;
+    }
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: API_URL,
+      headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' },
+      onload: function (response) {
+        try {
+          if (response.status < 200 || response.status >= 300) throw new Error('HTTP ' + response.status);
+          const data = JSON.parse(response.responseText || '{}');
+          const today = Number(data.today_count ?? data.today ?? data.count ?? 0);
+          const goal = Number(data.daily_goal ?? data.goal ?? 0);
+          render(today + ' / ' + goal + ' goal', goal > 0 && today >= goal ? 'goal' : '', 'Ticket Tracker: ' + today + ' de ' + goal + '. Click para abrir.');
+        } catch (error) {
+          render('Tracker: error', 'error', 'No se pudo leer Ticket Tracker');
+        }
+      },
+      onerror: function () { render('Tracker: error', 'error', 'No se pudo conectar con Ticket Tracker'); }
+    });
+  }
+
+  function init() {
+    if (!document.body) return window.setTimeout(init, 300);
+    installBadge();
+    updateStats();
+    const observer = new MutationObserver(() => installBadge());
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.setInterval(() => { installBadge(); updateStats(); }, REFRESH_MS);
+    window.addEventListener('focus', updateStats);
   }
 
   init();
