@@ -1,4 +1,4 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
 // @version      3.22
@@ -208,7 +208,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function isGreetingLine(text) {
-    return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
+    return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(cleanText(text));
   }
 
   function normalizeGreetingSpacing(editor) {
@@ -776,6 +776,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       toolbar.appendChild(next);
     }
 
+    if (agent) toolbar.appendChild(agent);
+
     let launcher = document.getElementById(REFUND_LAUNCHER_ID);
     if (!launcher) {
       launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund capture', 'Open Refund Capture');
@@ -786,8 +788,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
       toolbar.appendChild(launcher);
     }
-
-    if (agent) toolbar.appendChild(agent);
 
     mountRefundPanel(toolbar);
   }
@@ -886,11 +886,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function updateStats() {
     const key = clean(GM_getValue(KEY_NAME, ''));
     if (!key) {
-      render('Tracker: —', 'error', 'Configura la API key desde el menú de Tampermonkey');
+      render('Tracker: â€”', 'error', 'Configura la API key desde el menÃº de Tampermonkey');
       return;
     }
     if (typeof GM_xmlhttpRequest !== 'function') {
-      render('Tracker: —', 'error', 'GM_xmlhttpRequest no está disponible');
+      render('Tracker: â€”', 'error', 'GM_xmlhttpRequest no estÃ¡ disponible');
       return;
     }
     GM_xmlhttpRequest({
@@ -1797,7 +1797,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function splitQuotedThread(text) {
         const quotePatterns = [
             /^On .+ wrote:\s*$/im,
-            /^El .+ escribió:\s*$/im,
+            /^El .+ escribiÃ³:\s*$/im,
             /^From:\s.+$/im,
             /^De:\s.+$/im,
             /^-----Original Message-----/im,
@@ -1881,7 +1881,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const firstLine = normalizeText(lines[firstIndex]);
         const secondLine = normalizeText(lines[secondIndex]);
 
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*[,]?$/i;
 
         if (firstLine === secondLine && greetingRegex.test(firstLine)) {
             lines.splice(secondIndex, 1);
@@ -1892,14 +1892,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function normalizeGreetingSpacingInText(text) {
         return text.replace(
-            /^((?:hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
+            /^((?:hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b[^\n]*,\s*)\n{3,}/i,
             '$1\n\n'
         );
     }
 
     function removeRepeatedTopGreeting(text) {
         const lines = text.split('\n');
-        const greetingRegex = /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
+        const greetingRegex = /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i;
 
         let firstGreetingIndex = -1;
         let firstGreetingText = '';
@@ -2015,7 +2015,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function isGreetingParagraph(text) {
-        return /^(hello|hi|dear|hola|buenos días|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
+        return /^(hello|hi|dear|hola|buenos dÃ­as|buenas tardes|good morning|good afternoon)\b.*,\s*$/i.test(
             String(text || '').replace(/\s+/g, ' ').trim()
         );
     }
@@ -3684,3 +3684,4 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   init();
 })();
+
