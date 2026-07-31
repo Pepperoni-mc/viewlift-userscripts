@@ -776,7 +776,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       toolbar.appendChild(next);
     }
 
-    if (agent) toolbar.appendChild(agent);\n\n    let launcher = document.getElementById(REFUND_LAUNCHER_ID);
+    if (agent) toolbar.appendChild(agent);
+
+    let launcher = document.getElementById(REFUND_LAUNCHER_ID);
     if (!launcher) {
       launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund capture', 'Open Refund Capture');
       launcher.addEventListener('click', event => {
@@ -786,8 +788,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
       toolbar.appendChild(launcher);
     }
-
-    if (agent) toolbar.appendChild(agent);
 
     mountRefundPanel(toolbar);
   }
