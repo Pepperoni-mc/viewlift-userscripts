@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.20
+// @version      3.21
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -13,6 +13,9 @@
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js
 // @run-at       document-idle
 // @grant        GM_setClipboard
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // ==/UserScript==
 
 /* ============================================================
@@ -478,6 +481,464 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   document.addEventListener("keydown", handleCannedCommandKeydown, true);
   document.addEventListener("paste", handlePaste, true);
   document.addEventListener("input", handleChange, true);
+})();
+
+/* ============================================================
+ * Feature 8: Unified ticket action bar
+ * Keeps the high-frequency case controls together and identifies the client.
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+
+  const TOOLBAR_ID = 'better-freshdesk-unified-toolbar';
+  const BRAND_ID = 'better-freshdesk-case-brand';
+  const EMAIL_ID = 'better-freshdesk-action-email';
+  const NEXT_ID = 'better-freshdesk-next-case';
+  const REFUND_LAUNCHER_ID = 'better-freshdesk-refund-launcher';
+  const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
+
+  const BRAND_RULES = [
+    { label: 'LIV', patterns: [/liv\s*golf/i, /livgolf/i, /livgolfplus\.com/i] },
+    { label: 'DIRT', patterns: [/dirtvision/i, /dirt\s*vision/i, /dirtvision\.com/i] },
+    { label: 'ALTITUDE', patterns: [/altitude/i, /altitudeplus/i] },
+    { label: 'MSN', patterns: [/monumental\s*sports/i, /msn\b/i, /monumentalsportsnetwork/i] },
+    { label: 'SCHN', patterns: [/space\s*city/i, /spacecityhn/i, /sc-appsupport/i] },
+    { label: 'FOX', patterns: [/fox\s*sports/i, /foxsports/i, /foxsports\.com/i] }
+  ];
+
+  function cleanText(value) {
+    return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function isVisible(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function addStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${TOOLBAR_ID} {
+        position: relative !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        margin-right: 8px !important;
+        vertical-align: middle !important;
+        z-index: 30 !important;
+      }
+
+      #${BRAND_ID}, #${EMAIL_ID} {
+        display: inline-flex !important;
+        align-items: center !important;
+        min-height: 30px !important;
+        box-sizing: border-box !important;
+        white-space: nowrap !important;
+        border: 1px solid #d8e0e8 !important;
+        border-radius: 6px !important;
+        background: #f8fafc !important;
+        color: #334155 !important;
+        font: 600 12px/1.2 Arial, sans-serif !important;
+      }
+
+      #${BRAND_ID} {
+        padding: 0 9px !important;
+        letter-spacing: .04em !important;
+      }
+
+      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; background: #f0fdf4 !important; border-color: #bbf7d0 !important; }
+      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; background: #fffbeb !important; border-color: #fde68a !important; }
+      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; background: #eff6ff !important; border-color: #bfdbfe !important; }
+      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; background: #faf5ff !important; border-color: #e9d5ff !important; }
+      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; background: #fff1f2 !important; border-color: #fecdd3 !important; }
+      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; background: #fff7ed !important; border-color: #fed7aa !important; }
+
+      #${EMAIL_ID} {
+        max-width: 260px !important;
+        padding: 0 9px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        cursor: copy !important;
+        user-select: text !important;
+        color: #475569 !important;
+        font-weight: 500 !important;
+      }
+
+      #${EMAIL_ID}[data-copied="yes"] { color: #15803d !important; background: #f0fdf4 !important; }
+
+      #${NEXT_ID}, #${REFUND_LAUNCHER_ID} {
+        min-height: 30px !important;
+        padding: 0 10px !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 6px !important;
+        background: #ffffff !important;
+        color: #17324d !important;
+        font: 600 12px/1.2 Arial, sans-serif !important;
+        cursor: pointer !important;
+      }
+
+      #${NEXT_ID}:hover, #${REFUND_LAUNCHER_ID}:hover { background: #f1f5f9 !important; border-color: #94a3b8 !important; }
+      #${REFUND_LAUNCHER_ID} { color: #5b21b6 !important; border-color: #c4b5fd !important; background: #faf5ff !important; }
+
+      #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
+        position: absolute !important;
+        top: calc(100% + 8px) !important;
+        left: 0 !important;
+        right: auto !important;
+        bottom: auto !important;
+        width: 372px !important;
+        max-width: min(372px, calc(100vw - 24px)) !important;
+        z-index: 1000000 !important;
+        transform-origin: top left !important;
+      }
+
+      #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel[data-better-open="no"] { display: none !important; }
+      #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel[data-better-open="yes"] { display: block !important; }
+
+      #better-freshdesk-requester-email, #better-freshdesk-copy-feedback { display: none !important; }
+      section#mainactionbar [data-test-id="add-note"],
+      section#mainactionbar [data-test-actions="forward"],
+      section#mainactionbar [data-test-actions="close"],
+      section#mainactionbar [data-test-id="top-navigation-servicetask"] { display: none !important; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function getActionBar() {
+    return document.querySelector('section#mainactionbar .reply-bar-top') ||
+      document.querySelector('section#mainactionbar .page-actions__left');
+  }
+
+  function getContextText() {
+    const selectedGroups = Array.from(document.querySelectorAll('.ember-power-select-selected-item'))
+      .map(element => element.textContent || '').join(' ');
+    const mailtos = Array.from(document.querySelectorAll('a[href^="mailto:" i]'))
+      .map(element => element.getAttribute('href') || '').join(' ');
+    return [document.title, selectedGroups, mailtos, document.body && document.body.innerText].join('\n');
+  }
+
+  function detectBrand() {
+    const context = getContextText();
+    return BRAND_RULES.find(rule => rule.patterns.some(pattern => pattern.test(context))) || null;
+  }
+
+  function getEmail() {
+    if (typeof window.__betterFreshdeskGetCustomerEmail === 'function') {
+      const direct = cleanText(window.__betterFreshdeskGetCustomerEmail());
+      if (direct) return direct;
+    }
+
+    const links = Array.from(document.querySelectorAll('a[href^="mailto:" i]'));
+    for (const link of links) {
+      const match = (link.getAttribute('href') || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+      if (match) return match[0].toLowerCase();
+    }
+
+    const match = getContextText().match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    return match ? match[0].toLowerCase() : '';
+  }
+
+  function copyText(text, element) {
+    if (!text) return;
+    const done = () => {
+      element.dataset.copied = 'yes';
+      element.title = 'Copied to clipboard';
+      window.setTimeout(() => {
+        if (element.isConnected) {
+          delete element.dataset.copied;
+          element.title = 'Click to copy customer email';
+        }
+      }, 1200);
+    };
+
+    try {
+      if (typeof GM_setClipboard === 'function') {
+        GM_setClipboard(text, 'text');
+        done();
+        return;
+      }
+    } catch (error) { /* use browser fallback */ }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {});
+    }
+  }
+
+  function makeButton(id, text, title) {
+    const button = document.createElement('button');
+    button.id = id;
+    button.type = 'button';
+    button.textContent = text;
+    button.title = title;
+    return button;
+  }
+
+  function toggleRefundPanel() {
+    const panel = document.getElementById('refund-capture-panel');
+    if (!panel) return;
+
+    const open = panel.dataset.betterOpen === 'yes';
+    panel.dataset.betterOpen = open ? 'no' : 'yes';
+    panel.classList.toggle('is-minimized', open);
+
+    if (!open) {
+      const refresh = document.getElementById('refund-refresh');
+      if (refresh) refresh.click();
+    }
+  }
+
+  function mountRefundPanel(toolbar) {
+    const panel = document.getElementById('refund-capture-panel');
+    if (!panel) return;
+
+    panel.classList.add('better-freshdesk-inline-panel');
+    if (!panel.dataset.betterOpen) panel.dataset.betterOpen = 'no';
+    if (panel.parentElement !== toolbar) toolbar.appendChild(panel);
+
+    const minimize = panel.querySelector('#refund-minimize');
+    if (minimize && minimize.dataset.betterBound !== 'yes') {
+      minimize.dataset.betterBound = 'yes';
+      minimize.addEventListener('click', () => {
+        panel.dataset.betterOpen = 'no';
+      }, true);
+    }
+  }
+
+  function installToolbar() {
+    addStyles();
+    const actionBar = getActionBar();
+    if (!actionBar) return;
+
+    let toolbar = document.getElementById(TOOLBAR_ID);
+    if (!toolbar) {
+      toolbar = document.createElement('div');
+      toolbar.id = TOOLBAR_ID;
+      const reply = actionBar.querySelector('button[data-test-email-action="reply"]');
+      actionBar.insertBefore(toolbar, reply || actionBar.firstElementChild || null);
+    }
+
+    let brand = document.getElementById(BRAND_ID);
+    if (!brand) {
+      brand = document.createElement('span');
+      brand.id = BRAND_ID;
+      brand.setAttribute('aria-label', 'Case client');
+      toolbar.appendChild(brand);
+    }
+
+    const detectedBrand = detectBrand();
+    brand.textContent = detectedBrand ? detectedBrand.label : 'CASE';
+    brand.dataset.brand = detectedBrand ? detectedBrand.label : 'CASE';
+    brand.title = detectedBrand ? `Case client: ${detectedBrand.label}` : 'Case client not detected';
+
+    let email = document.getElementById(EMAIL_ID);
+    if (!email) {
+      email = document.createElement('button');
+      email.id = EMAIL_ID;
+      email.type = 'button';
+      email.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyText(email.dataset.email || email.textContent, email);
+      });
+      toolbar.appendChild(email);
+    }
+    const customerEmail = getEmail();
+    email.textContent = customerEmail || 'No email';
+    email.dataset.email = customerEmail;
+    email.title = customerEmail ? 'Click to copy customer email' : 'Customer email not found';
+
+    const cms = document.getElementById('viewlift-open-cms-header-button');
+    const agent = document.getElementById('better-freshdesk-my-agent-button');
+    if (cms) toolbar.appendChild(cms);
+    if (agent) toolbar.appendChild(agent);
+
+    let next = document.getElementById(NEXT_ID);
+    if (!next) {
+      next = makeButton(NEXT_ID, 'Next case', 'Next case (J)');
+      next.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const nativeNext = document.querySelector('[data-test-id="next-btn"]');
+        if (nativeNext && !nativeNext.disabled) nativeNext.click();
+      });
+      toolbar.appendChild(next);
+    }
+
+    let launcher = document.getElementById(REFUND_LAUNCHER_ID);
+    if (!launcher) {
+      launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund', 'Open Refund Capture');
+      launcher.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRefundPanel();
+      });
+      toolbar.appendChild(launcher);
+    }
+
+    mountRefundPanel(toolbar);
+  }
+
+  function init() {
+    if (!document.body) {
+      window.setTimeout(init, 250);
+      return;
+    }
+
+    installToolbar();
+    const observer = new MutationObserver(() => window.setTimeout(installToolbar, 120));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.setInterval(installToolbar, 1500);
+  }
+
+  init();
+})();
+
+/* ============================================================
+ * Feature 9: Queue CMS snapshots into a private note
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+
+  const SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
+  const STATUS_ID = 'better-freshdesk-snapshot-note-status';
+
+  function cleanText(value) {
+    return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function getTicketId() {
+    const match = location.pathname.match(/\/a\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  function getPendingSnapshot() {
+    try {
+      const value = GM_getValue(SNAPSHOT_KEY, null);
+      if (!value) return null;
+      if (typeof value === 'string') return JSON.parse(value);
+      return value;
+    } catch (error) {
+      console.warn('[Freshdesk Snapshot] Could not read queued snapshot.', error);
+      return null;
+    }
+  }
+
+  function getPendingTicketId(snapshot) {
+    const match = String(snapshot && snapshot.ticketUrl || '').match(/\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  function showStatus(message, type) {
+    let status = document.getElementById(STATUS_ID);
+    if (!status) {
+      status = document.createElement('span');
+      status.id = STATUS_ID;
+      status.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:1000001;padding:9px 12px;border-radius:7px;background:#17324d;color:#fff;font:600 12px Arial,sans-serif;box-shadow:0 8px 24px rgba(15,23,42,.22);';
+      document.body.appendChild(status);
+    }
+    status.textContent = message;
+    status.style.background = type === 'error' ? '#991b1b' : '#17324d';
+    window.setTimeout(() => status.remove(), 4200);
+  }
+
+  function findEditor() {
+    return document.querySelector(
+      '[contenteditable="true"][role="textbox"], .fr-element[contenteditable="true"], [contenteditable="true"]'
+    );
+  }
+
+  function clickPrivateNote() {
+    const noteButton = document.querySelector('[data-test-id="add-note"], [data-test-note-action="add"]');
+    if (noteButton && !noteButton.disabled) {
+      noteButton.click();
+      return true;
+    }
+    return false;
+  }
+
+  async function pasteSnapshot(snapshot) {
+    const dataUrl = cleanText(snapshot && snapshot.dataUrl);
+    if (!/^data:image\/png;base64,/i.test(dataUrl)) throw new Error('Invalid queued PNG.');
+
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const file = new File([blob], 'cms-snapshot.png', { type: 'image/png' });
+    const editor = findEditor();
+    if (!editor) return false;
+
+    editor.focus();
+
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      editor.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: transfer
+      }));
+    } catch (error) {
+      console.warn('[Freshdesk Snapshot] ClipboardEvent paste failed.', error);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 400));
+
+    if (!editor.querySelector('img')) {
+      editor.innerHTML = `${editor.innerHTML || ''}<p><img src="${dataUrl}" alt="CMS snapshot" style="max-width:100%;height:auto;"></p>`;
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    return true;
+  }
+
+  async function consumeSnapshotIfReady() {
+    const snapshot = getPendingSnapshot();
+    if (!snapshot || !snapshot.dataUrl) return;
+
+    const ticketId = getTicketId();
+    if (!ticketId || getPendingTicketId(snapshot) !== ticketId) return;
+
+    if (!findEditor()) {
+      clickPrivateNote();
+      window.setTimeout(consumeSnapshotIfReady, 700);
+      return;
+    }
+
+    try {
+      if (await pasteSnapshot(snapshot)) {
+        GM_deleteValue(SNAPSHOT_KEY);
+        showStatus('CMS snapshot added to private note.');
+      }
+    } catch (error) {
+      console.error('[Freshdesk Snapshot] Could not add snapshot to note.', error);
+      showStatus('Could not add CMS snapshot to the note.', 'error');
+    }
+  }
+
+  function init() {
+    if (!document.body) {
+      window.setTimeout(init, 300);
+      return;
+    }
+
+    window.setTimeout(consumeSnapshotIfReady, 900);
+    window.setInterval(consumeSnapshotIfReady, 2500);
+  }
+
+  init();
 })();
 }
 
