@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.8.1
+// @version      2.8.2
 // @author       Happy, Potato
 // @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
@@ -97,6 +97,17 @@
     return location.hostname === 'viewlift.freshdesk.com';
   }
 
+  function isRefundToolBlockedRoute() {
+    if (!isFreshdeskHost()) return false;
+
+    const pathname = location.pathname.replace(/\/+$/, '') || '/';
+
+    return (
+      pathname === '/a/tickets' ||
+      pathname === '/a/tickets/filters/781604'
+    );
+  }
+
   function isCMSHost() {
     return CMS_HOST_RE.test(location.hostname);
   }
@@ -106,7 +117,7 @@
   }
 
   function isSupportedPage() {
-    return isFreshdeskHost() || isCMSUserPage();
+    return (isFreshdeskHost() && !isRefundToolBlockedRoute()) || isCMSUserPage();
   }
 
   function removeUI() {
