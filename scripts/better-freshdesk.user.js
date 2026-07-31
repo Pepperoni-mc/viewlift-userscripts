@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.28
+// @version      3.29
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -16,9 +16,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
-// @grant        GM_xmlhttpRequest
-// @grant        GM_registerMenuCommand
-// @connect      135.181.37.72
 // ==/UserScript==
 
 /* ============================================================
@@ -818,12 +815,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 })();
 
 /* ============================================================
- * Feature 8b: Ticket Tracker goal badge
+ * Feature 8b: Ticket Tracker goal badge (removed)
  * Reads the private tracker API and shows today's progress in Freshdesk.
  * ============================================================ */
 
 (function () {
   'use strict';
+
+  // Ticket Tracker integration removed from Better Freshdesk.
+  return;
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
   if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
