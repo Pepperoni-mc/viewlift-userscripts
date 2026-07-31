@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.24
+// @version      3.25
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -789,6 +789,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
       toolbar.appendChild(launcher);
     }
+
+    // Re-append every control on every pass so asynchronous Freshdesk rendering
+    // cannot change the requested order.
+    toolbar.appendChild(brand);
+    if (cms) toolbar.appendChild(cms);
+    toolbar.appendChild(email);
+    if (agent) toolbar.appendChild(agent);
+    if (next) toolbar.appendChild(next);
+    toolbar.appendChild(launcher);
 
     mountRefundPanel(toolbar);
   }
