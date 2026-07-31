@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.25
+// @version      3.26
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -829,6 +829,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
 
   const API_URL = 'http://135.181.37.72:3001/api/ticket-tracker/stats';
+  const CACHE_KEY = 'schnTrackerProgress';
   const KEY_NAME = 'betterFreshdeskTrackerApiKey';
   const BADGE_ID = 'better-freshdesk-tracker-goal';
   const STYLE_ID = 'better-freshdesk-tracker-style';
@@ -839,6 +840,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   // Use the same legacy key name as SCHN+ Case Tracker when values are shared.
   function getStoredTrackerKey() {
     return clean(GM_getValue(KEY_NAME, '')) || clean(GM_getValue('api_key', ''));
+  }
+
+  function getCachedProgress() {
+    try {
+      const value = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      const today = new Date().toISOString().slice(0, 10);
+      if (!value || value.date !== today) return null;
+      return { today: Number(value.count) || 0, goal: Number(value.goal) || 35 };
+    } catch (_) {
+      return null;
+    }
   }
 
   function setTrackerApiKey() {
@@ -911,6 +923,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function updateStats() {
+    const cached = getCachedProgress();
+    if (cached) {
+      render(cached.today + ' / ' + cached.goal + ' goal', cached.today >= cached.goal ? 'goal' : '', 'Ticket Tracker local: ' + cached.today + ' de ' + cached.goal);
+      return;
+    }
     const key = getStoredTrackerKey();
     if (!key) {
       render('Tracker: â€”', 'error', 'Configura la API key desde el menÃº de Tampermonkey');
