@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.8.2
+// @version      2.8.3
 // @author       Happy, Potato
 // @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
@@ -3942,10 +3942,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
     window.__viewliftSnapshotToolsInstalled = true;
 
-    const BUTTON_ID = "tm-viewlift-real-snapshot-button";
-    const BADGE_ID = "tm-viewlift-payment-handler-badge";
-    const WRAPPER_ID = "tm-viewlift-snapshot-tools";
-    const STYLE_ID = "tm-viewlift-snapshot-tools-style";
+  const BUTTON_ID = "tm-viewlift-real-snapshot-button";
+  const BADGE_ID = "tm-viewlift-payment-handler-badge";
+  const WRAPPER_ID = "tm-viewlift-snapshot-tools";
+  const STYLE_ID = "tm-viewlift-snapshot-tools-style";
+  const PENDING_SNAPSHOT_KEY = "betterFreshdeskPendingSnapshot";
 
     const AUTO_OPEN_SUBSCRIPTION_PLANS = true;
 
@@ -4435,6 +4436,20 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
             const blob = await canvasToBlob(canvas);
 
+            const snapshotDataUrl = await blobToDataUrl(blob);
+            const ticketUrl = String(GM_getValue('Refund Active Ticket', '') || '').trim() ||
+                String(GM_getValue('Freshdesk ID', '') || '').trim();
+
+            try {
+                GM_setValue(PENDING_SNAPSHOT_KEY, {
+                    dataUrl: snapshotDataUrl,
+                    ticketUrl,
+                    createdAt: Date.now()
+                });
+            } catch (storageError) {
+                console.warn("Could not queue snapshot for Freshdesk note.", storageError);
+            }
+
             await navigator.clipboard.write([
                 new ClipboardItem({
                     "image/png": blob
@@ -4578,6 +4593,15 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     reject(new Error("Could not create PNG blob."));
                 }
             }, "image/png");
+        });
+    }
+
+    function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(reader.error || new Error('Could not read PNG blob.'));
+            reader.readAsDataURL(blob);
         });
     }
 
