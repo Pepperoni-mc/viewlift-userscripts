@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.30
+// @version      3.31
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -2716,7 +2716,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const CMS_USERS_URLS = {
         standard: 'https://cms.viewlift.com/v5/customer-support',
-        gcp: 'https://cms-gcp.viewlift.com/v5/overview',
+        gcp: 'https://cms-gcp.viewlift.com/v5/customer-support',
         msn: 'https://cms.monumentalsportsnetwork.com/v5/customer-support'
     };
     const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
@@ -2725,8 +2725,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const CMS_PENDING_EMAIL_KEY = 'betterFreshdeskPendingCmsEmail';
     let cmsSearchCompleted = false;
     let cmsSearchStarted = false;
-    let cmsNavigationAttempts = 0;
-    let cmsNavigationLastAttempt = 0;
     let cmsFlowTimer = null;
     let cmsFlowObserver = null;
 
@@ -3279,70 +3277,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
     }
 
-    function collectCMSNavigationElements(root, results, depth = 0) {
-        if (!root || !root.querySelectorAll || depth > 8) return;
-
-        const selector = 'a, button, [role="button"], [role="link"], [role="menuitem"]';
-
-        Array.from(root.querySelectorAll(selector)).forEach(element => {
-            results.push(element);
-        });
-
-        Array.from(root.querySelectorAll('*')).forEach(element => {
-            if (element.shadowRoot) {
-                collectCMSNavigationElements(element.shadowRoot, results, depth + 1);
-            }
-        });
-    }
-
-    function findCustomerSupportNavigation() {
-        const elements = [];
-        collectCMSNavigationElements(document, elements);
-
-        const visibleElements = elements.filter(isVisible);
-        const hrefMatch = visibleElements.find(element => {
-            const href = cleanText(element.getAttribute('href') || '');
-
-            return /(?:^|\/)v5\/customer-support(?:[/?#]|$)/i.test(href);
-        });
-
-        if (hrefMatch) return hrefMatch;
-
-        return visibleElements.find(element => {
-            const label = cleanText([
-                element.innerText,
-                element.textContent,
-                element.getAttribute('aria-label'),
-                element.getAttribute('title')
-            ].filter(Boolean).join(' ')).toLowerCase();
-
-            return label === 'customer support' || label.includes('customer support');
-        }) || null;
-    }
-
-    function openCustomerSupportPage() {
+    function openCustomerSupportPage(email) {
         if (isCMSUsersPage()) return true;
 
-        const now = Date.now();
-
-        if (cmsNavigationAttempts >= 3 || now - cmsNavigationLastAttempt < 1200) {
-            return false;
-        }
-
-        const navigation = findCustomerSupportNavigation();
-
-        if (!navigation) {
-            console.log('[CMS Search] Customer Support navigation not found yet.');
-            return false;
-        }
-
-        cmsNavigationAttempts += 1;
-        cmsNavigationLastAttempt = now;
-
-        return realClick(
-            navigation,
-            '[CMS Search] Opening Customer Support from the CMS landing page.'
-        );
+        const target = new URL('/v5/customer-support', location.origin);
+        target.searchParams.set(CMS_EMAIL_PARAM, email);
+        console.log('[CMS Search] Redirecting directly to Customer Support:', target.href);
+        location.replace(target.href);
+        return true;
     }
 
     function getSearchUserInput() {
@@ -3466,7 +3408,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         if (!isCMSUsersPage()) {
-            return openCustomerSupportPage();
+            return openCustomerSupportPage(email);
         }
 
         return runCMSSearch(email);
