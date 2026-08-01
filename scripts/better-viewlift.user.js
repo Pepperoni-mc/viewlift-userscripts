@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.1
+// @version      3.0.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.2');
 
   (function () {
 /* ============================================================
@@ -570,6 +570,121 @@
     return '';
   }
 
+  function scoreRefundAmountContext(text) {
+    const context = cleanText(text).toLowerCase();
+    let score = 0;
+
+    if (/\b(?:amount\s+refunded|refunded\s+amount|refund\s+amount|refund\s+total|total\s+refunded)\b/i.test(context)) score += 180;
+    if (/\brefund(?:ed|s|ing)?\b/i.test(context)) score += 70;
+    if (/\b(?:amount|total)\b/i.test(context)) score += 25;
+    if (/\b(?:completed|processed|successful|success)\b/i.test(context)) score += 15;
+    if (/\b(?:subscription|plan\s+price|original\s+charge|charged|amount\s+paid|billing\s+cycle)\b/i.test(context)) score -= 80;
+    if (/\b(?:percentage|reason|policy|request|button)\b/i.test(context)) score -= 70;
+
+    return score;
+  }
+
+  function getScoredAmountsFromRefundText(text, baseScore = 0) {
+    const cleaned = cleanText(text);
+    const refundIndexes = [];
+    const refundPattern = /\brefund(?:ed|s|ing)?\b/ig;
+    let refundMatch;
+
+    while ((refundMatch = refundPattern.exec(cleaned))) {
+      refundIndexes.push(refundMatch.index);
+    }
+
+    const matches = Array.from(cleaned.matchAll(new RegExp(AMOUNT_RE_GLOBAL.source, 'ig')));
+
+    return matches.map(match => {
+      const amountIndex = Number(match.index || 0);
+      const distance = refundIndexes.length
+        ? Math.min(...refundIndexes.map(index => Math.abs(index - amountIndex)))
+        : 500;
+      const proximityScore = Math.max(0, 70 - Math.floor(distance / 3));
+      const nearbyPrefix = cleaned.slice(Math.max(0, amountIndex - 4), amountIndex);
+      const negativeOrParenthesized = /[-(]\s*$/.test(nearbyPrefix) ? 10 : 0;
+
+      return {
+        amount: normalizeRefundAmountDisplay(match[0], cleaned),
+        score: baseScore + scoreRefundAmountContext(cleaned) + proximityScore + negativeOrParenthesized
+      };
+    }).filter(candidate => candidate.amount);
+  }
+
+  function findRefundAmountFromDOM() {
+    const selectors = [
+      '[data-testid*="refund" i]',
+      '[data-test-id*="refund" i]',
+      '[aria-label*="refund" i]',
+      '[class*="refund" i]',
+      'label',
+      'p',
+      'span',
+      'td',
+      'th',
+      '[role="cell"]',
+      '[role="row"]'
+    ].join(',');
+    const sourceElements = queryOutsidePanel(selectors).slice(0, 1800);
+    const contexts = new Set();
+    const candidates = [];
+
+    for (const source of sourceElements) {
+      const sourceText = cleanText(source.innerText || source.textContent || '');
+      const sourceAttributes = cleanText([
+        source.getAttribute('data-testid'),
+        source.getAttribute('data-test-id'),
+        source.getAttribute('aria-label'),
+        source.getAttribute('class')
+      ].filter(Boolean).join(' '));
+
+      if (!/refund/i.test(`${sourceText} ${sourceAttributes}`)) continue;
+
+      let context = source;
+
+      for (let depth = 0; context && depth < 5; depth += 1) {
+        if (isIgnoredElement(context)) break;
+
+        const contextText = cleanText(context.innerText || context.textContent || '');
+
+        if (
+          contextText &&
+          contextText.length <= 1200 &&
+          /refund/i.test(contextText) &&
+          !contexts.has(contextText)
+        ) {
+          contexts.add(contextText);
+          candidates.push(...getScoredAmountsFromRefundText(contextText, 30 - depth * 5));
+
+          if (/\b(?:amount\s+refunded|refunded\s+amount|refund\s+amount|refund\s+total|total\s+refunded)\b/i.test(contextText)) {
+            const bareValues = Array.from(context.querySelectorAll('input, output, strong, b, span, p, td, [role="cell"]'))
+              .map(element => cleanText(element.value || element.textContent || ''))
+              .filter(value => isBareAmount(value));
+            const refundIndex = contextText.toLowerCase().search(/refund/);
+
+            for (const value of bareValues) {
+              const valueIndex = contextText.indexOf(value);
+              const proximity = refundIndex >= 0 && valueIndex >= 0
+                ? Math.max(0, 50 - Math.floor(Math.abs(valueIndex - refundIndex) / 3))
+                : 0;
+
+              candidates.push({
+                amount: normalizeRefundAmountDisplay(value, contextText),
+                score: 185 - depth * 5 + proximity
+              });
+            }
+          }
+        }
+
+        context = context.parentElement;
+      }
+    }
+
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0] ? candidates[0].amount : '';
+  }
+
   function findRefundAmountInBillingLines(lines) {
     const refundLabelRegexes = [
       /^amount refunded\b/i,
@@ -590,7 +705,7 @@
       if (/\b(reason|policy|status|button|action|request)\b/i.test(line) && !AMOUNT_RE.test(line)) continue;
 
       const nearbyBlock = lines
-        .slice(Math.max(0, i - 3), Math.min(lines.length, i + 8))
+        .slice(i, Math.min(lines.length, i + 8))
         .map(cleanText)
         .filter(Boolean)
         .join(' ');
@@ -623,7 +738,7 @@
       value => findPaymentHandlerInText(value)
     );
 
-    data.amount = findRefundAmountInBillingLines(lines);
+    data.amount = findRefundAmountFromDOM() || findRefundAmountInBillingLines(lines);
 
     if (!data.payment) {
       for (const line of lines) {
@@ -744,9 +859,13 @@
     if (!field) return;
 
     const next = cleanText(value);
+    const current = cleanText(field.value);
+    const previousAutoValue = cleanText(field.dataset.refundAutoValue || '');
+    const isStillAutoFilled = Boolean(previousAutoValue && current === previousAutoValue);
 
-    if (forceOverwrite || !field.value || isBlockedEmail(field.value) || isBadPaymentValue(field.value)) {
+    if (forceOverwrite || !current || isStillAutoFilled || isBlockedEmail(current) || isBadPaymentValue(current)) {
       field.value = next;
+      field.dataset.refundAutoValue = next;
       markFieldState(field);
     }
   }

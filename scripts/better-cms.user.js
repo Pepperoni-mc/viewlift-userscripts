@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.1
+// @version      3.0.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS. Migration-compatible installer for previous Better CMS users.
 // @match        https://viewlift.freshdesk.com/*
@@ -11,7 +11,7 @@
 // @match        https://cms.monumentalsportsnetwork.com/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js
-// @require      https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js?v=3.0.1
+// @require      https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js?v=3.0.2
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
