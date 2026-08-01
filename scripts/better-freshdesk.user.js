@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Better Freshdesk
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.29
+// @version      3.30
 // @author       Happy
 // @description  Freshdesk improvements: auto-bold support text and emails, normalized reply spacing, shortcuts, robust CMS email lookup, canned response protection, caret placement fix, safer Apply duplicate cleanup, CMS email search, highlighted Status placement, requester email in the ticket breadcrumb, and header clutter removal.
 // @match        https://viewlift.freshdesk.com/*
@@ -500,6 +500,19 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const NEXT_ID = 'better-freshdesk-next-case';
   const REFUND_LAUNCHER_ID = 'better-freshdesk-refund-launcher';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
+  let cachedTicketPath = '';
+  let cachedEmail = '';
+  let directEmailAttempts = 0;
+  let lastDirectEmailAttemptAt = 0;
+  const CUSTOMER_EMAIL_BLOCKLIST = new Set([
+    'support@livgolfplus.com',
+    'sc-appsupport@spacecityhn.com',
+    'customersupport@altitudeplus.com',
+    'customer.support@altitudeplus.com',
+    'support@altitudeplus.com',
+    'noreply@viewlift.com',
+    'no-reply@viewlift.com'
+  ]);
 
   const BRAND_RULES = [
     { label: 'LIV', patterns: [/liv\s*golf/i, /livgolf/i, /livgolfplus\.com/i] },
@@ -623,7 +636,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       .map(element => element.textContent || '').join(' ');
     const mailtos = Array.from(document.querySelectorAll('a[href^="mailto:" i]'))
       .map(element => element.getAttribute('href') || '').join(' ');
-    return [document.title, selectedGroups, mailtos, document.body && document.body.innerText].join('\n');
+    const ticketContext = Array.from(document.querySelectorAll(
+      '[data-test-id*="group" i], [data-testid*="group" i], [data-test-id*="email" i], [data-testid*="email" i], .ticket-properties-wrapper'
+    )).slice(0, 40).map(element => element.textContent || '').join(' ');
+
+    return [document.title, selectedGroups, mailtos, ticketContext].join('\n');
   }
 
   function detectBrand() {
@@ -631,20 +648,56 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return BRAND_RULES.find(rule => rule.patterns.some(pattern => pattern.test(context))) || null;
   }
 
+  function normalizeCustomerEmail(value) {
+    const match = cleanText(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (!match) return '';
+
+    const email = match[0].toLowerCase();
+    if (CUSTOMER_EMAIL_BLOCKLIST.has(email)) return '';
+    if (/^(?:no-?reply|do-?not-?reply)@/i.test(email)) return '';
+    return email;
+  }
+
   function getEmail() {
-    if (typeof window.__betterFreshdeskGetCustomerEmail === 'function') {
-      const direct = cleanText(window.__betterFreshdeskGetCustomerEmail());
-      if (direct) return direct;
+    if (cachedTicketPath !== location.pathname) {
+      cachedTicketPath = location.pathname;
+      cachedEmail = '';
+      directEmailAttempts = 0;
+      lastDirectEmailAttemptAt = 0;
     }
+
+    if (cachedEmail) return cachedEmail;
 
     const links = Array.from(document.querySelectorAll('a[href^="mailto:" i]'));
     for (const link of links) {
-      const match = (link.getAttribute('href') || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-      if (match) return match[0].toLowerCase();
+      const candidate = normalizeCustomerEmail(link.getAttribute('href') || '');
+      if (candidate) {
+        cachedEmail = candidate;
+        return cachedEmail;
+      }
     }
 
-    const match = getContextText().match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    return match ? match[0].toLowerCase() : '';
+    const candidate = (getContextText().match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])
+      .map(normalizeCustomerEmail)
+      .find(Boolean);
+    if (candidate) {
+      cachedEmail = candidate;
+      return cachedEmail;
+    }
+
+    const now = Date.now();
+    if (
+      typeof window.__betterFreshdeskGetCustomerEmail === 'function' &&
+      directEmailAttempts < 3 &&
+      now - lastDirectEmailAttemptAt >= 2000
+    ) {
+      directEmailAttempts += 1;
+      lastDirectEmailAttemptAt = now;
+      const direct = normalizeCustomerEmail(window.__betterFreshdeskGetCustomerEmail());
+      if (direct) cachedEmail = direct;
+    }
+
+    return cachedEmail;
   }
 
   function copyText(text, element) {
@@ -735,9 +788,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     const detectedBrand = detectBrand();
-    brand.textContent = detectedBrand ? detectedBrand.label : 'CASE';
-    brand.dataset.brand = detectedBrand ? detectedBrand.label : 'CASE';
-    brand.title = detectedBrand ? `Case client: ${detectedBrand.label}` : 'Case client not detected';
+    const brandLabel = detectedBrand ? detectedBrand.label : 'CASE';
+    if (brand.textContent !== brandLabel) brand.textContent = brandLabel;
+    if (brand.dataset.brand !== brandLabel) brand.dataset.brand = brandLabel;
+    const brandTitle = detectedBrand ? `Case client: ${detectedBrand.label}` : 'Case client not detected';
+    if (brand.title !== brandTitle) brand.title = brandTitle;
 
     let email = document.getElementById(EMAIL_ID);
     if (!email) {
@@ -751,15 +806,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
     }
     const customerEmail = getEmail();
-    email.textContent = customerEmail || 'No email';
-    email.dataset.email = customerEmail;
-    email.title = customerEmail ? 'Click to copy customer email' : 'Customer email not found';
+    const emailLabel = customerEmail || 'No email';
+    if (email.textContent !== emailLabel) email.textContent = emailLabel;
+    if (email.dataset.email !== customerEmail) email.dataset.email = customerEmail;
+    const emailTitle = customerEmail ? 'Click to copy customer email' : 'Customer email not found';
+    if (email.title !== emailTitle) email.title = emailTitle;
 
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
-    // Keep the high-frequency order predictable: client, CMS, email, agent, next, refund.
-    if (cms) toolbar.appendChild(cms);
-    toolbar.appendChild(email);
 
     let next = document.getElementById(NEXT_ID);
     if (!next) {
@@ -773,9 +827,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       toolbar.appendChild(next);
     }
 
-    if (agent) toolbar.appendChild(agent);
-    if (next) toolbar.appendChild(next);
-
     let launcher = document.getElementById(REFUND_LAUNCHER_ID);
     if (!launcher) {
       launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund capture', 'Open Refund Capture');
@@ -787,14 +838,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       toolbar.appendChild(launcher);
     }
 
-    // Re-append every control on every pass so asynchronous Freshdesk rendering
-    // cannot change the requested order.
-    toolbar.appendChild(brand);
-    if (cms) toolbar.appendChild(cms);
-    toolbar.appendChild(email);
-    if (agent) toolbar.appendChild(agent);
-    if (next) toolbar.appendChild(next);
-    toolbar.appendChild(launcher);
+    const orderedControls = [brand, cms, email, agent, next, launcher].filter(Boolean);
+    const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
+    const orderIsCorrect = orderedControls.length === currentControls.length &&
+      orderedControls.every((element, index) => currentControls[index] === element);
+
+    if (!orderIsCorrect) {
+      orderedControls.forEach(element => toolbar.appendChild(element));
+    }
 
     mountRefundPanel(toolbar);
   }
@@ -806,9 +857,27 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     installToolbar();
-    const observer = new MutationObserver(() => window.setTimeout(installToolbar, 120));
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    window.setInterval(installToolbar, 1500);
+
+    let timer = null;
+    const scheduleInstall = () => {
+      if (document.visibilityState === 'hidden') return;
+      const toolbar = document.getElementById(TOOLBAR_ID);
+      if (
+        toolbar &&
+        toolbar.isConnected &&
+        cachedTicketPath === location.pathname &&
+        document.getElementById(NEXT_ID) &&
+        document.getElementById(REFUND_LAUNCHER_ID)
+      ) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(installToolbar, 250);
+    };
+
+    const observer = new MutationObserver(scheduleInstall);
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.setInterval(() => {
+      if (document.visibilityState === 'visible') installToolbar();
+    }, 8000);
   }
 
   init();
@@ -951,6 +1020,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
+
   if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
 
   const SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
@@ -1091,6 +1161,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+  // Superseded by the cached email control in the unified action bar.
+  return;
 
   const STYLE_ID = 'better-freshdesk-requester-email-style';
   const EMAIL_BADGE_ID = 'better-freshdesk-requester-email';
@@ -1561,19 +1634,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     addStyles();
     removeHeaderClutter();
-
-    let timer = null;
-    const observer = new MutationObserver(function () {
-      clearTimeout(timer);
-      timer = setTimeout(removeHeaderClutter, 60);
+    [500, 1500, 3500].forEach(function (delay) {
+      setTimeout(removeHeaderClutter, delay);
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    setInterval(removeHeaderClutter, 2000);
   }
 
   init();
@@ -3422,6 +3485,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         let timer = null;
 
         const observer = new MutationObserver(function () {
+            if (document.getElementById(BUTTON_ID)) return;
             clearTimeout(timer);
 
             timer = setTimeout(function () {
@@ -3434,7 +3498,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             subtree: true
         });
 
-        setInterval(installHeaderButton, 1500);
+        setInterval(function () {
+            if (document.visibilityState === 'visible') installHeaderButton();
+        }, 5000);
     }
 
     if (isCMSPage()) {
@@ -3654,6 +3720,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const sticky = getPropertiesSticky();
     if (!sticky || !isVisible(sticky)) return;
 
+    const existing = document.querySelector(`.${STATUS_ROW_CLASS}`);
+    if (existing && existing.isConnected && existing.previousElementSibling === sticky) return;
+
     const row = findStatusRow();
     if (!row) return;
 
@@ -3678,10 +3747,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       }, 120);
     });
 
-    observer.observe(document.body || document.documentElement, {
+    observer.observe(getPropertiesPanel(), {
       childList: true,
-      subtree: true,
-      characterData: true
+      subtree: true
     });
   }
 
@@ -3696,8 +3764,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     installObserver();
 
     setInterval(function () {
-      moveStatusBelowProperties();
-    }, 1500);
+      if (document.visibilityState === 'visible') moveStatusBelowProperties();
+    }, 8000);
   }
 
   init();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.8.3
+// @version      2.9.0
 // @author       Happy, Potato
 // @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
@@ -92,6 +92,11 @@
 
   let lastRefundToolUrl = location.href;
   let refundToolRouteTimer = null;
+  let lastCaptureRunAt = 0;
+  const CAPTURE_COOLDOWN_MS = 2500;
+  let cachedPageLines = [];
+  let cachedPageLinesAt = 0;
+  const PAGE_SCAN_CACHE_MS = 4000;
 
   function isFreshdeskHost() {
     return location.hostname === 'viewlift.freshdesk.com';
@@ -273,6 +278,11 @@
   }
 
   function getPageLinesOutsidePanel() {
+    const now = Date.now();
+    if (cachedPageLines.length && now - cachedPageLinesAt < PAGE_SCAN_CACHE_MS) {
+      return cachedPageLines;
+    }
+
     const lines = [];
 
     const add = value => {
@@ -295,7 +305,9 @@
       }
     });
 
-    return lines;
+    cachedPageLines = lines;
+    cachedPageLinesAt = now;
+    return cachedPageLines;
   }
 
   function collectDeepTextFromRoot(root, chunks, depth = 0) {
@@ -774,6 +786,21 @@
   }
 
   function getRefundClientContextText() {
+    const targetedContext = Array.from(document.querySelectorAll([
+      '#better-freshdesk-case-brand',
+      '.ember-power-select-selected-item',
+      'a[href^="mailto:" i]',
+      '[data-test-id*="client" i]',
+      '[data-testid*="client" i]',
+      '[aria-label*="client" i]'
+    ].join(','))).slice(0, 60).map(element => {
+      return [
+        element.textContent || '',
+        element.getAttribute('href') || '',
+        element.getAttribute('aria-label') || ''
+      ].join(' ');
+    }).join('\n');
+
     const values = [
       location.href,
       document.title,
@@ -783,8 +810,7 @@
       safeGet(STORAGE_KEYS.cms, ''),
       document.getElementById('refund-email')?.value || '',
       document.getElementById('refund-cms')?.value || '',
-      document.body?.innerText || '',
-      getDeepPageTextOutsidePanel()
+      targetedContext
     ];
 
     return values
@@ -911,6 +937,10 @@
   function runCapture(forceOverwrite = false, statusMessage = '') {
     if (!isSupportedPage()) return;
 
+    const now = Date.now();
+    if (!forceOverwrite && now - lastCaptureRunAt < CAPTURE_COOLDOWN_MS) return;
+    lastCaptureRunAt = now;
+
     savePageData();
     refreshAutoFields(forceOverwrite);
 
@@ -918,20 +948,18 @@
   }
 
   function retryCapture() {
-    let attempts = 0;
-
-    const interval = setInterval(function () {
-      attempts += 1;
-      runCapture(false);
-
-      if (attempts >= 60) clearInterval(interval);
-    }, 1000);
+    [1000, 2500, 5000, 9000].forEach(function (delay) {
+      setTimeout(function () {
+        runCapture(false);
+      }, delay);
+    });
   }
 
   function observeDynamicChanges() {
     let timer = null;
 
     const observer = new MutationObserver(function () {
+      if (document.visibilityState === 'hidden') return;
       clearTimeout(timer);
 
       timer = setTimeout(function () {
@@ -942,14 +970,12 @@
         } else {
           runCapture(false);
         }
-      }, 800);
+      }, 1200);
     });
 
     observer.observe(document.body || document.documentElement, {
       childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['href', 'value', 'title', 'aria-label']
+      subtree: true
     });
   }
 
@@ -1649,6 +1675,9 @@
     if (location.href === lastRefundToolUrl) return;
 
     lastRefundToolUrl = location.href;
+    lastCaptureRunAt = 0;
+    cachedPageLines = [];
+    cachedPageLinesAt = 0;
 
     clearTimeout(refundToolRouteTimer);
 
@@ -1686,7 +1715,7 @@
       setTimeout(handleRefundToolRouteChange, 0);
     });
 
-    setInterval(handleRefundToolRouteChange, 500);
+    setInterval(handleRefundToolRouteChange, 5000);
   }
 
   function runRefundToolStartupPasses() {
@@ -1727,12 +1756,14 @@
     installRefundToolRouteWatcher();
     installCrossTabSync();
     installVisibilityCapture();
-    observeDynamicChanges();
+    // Startup, route, focus and periodic passes cover asynchronous rendering
+    // without reacting to every DOM mutation on Freshdesk and the CMS.
     retryCapture();
 
     runRefundToolStartupPasses();
 
     setInterval(function () {
+      if (document.visibilityState === 'hidden') return;
       handleRefundToolRouteChange();
 
       if (isSupportedPage()) {
@@ -1742,7 +1773,7 @@
       } else {
         removeUI();
       }
-    }, 1500);
+    }, 8000);
   }
 
   initRefundCaptureTool();
@@ -1833,6 +1864,8 @@
     installRefunderPreference();
 
     const observer = new MutationObserver(function () {
+      const select = document.getElementById(REFUNDER_SELECT_ID);
+      if (select && select.dataset.betterCmsRefunderPreferenceInstalled) return;
       installRefunderPreference();
     });
 
@@ -1841,7 +1874,9 @@
       subtree: true
     });
 
-    setInterval(installRefunderPreference, 1500);
+    setInterval(function () {
+      if (document.visibilityState === 'visible') installRefunderPreference();
+    }, 8000);
   }
 
   initRefunderPreference();
@@ -3292,14 +3327,20 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
     installSetAgentButton();
 
-    const observer = new MutationObserver(scheduleSetAgentInstall);
+    const observer = new MutationObserver(function () {
+        const button = document.getElementById(BUTTON_ID);
+        if (button && button.isConnected) return;
+        scheduleSetAgentInstall();
+    });
 
     observer.observe(document.body || document.documentElement, {
         childList: true,
         subtree: true
     });
 
-    setInterval(installSetAgentButton, 1500);
+    setInterval(function () {
+        if (document.visibilityState === 'visible') installSetAgentButton();
+    }, 5000);
 })();
 
 
@@ -4571,7 +4612,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             setTimeout(handleRouteChange, 0);
         });
 
-        setInterval(handleRouteChange, 400);
+        setInterval(handleRouteChange, 5000);
     }
 
     function runStartupPasses() {
@@ -4634,18 +4675,20 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         let timer = null;
 
         const observer = new MutationObserver(() => {
+            if (document.visibilityState === 'hidden') return;
+            const wrapper = document.getElementById(WRAPPER_ID);
+            if (location.href === lastUrl && wrapper && wrapper.isConnected) return;
             clearTimeout(timer);
             timer = setTimeout(() => {
                 handleRouteChange();
                 createOrMoveTools();
                 updatePaymentHandlerBadge();
-            }, 200);
+            }, 500);
         });
 
         observer.observe(document.body || document.documentElement, {
             childList: true,
-            subtree: true,
-            characterData: true
+            subtree: true
         });
     }
 
@@ -4661,6 +4704,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         runStartupPasses();
 
         setInterval(() => {
+            if (document.visibilityState === 'hidden') return;
             handleRouteChange();
             createOrMoveTools();
             updatePaymentHandlerBadge();
@@ -4668,7 +4712,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             if (AUTO_OPEN_SUBSCRIPTION_PLANS) {
                 autoOpenSubscriptionPlansIfNeeded();
             }
-        }, 1000);
+        }, 8000);
     }
 
     init();
