@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better CMS
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      2.9.0
+// @version      2.9.1
 // @author       Happy, Potato
 // @description  ViewLift CMS and Freshdesk tools: refund capture, session-finalization autofill, cancellation reason autofill, refund workflow helper, real snapshot capture, and Set Agent.
 // @match        https://viewlift.freshdesk.com/*
@@ -2165,6 +2165,14 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     const STORAGE_KEY = 'betterFreshdeskMyAgentName';
     const CMS_BUTTON_ID = 'viewlift-open-cms-header-button';
     const OWNER_VALUE = 'better-cms-set-agent-1.1';
+    const AGENT_TRIGGER_SELECTOR = [
+        '.ember-power-select-trigger',
+        '[id^="ember-power-select-trigger-"]',
+        '[role="button"][aria-owns*="ember-basic-dropdown-content"]',
+        '[role="combobox"]',
+        '[aria-haspopup="listbox"]',
+        'select'
+    ].join(',');
     const FALLBACK_AGENT_NAMES = [
         'Adrian Fernandez',
         'Ankur Prabhakar',
@@ -2513,19 +2521,18 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
             const text = cleanAgentText(element.textContent).replace(/\s*\*+\s*$/, '');
 
-            return /^agent\s+name$/i.test(text);
+            return /^agent(?:\s+name)?$/i.test(text);
         });
     }
 
     function getAgentTriggers(root) {
         if (!root || !root.querySelectorAll) return [];
 
-        return Array.from(root.querySelectorAll([
-            '.ember-power-select-trigger',
-            '[id^="ember-power-select-trigger-"]',
-            '[role="button"][aria-owns*="ember-basic-dropdown-content"]'
-        ].join(','))).filter(element => {
-            return !element.closest(`#${MENU_ID}`) && isUsableAgentElement(element);
+        return Array.from(root.querySelectorAll(AGENT_TRIGGER_SELECTOR)).filter(element => {
+            return (
+                !element.closest(`#${MENU_ID}, #${BUTTON_ID}, section#mainactionbar`) &&
+                isUsableAgentElement(element)
+            );
         });
     }
 
@@ -2547,9 +2554,9 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
             if (associated) {
                 const trigger =
-                    (associated.matches('.ember-power-select-trigger') && associated) ||
-                    associated.closest('.ember-power-select-trigger') ||
-                    associated.querySelector('.ember-power-select-trigger');
+                    (associated.matches(AGENT_TRIGGER_SELECTOR) && associated) ||
+                    associated.closest(AGENT_TRIGGER_SELECTOR) ||
+                    associated.querySelector(AGENT_TRIGGER_SELECTOR);
 
                 if (trigger) return trigger;
             }
@@ -2624,7 +2631,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                         context.getAttribute && context.getAttribute('name')
                     ].filter(Boolean).join(' '));
 
-                    if (/agent\s+name/i.test(contextText)) score += 20 - depth;
+                    if (/\bagent(?:\s+name)?\b/i.test(contextText)) score += 20 - depth;
                     if (/agent/i.test(attributes)) score += 12 - depth;
 
                     context = context.parentElement;
@@ -2647,6 +2654,10 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
     function getAgentOptions(trigger) {
         if (!trigger) return [];
+
+        if (trigger.matches && trigger.matches('select')) {
+            return Array.from(trigger.options || []).filter(option => !option.disabled);
+        }
 
         const triggerId = cleanAgentText(trigger.id || '');
         const ownedContentId = cleanAgentText(
@@ -2681,9 +2692,16 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             }
         }
 
-        const dropdowns = Array.from(
-            document.querySelectorAll('.ember-power-select-dropdown')
-        ).filter(isUsableAgentElement);
+        const dropdowns = Array.from(document.querySelectorAll([
+            '.ember-power-select-dropdown',
+            '[role="listbox"]',
+            '[role="menu"]'
+        ].join(','))).filter(element => {
+            return (
+                isUsableAgentElement(element) &&
+                element.querySelector('.ember-power-select-option, [role="option"]')
+            );
+        });
 
         if (!dropdowns.length) return [];
 
@@ -2765,6 +2783,41 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         });
 
         return names;
+    }
+
+    function getSelectedAgentText(trigger) {
+        if (!trigger) return '';
+
+        if (trigger.matches && trigger.matches('select')) {
+            const selectedOption = trigger.selectedOptions && trigger.selectedOptions[0];
+            return cleanAgentText(selectedOption ? selectedOption.textContent : '');
+        }
+
+        const selectedItem = trigger.querySelector
+            ? trigger.querySelector('.ember-power-select-selected-item, [aria-selected="true"]')
+            : null;
+
+        return cleanAgentText(
+            selectedItem ? selectedItem.textContent : trigger.textContent
+        );
+    }
+
+    function selectAgentOption(trigger, option) {
+        if (
+            trigger &&
+            trigger.matches &&
+            trigger.matches('select') &&
+            option &&
+            option.matches &&
+            option.matches('option')
+        ) {
+            trigger.value = option.value;
+            trigger.dispatchEvent(new Event('input', { bubbles: true }));
+            trigger.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+
+        return clickAgentElement(option);
     }
 
     function closeFreshdeskAgentDropdown(trigger) {
@@ -2974,14 +3027,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             const expectedName = normalizeAgentName(agentName);
 
             function check() {
-                const selectedItem = trigger && trigger.querySelector
-                    ? trigger.querySelector('.ember-power-select-selected-item')
-                    : null;
-                const currentName = normalizeAgentName(
-                    selectedItem
-                        ? selectedItem.textContent
-                        : trigger && trigger.textContent
-                );
+                const currentName = normalizeAgentName(getSelectedAgentText(trigger));
 
                 if (
                     currentName === expectedName ||
@@ -3108,14 +3154,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 return;
             }
 
-            const selectedItem = result.trigger.querySelector
-                ? result.trigger.querySelector('.ember-power-select-selected-item')
-                : null;
-            const currentName = cleanAgentText(
-                selectedItem
-                    ? selectedItem.textContent
-                    : result.trigger.textContent
-            );
+            const currentName = getSelectedAgentText(result.trigger);
 
             if (normalizeAgentName(currentName) !== normalizeAgentName(savedAgentName)) {
                 const matchingOption = result.options.find(option => {
@@ -3136,7 +3175,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     return;
                 }
 
-                if (!clickAgentElement(matchingOption)) {
+                if (!selectAgentOption(result.trigger, matchingOption)) {
                     showSetAgentToast('Could not select the saved agent.', 'error', 4200);
                     return;
                 }
