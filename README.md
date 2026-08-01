@@ -1,17 +1,16 @@
-# ViewLift Userscripts
+# Better Viewlift
 
-A small Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
+A unified Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 
 ## Install
 
 | Script | Purpose | Install |
 |---|---|---|
-| **Better&nbsp;Freshdesk** | Freshdesk reply cleanup, auto-bold text, and CMS email search | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-freshdesk.user.js) |
-| **Better&nbsp;CMS** | Refund capture, cancellation reason autofill, screenshots, and payment badges | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-cms.user.js) |
+| **Better&nbsp;Viewlift** | All Freshdesk and CMS productivity tools in one userscript | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js) |
 
-## What They Do
+## What It Does
 
-### Better Freshdesk
+### Freshdesk
 
 - Adds a `CMS` button to Freshdesk tickets
 - Opens CMS and searches the customer email automatically
@@ -19,7 +18,7 @@ A small Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 - Removes duplicated greetings, repeated paragraphs, extra spacing, and quoted markers
 - Auto-bolds standard support text like `Technical Support Team` and `Regards,`
 
-### Better CMS
+### CMS
 
 - Adds the refund capture panel
 - Captures email, Freshdesk URL, CMS URL, payment handler, and refund amount
@@ -29,4 +28,10 @@ A small Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 - Shows the payment handler badge next to the camera button
 - Hides helper UI from screenshots
 - Works across internal CMS navigation without refreshing
+
+## Migrating from the old scripts
+
+Previous Better CMS installations update to Better Viewlift automatically. After
+updating, uninstall the `Better Freshdesk (Merged - Remove)` legacy entry from
+Tampermonkey. New installations should use the Better Viewlift link above.
 
