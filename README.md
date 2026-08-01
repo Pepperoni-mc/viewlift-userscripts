@@ -25,6 +25,7 @@ A unified Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 - Saves the selected refunder permanently
 - Auto-fills cancellation reason
 - Adds the camera snapshot button next to the customer name
+- Adds a camera snapshot button to the Customer Support search page
 - Shows the payment handler badge next to the camera button
 - Hides helper UI from screenshots
 - Works across internal CMS navigation without refreshing

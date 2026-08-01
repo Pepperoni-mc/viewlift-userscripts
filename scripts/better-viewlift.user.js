@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.0
+// @version      3.0.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.1');
 
   (function () {
 /* ============================================================
@@ -3227,6 +3227,26 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     }
 
     function getSetAgentInsertionPoint() {
+        const unifiedToolbar = document.getElementById('better-freshdesk-unified-toolbar');
+
+        if (unifiedToolbar) {
+            const nextControl =
+                document.getElementById('better-freshdesk-next-case') ||
+                document.getElementById('better-freshdesk-refund-launcher');
+
+            if (nextControl && nextControl.parentElement === unifiedToolbar) {
+                return {
+                    mode: 'before',
+                    element: nextControl
+                };
+            }
+
+            return {
+                mode: 'append',
+                element: unifiedToolbar
+            };
+        }
+
         const cmsButton = document.getElementById(CMS_BUTTON_ID);
 
         if (cmsButton) {
@@ -4067,6 +4087,14 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         return /^\/(?:users|v5\/customer-support\/user)(\/|$)/i.test(location.pathname);
     }
 
+    function isCustomerSupportSearchPage() {
+        return /^\/v5\/customer-support\/?$/i.test(location.pathname);
+    }
+
+    function isSnapshotPage() {
+        return isUserPage() || isCustomerSupportSearchPage();
+    }
+
     function addStyles() {
         if (document.getElementById(STYLE_ID)) return;
 
@@ -4079,6 +4107,17 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 gap: 8px !important;
                 margin-left: 0 !important;
                 margin-right: 2px !important;
+            }
+
+            #${WRAPPER_ID}[data-context="customer-support-search"] {
+                margin-left: 8px !important;
+                margin-right: 0 !important;
+            }
+
+            #${WRAPPER_ID}[data-context="customer-support-search"] #${BUTTON_ID} {
+                width: 52px !important;
+                height: 52px !important;
+                box-shadow: none !important;
             }
 
             #${BUTTON_ID} {
@@ -4185,16 +4224,101 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         document.head.appendChild(style);
     }
 
-    function removeToolsIfNotUserPage() {
-        if (isUserPage()) return;
+    function removeToolsIfNotSnapshotPage() {
+        if (isSnapshotPage()) return;
 
         const wrapper = document.getElementById(WRAPPER_ID);
         if (wrapper) wrapper.remove();
     }
 
+    function isVisibleSnapshotElement(element) {
+        if (!element) return false;
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+
+        return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+        );
+    }
+
+    function findCustomerSupportSearchButton() {
+        const searchInput = Array.from(document.querySelectorAll("input"))
+            .filter(isVisibleSnapshotElement)
+            .sort((first, second) => {
+                return second.getBoundingClientRect().width - first.getBoundingClientRect().width;
+            })[0] || null;
+        const candidates = Array.from(document.querySelectorAll("button, [role='button']"))
+            .filter(element => {
+                return (
+                    isVisibleSnapshotElement(element) &&
+                    cleanText(element.textContent).toLowerCase() === "search"
+                );
+            });
+
+        if (!candidates.length) return null;
+        if (!searchInput) return candidates[candidates.length - 1];
+
+        const inputRect = searchInput.getBoundingClientRect();
+        const score = element => {
+            const rect = element.getBoundingClientRect();
+            const verticalDistance = Math.abs(
+                (rect.top + rect.height / 2) -
+                (inputRect.top + inputRect.height / 2)
+            );
+            const rightSidePenalty = rect.left >= inputRect.left ? 0 : 1000;
+
+            return verticalDistance * 10 + rightSidePenalty + Math.abs(rect.left - inputRect.right);
+        };
+
+        return candidates.slice().sort((first, second) => score(first) - score(second))[0];
+    }
+
+    function createOrMoveCustomerSupportSearchTools() {
+        addStyles();
+
+        const searchButton = findCustomerSupportSearchButton();
+        if (!searchButton) return;
+
+        let wrapper = document.getElementById(WRAPPER_ID);
+        if (!wrapper) {
+            wrapper = document.createElement("span");
+            wrapper.id = WRAPPER_ID;
+        }
+
+        let button = document.getElementById(BUTTON_ID);
+        if (!button) {
+            button = document.createElement("button");
+            button.id = BUTTON_ID;
+            button.type = "button";
+            button.textContent = "\uD83D\uDCF8";
+            button.title = "Capture screenshot and copy it to the clipboard";
+            button.setAttribute("aria-label", "Capture screenshot and copy it to the clipboard");
+            button.addEventListener("click", captureRealTabSnapshot);
+        }
+
+        const badge = document.getElementById(BADGE_ID);
+        if (badge) badge.remove();
+
+        if (!wrapper.contains(button)) wrapper.appendChild(button);
+        wrapper.dataset.context = "customer-support-search";
+
+        if (wrapper.previousElementSibling !== searchButton) {
+            searchButton.insertAdjacentElement("afterend", wrapper);
+        }
+    }
+
     function createOrMoveTools() {
+        if (isCustomerSupportSearchPage()) {
+            createOrMoveCustomerSupportSearchTools();
+            return;
+        }
+
         if (!isUserPage()) {
-            removeToolsIfNotUserPage();
+            removeToolsIfNotSnapshotPage();
             return;
         }
 
@@ -4212,6 +4336,8 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             wrapper = document.createElement("span");
             wrapper.id = WRAPPER_ID;
         }
+
+        delete wrapper.dataset.context;
 
         let button = document.getElementById(BUTTON_ID);
 
@@ -4254,7 +4380,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
         updatePaymentHandlerBadge();
 
-        if (AUTO_OPEN_SUBSCRIPTION_PLANS) {
+        if (AUTO_OPEN_SUBSCRIPTION_PLANS && isUserPage()) {
             autoOpenSubscriptionPlansIfNeeded();
         }
     }
@@ -4755,7 +4881,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             createOrMoveTools();
             updatePaymentHandlerBadge();
 
-            if (AUTO_OPEN_SUBSCRIPTION_PLANS) {
+            if (AUTO_OPEN_SUBSCRIPTION_PLANS && isUserPage()) {
                 autoOpenSubscriptionPlansIfNeeded();
             }
         }, 8000);
