@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.2
+// @version      3.0.3
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.2');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.3');
 
   (function () {
 /* ============================================================
@@ -3813,7 +3813,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 /* ============================================================
  * Feature 3: CMS v5 Percentage Refund Workflow
  * Opens Refund > Percentage and prepares the Issue Refund form.
- * The final Issue Refund button is intentionally not clicked.
+ * Completes the Issue Refund form and submits it automatically.
  * ============================================================ */
 
 if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
@@ -3979,6 +3979,31 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         }) || null;
     }
 
+    function selectNativeROTH(dialog) {
+        const select = Array.from(dialog?.querySelectorAll('select') || []).find(candidate =>
+            Array.from(candidate.options || []).some(option => getText(option).toLowerCase().startsWith('roth'))
+        );
+        if (!select) return false;
+        const option = Array.from(select.options || []).find(candidate =>
+            cleanText(candidate.value).toUpperCase() === REFUND_REASON_VALUE ||
+            getText(candidate).toLowerCase().startsWith('roth')
+        );
+        if (!option) return false;
+        const previousValue = select.value;
+        select.value = option.value;
+        if (select._valueTracker) select._valueTracker.setValue(previousValue);
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[Better CMS Refund] Reason selected: ROTH.');
+        return true;
+    }
+
+    function getIssueRefundButton(dialog) {
+        return Array.from(dialog?.querySelectorAll('button, [role="button"]') || [])
+            .filter(isVisible)
+            .find(button => getText(button).toLowerCase() === 'issue refund' && !button.disabled) || null;
+    }
+
     function extractFreshdeskTicketId(value) {
         const text = cleanText(value);
         const urlMatch = text.match(/viewlift\.freshdesk\.com\/(?:a\/)?tickets\/(\d+)/i);
@@ -3997,6 +4022,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         } catch (error) {
             return '';
         }
+    }
+
+    function getFreshdeskTicketURL() {
+        const ticketId = getFreshdeskTicketId();
+        return ticketId ? `https://viewlift.freshdesk.com/a/tickets/${ticketId}` : '';
     }
 
     function scheduleRun(delay = 100) {
@@ -4045,17 +4075,20 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             const textarea = dialog.querySelector(
                 'textarea[placeholder*="more details" i], textarea[placeholder*="refund" i], textarea'
             );
-            const ticketId = getFreshdeskTicketId();
-            if (textarea && ticketId) {
-                commentsFilled = setControlledValue(textarea, ticketId);
+            const ticketURL = getFreshdeskTicketURL();
+            if (textarea && ticketURL) {
+                commentsFilled = setControlledValue(textarea, `Customer wanted a refund: ${ticketURL}`);
             }
         }
 
         if (!reasonSelected) {
-            const option = getReasonOption();
-            if (option) {
-                reasonSelected = realClick(option, '[Better CMS Refund] Reason selected: ROTH.');
+            if (selectNativeROTH(dialog)) {
+                reasonSelected = true;
             } else {
+                const option = getReasonOption();
+                if (option) {
+                    reasonSelected = realClick(option, '[Better CMS Refund] Reason selected: ROTH.');
+                } else {
                 const trigger = getReasonTrigger(dialog);
                 const triggerText = getText(trigger).toLowerCase();
 
@@ -4066,13 +4099,17 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     lastReasonTriggerClickAt = Date.now();
                     realClick(trigger, '[Better CMS Refund] Reason menu opened.');
                 }
+                }
             }
         }
 
         if (percentageFilled && reasonSelected && commentsFilled) {
-            workflowActive = false;
-            console.log('[Better CMS Refund] Form prepared. Click Issue Refund when ready.');
-            return;
+            const submitButton = getIssueRefundButton(dialog);
+            if (submitButton) {
+                realClick(submitButton, '[Better CMS Refund] Issue Refund clicked automatically.');
+                workflowActive = false;
+                return;
+            }
         }
 
         scheduleRun(150);
@@ -4133,6 +4170,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     'use strict';
 
     if (!/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
+        return;
+    }
+
+    // The maintained workflow above supersedes this legacy injected copy.
+    if (window.__betterCmsV5PercentageRefundInstalled) {
         return;
     }
 
