@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.1.0
+// @version      3.1.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.1.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.1.1');
 
   (function () {
 /* ============================================================
@@ -1048,11 +1048,13 @@
     const sheetUrl = REFUND_SHEET_URLS[result.sheetKey] || REFUND_SHEET_URLS.tbl;
 
     GM_setClipboard(result.row.join('\t'));
-    const opened = window.open(sheetUrl, '_blank', 'noopener');
+    // Open at the bottom of the stable Freshdesk ID column. From there,
+    // Ctrl+Up reaches the last non-empty record even when rows are blank.
+    const opened = window.open(`${sheetUrl}&range=B1048576`, '_blank', 'noopener');
     setStatus(
       opened
-        ? `Copied for ${result.sheetKey.toUpperCase()} sheet. Paste after the last record.`
-        : 'Copied. Open the refund sheet and paste after the last record.'
+        ? `Copied for ${result.sheetKey.toUpperCase()} sheet. In column B, press Ctrl+Up, ArrowDown, then Ctrl+V.`
+        : 'Copied. In column B, press Ctrl+Up, ArrowDown, then Ctrl+V.'
     );
     markAllFieldStates();
   }
