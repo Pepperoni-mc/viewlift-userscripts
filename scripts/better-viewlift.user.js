@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.6.0
+// @version      3.7.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.6.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.7.0');
 
   (function () {
 /* ============================================================
@@ -5322,6 +5322,36 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         return document.querySelector("h4");
     }
 
+    function requestExtensionCapture(timeoutMs = 1200) {
+        return new Promise(resolve => {
+            const requestId = `better-viewlift-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            let finished = false;
+
+            const finish = dataUrl => {
+                if (finished) return;
+                finished = true;
+                window.removeEventListener("message", onMessage);
+                resolve(dataUrl || "");
+            };
+
+            const onMessage = event => {
+                if (event.source !== window) return;
+                const message = event.data;
+                if (!message || message.source !== "better-viewlift-capture-helper" ||
+                    message.type !== "capture-visible-tab-result" || message.requestId !== requestId) return;
+                finish(message.ok ? message.dataUrl : "");
+            };
+
+            window.addEventListener("message", onMessage);
+            window.postMessage({
+                source: "better-viewlift",
+                type: "capture-visible-tab",
+                requestId
+            }, "*");
+            window.setTimeout(() => finish(""), timeoutMs);
+        });
+    }
+
     async function captureRealTabSnapshot() {
         const button = document.getElementById(BUTTON_ID);
         if (!button) return;
@@ -5342,8 +5372,14 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             await nextFrame();
             await delay(150);
 
-            if (!reusableCaptureStream || reusableCaptureStream.getVideoTracks().some(track => track.readyState === "ended")) {
-                reusableCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+            const extensionDataUrl = await requestExtensionCapture();
+            let blob;
+
+            if (extensionDataUrl) {
+                blob = await (await fetch(extensionDataUrl)).blob();
+            } else {
+                if (!reusableCaptureStream || reusableCaptureStream.getVideoTracks().some(track => track.readyState === "ended")) {
+                    reusableCaptureStream = await navigator.mediaDevices.getDisplayMedia({
                     video: {
                         displaySurface: "browser",
                         logicalSurface: true,
@@ -5351,15 +5387,15 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     },
                     audio: false,
                     preferCurrentTab: true
-                });
-                streamCreated = true;
-                reusableCaptureStream.getVideoTracks().forEach(track => {
-                    track.addEventListener("ended", () => {
-                        reusableCaptureStream = null;
-                        reusableCaptureVideo = null;
-                    }, { once: true });
-                });
-            }
+                    });
+                    streamCreated = true;
+                    reusableCaptureStream.getVideoTracks().forEach(track => {
+                        track.addEventListener("ended", () => {
+                            reusableCaptureStream = null;
+                            reusableCaptureVideo = null;
+                        }, { once: true });
+                    });
+                }
 
             if (!reusableCaptureVideo) {
                 reusableCaptureVideo = document.createElement("video");
@@ -5376,14 +5412,14 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
             await nextFrame();
 
-            const canvas = document.createElement("canvas");
-            canvas.width = reusableCaptureVideo.videoWidth;
-            canvas.height = reusableCaptureVideo.videoHeight;
+                const canvas = document.createElement("canvas");
+                canvas.width = reusableCaptureVideo.videoWidth;
+                canvas.height = reusableCaptureVideo.videoHeight;
 
-            const context = canvas.getContext("2d");
-            context.drawImage(reusableCaptureVideo, 0, 0, canvas.width, canvas.height);
-
-            const blob = await canvasToBlob(canvas);
+                const context = canvas.getContext("2d");
+                context.drawImage(reusableCaptureVideo, 0, 0, canvas.width, canvas.height);
+                blob = await canvasToBlob(canvas);
+            }
 
             const snapshotDataUrl = await blobToDataUrl(blob);
             const ticketUrl = String(GM_getValue('Refund Active Ticket', '') || '').trim() ||
@@ -6742,6 +6778,41 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   init();
 })();
 }
+
+/* ============================================================
+ * Feature 9b: Compact Freshdesk Conversation Images
+ * Keeps user-provided photos readable without letting them expand the ticket.
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+    const STYLE_ID = 'better-freshdesk-compact-images-style';
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+        [data-test-id*="conversation" i] img,
+        [data-test-id*="message" i] img,
+        [data-test-id*="attachment" i] img,
+        .conversation-body img,
+        .thread-message img,
+        .attachment img,
+        [role="article"] img {
+            max-width: 360px !important;
+            max-height: 240px !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
+            border-radius: 6px !important;
+        }
+    `;
+
+    (document.head || document.documentElement).appendChild(style);
+})();
 
 /* ============================================================
  * Feature 5: Requester Email in Ticket Header

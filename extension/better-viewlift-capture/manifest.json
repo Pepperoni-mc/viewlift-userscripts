@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Better ViewLift Capture Helper",
+  "version": "1.0.0",
+  "description": "Captures the active ViewLift CMS tab for Better ViewLift without a screen-share prompt on every capture.",
+  "permissions": ["tabs"],
+  "host_permissions": [
+    "https://cms.viewlift.com/*",
+    "https://cms-gcp.viewlift.com/*",
+    "https://cms-qcp.viewlift.com/*",
+    "https://cms.monumentalsportsnetwork.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://cms.viewlift.com/*",
+        "https://cms-gcp.viewlift.com/*",
+        "https://cms-qcp.viewlift.com/*",
+        "https://cms.monumentalsportsnetwork.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
