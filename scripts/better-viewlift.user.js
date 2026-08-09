@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.7.0
+// @version      3.8.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -12,6 +12,7 @@
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @run-at       document-idle
+// @require      https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -25,7 +26,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.7.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.8.0');
 
   (function () {
 /* ============================================================
@@ -5372,54 +5373,30 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             await nextFrame();
             await delay(150);
 
-            const extensionDataUrl = await requestExtensionCapture();
-            let blob;
-
-            if (extensionDataUrl) {
-                blob = await (await fetch(extensionDataUrl)).blob();
-            } else {
-                if (!reusableCaptureStream || reusableCaptureStream.getVideoTracks().some(track => track.readyState === "ended")) {
-                    reusableCaptureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        displaySurface: "browser",
-                        logicalSurface: true,
-                        cursor: "never"
-                    },
-                    audio: false,
-                    preferCurrentTab: true
-                    });
-                    streamCreated = true;
-                    reusableCaptureStream.getVideoTracks().forEach(track => {
-                        track.addEventListener("ended", () => {
-                            reusableCaptureStream = null;
-                            reusableCaptureVideo = null;
-                        }, { once: true });
-                    });
-                }
-
-            if (!reusableCaptureVideo) {
-                reusableCaptureVideo = document.createElement("video");
-                reusableCaptureVideo.srcObject = reusableCaptureStream;
-                reusableCaptureVideo.muted = true;
-                reusableCaptureVideo.playsInline = true;
-                await reusableCaptureVideo.play();
-
-                await new Promise(resolve => {
-                    if (reusableCaptureVideo.readyState >= 2) resolve();
-                    else reusableCaptureVideo.onloadedmetadata = resolve;
-                });
+            if (typeof window.html2canvas !== "function") {
+                throw new Error("DOM capture library is unavailable. Reload the CMS tab and try again.");
             }
 
-            await nextFrame();
+            const canvas = await window.html2canvas(document.documentElement, {
+                backgroundColor: "#ffffff",
+                useCORS: true,
+                allowTaint: false,
+                scale: Math.min(window.devicePixelRatio || 1, 2),
+                x: window.scrollX,
+                y: window.scrollY,
+                width: document.documentElement.clientWidth,
+                height: document.documentElement.clientHeight,
+                windowWidth: document.documentElement.clientWidth,
+                windowHeight: document.documentElement.clientHeight,
+                scrollX: -window.scrollX,
+                scrollY: -window.scrollY,
+                logging: false,
+                ignoreElements: element => Boolean(
+                    element.closest && element.closest(`#${BUTTON_ID}, #${BADGE_ID}, #${WRAPPER_ID}, #refund-capture-panel`)
+                )
+            });
 
-                const canvas = document.createElement("canvas");
-                canvas.width = reusableCaptureVideo.videoWidth;
-                canvas.height = reusableCaptureVideo.videoHeight;
-
-                const context = canvas.getContext("2d");
-                context.drawImage(reusableCaptureVideo, 0, 0, canvas.width, canvas.height);
-                blob = await canvasToBlob(canvas);
-            }
+            const blob = await canvasToBlob(canvas);
 
             const snapshotDataUrl = await blobToDataUrl(blob);
             const ticketUrl = String(GM_getValue('Refund Active Ticket', '') || '').trim() ||
@@ -5453,12 +5430,6 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             }, 1200);
 
         } catch (error) {
-            if (streamCreated && reusableCaptureStream) {
-                stopStream(reusableCaptureStream);
-                reusableCaptureStream = null;
-                reusableCaptureVideo = null;
-            }
-
             if (restoreHiddenElements) {
                 restoreHiddenElements();
             }
@@ -5469,11 +5440,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             button.style.opacity = "1";
             button.textContent = "⚠️";
 
-            alert(
-                "Snapshot failed.\n\n" +
-                "When prompted, choose the current browser tab, not the whole screen or window.\n\n" +
-                "Check the browser console for details."
-            );
+            alert("DOM snapshot failed. Reload the CMS tab and try again.");
 
             setTimeout(() => {
                 button.textContent = originalText;
@@ -6801,7 +6768,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         .conversation-body img,
         .thread-message img,
         .attachment img,
-        [role="article"] img {
+        [role="article"] img,
+        [class*="conversation" i] img,
+        [class*="message" i] img,
+        [class*="description" i] img,
+        [class*="reply" i] img,
+        .fr-view img,
+        .fr-element img {
             max-width: 360px !important;
             max-height: 240px !important;
             width: auto !important;
