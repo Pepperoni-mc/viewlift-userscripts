@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.4.0
+// @version      3.4.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.4.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.4.1');
 
   (function () {
 /* ============================================================
@@ -8835,7 +8835,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                     input.getAttribute('id')
                 ].filter(Boolean).join(' ').toLowerCase();
 
-                return text.includes('search user') || text.includes('search');
+                return text.includes('search user') || text.includes('search') ||
+                    /@/.test(String(input.value || ''));
             })[0] || null;
     }
 
@@ -8844,8 +8845,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             .filter(isVisible)
             .find(button => {
                 const text = cleanText(button.innerText || button.textContent || '').toLowerCase();
+                const label = cleanText([
+                    button.getAttribute('aria-label'),
+                    button.getAttribute('title'),
+                    button.getAttribute('data-testid')
+                ].filter(Boolean).join(' ')).toLowerCase();
 
-                return text === 'search';
+                return text === 'search' || text === 'buscar' ||
+                    /\bsearch\b|\bbuscar\b/.test(label);
             }) || null;
     }
 
@@ -8887,10 +8894,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             let searchTriggered = false;
 
             if (searchButton) {
-                searchTriggered = realClick(
-                    searchButton,
-                    '[CMS Search] Search clicked once for: ' + email
-                );
+                searchButton.scrollIntoView({ block: 'center', inline: 'center' });
+                searchButton.focus();
+                // Native click is required by the newer CMS search component;
+                // dispatching synthetic mouse events alone does not submit it.
+                searchButton.click();
+                searchTriggered = true;
+                console.log('[CMS Search] Search clicked once for: ' + email);
             }
 
             if (!searchTriggered) {
