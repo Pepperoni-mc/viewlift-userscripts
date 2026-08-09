@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.2.1
+// @version      3.3.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.2.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.3.0');
 
   (function () {
 /* ============================================================
@@ -2097,6 +2097,61 @@
   initRefunderPreference();
 })();
 
+
+
+/* ============================================================
+ * Feature 1b: CMS Session Keep-Alive
+ * Keeps the current CMS session warm while the tab remains open.
+ * This does not bypass OTP or store authentication data.
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
+    const KEEP_ALIVE_INTERVAL = 8 * 60 * 1000;
+    const REQUEST_TIMEOUT = 15000;
+
+    if (!CMS_HOST_RE.test(location.hostname) || /^\/login(?:\/|$)/i.test(location.pathname)) return;
+
+    let requestInFlight = false;
+
+    async function checkSession() {
+        if (requestInFlight || /^\/login(?:\/|$)/i.test(location.pathname)) return;
+        requestInFlight = true;
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+        try {
+            const response = await fetch(`${location.origin}${location.pathname}${location.search}`, {
+                method: 'HEAD',
+                credentials: 'include',
+                cache: 'no-store',
+                redirect: 'follow',
+                signal: controller.signal
+            });
+            const finalPath = (() => {
+                try { return new URL(response.url).pathname; } catch (error) { return ''; }
+            })();
+            if (response.status === 401 || /^\/login(?:\/|$)/i.test(finalPath)) {
+                console.warn('[Better ViewLift] CMS session requires OTP/login again.');
+            }
+        } catch (error) {
+            if (error?.name !== 'AbortError') {
+                console.debug('[Better ViewLift] CMS keep-alive check failed.', error);
+            }
+        } finally {
+            window.clearTimeout(timeout);
+            requestInFlight = false;
+        }
+    }
+
+    // Run once after the page settles, then periodically. A focus check helps
+    // recover quickly when returning to a tab that has been backgrounded.
+    window.setTimeout(checkSession, 15000);
+    window.setInterval(checkSession, KEEP_ALIVE_INTERVAL);
+    window.addEventListener('focus', () => window.setTimeout(checkSession, 250));
+})();
 
 
 /* ============================================================
