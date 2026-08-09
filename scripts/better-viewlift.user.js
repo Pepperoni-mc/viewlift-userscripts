@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.4
+// @version      3.0.5
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.4');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.5');
 
   (function () {
 /* ============================================================
@@ -3487,6 +3487,42 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         clearTimeout(installTimer);
         installTimer = setTimeout(installSetAgentButton, 180);
     }
+
+    function isSendEmailAgentAction(target) {
+        const item = target?.closest?.('a.send-and-set-item, a[data-test-link], button');
+        if (!item) return false;
+
+        const marker = cleanAgentText([
+            item.getAttribute('data-test-link'),
+            item.getAttribute('aria-label'),
+            item.textContent
+        ].filter(Boolean).join(' ')).toLowerCase();
+
+        return marker.includes('send email') || marker.includes('waiting on end user');
+    }
+
+    let replayingSendEmailAction = false;
+
+    document.addEventListener('click', function (event) {
+        if (replayingSendEmailAction || !isTicketPage() || !isSendEmailAgentAction(event.target)) return;
+
+        const item = event.target.closest('a.send-and-set-item, a[data-test-link], button');
+        if (!item) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        replayingSendEmailAction = true;
+
+        Promise.resolve(applySavedAgent()).finally(function () {
+            window.setTimeout(function () {
+                try {
+                    item.click();
+                } finally {
+                    replayingSendEmailAction = false;
+                }
+            }, 80);
+        });
+    }, true);
 
     document.addEventListener('click', event => {
         const menu = document.getElementById(MENU_ID);
