@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.1.1
+// @version      3.2.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.1.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.2.0');
 
   (function () {
 /* ============================================================
@@ -2097,6 +2097,188 @@
   initRefunderPreference();
 })();
 
+
+
+/* ============================================================
+ * Feature 1c: Classic CMS Account Switcher
+ * The classic CMS does not expose the v5 organization picker. This helper
+ * offers the same control and automates the short v5 handoff in the background.
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    const HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
+    const BUTTON_ID = 'better-cms-account-switcher';
+    const STYLE_ID = 'better-cms-account-switcher-style';
+    const PENDING_KEY = 'betterCmsPendingAccountSwitch';
+    const ORGANIZATIONS = [
+        { key: 'lightning', label: 'Lightning' },
+        { key: 'liv-golf', label: 'LIV Golf' },
+        { key: 'schn', label: 'SCHN' }
+    ];
+    let switchRunning = false;
+
+    if (!HOST_RE.test(location.hostname)) return;
+
+    function clean(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function safeGetPending() {
+        try {
+            const value = GM_getValue(PENDING_KEY, '');
+            return typeof value === 'string' ? JSON.parse(value) : value;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function safeSetPending(value) {
+        try {
+            GM_setValue(PENDING_KEY, JSON.stringify(value));
+        } catch (error) {
+            console.warn('[CMS Account Switcher] Could not save pending switch.', error);
+        }
+    }
+
+    function clearPending() {
+        try {
+            GM_deleteValue(PENDING_KEY);
+        } catch (error) {
+            safeSetPending(null);
+        }
+    }
+
+    function isClassicCMSPage() {
+        return /^\/users(?:\/|$)/i.test(location.pathname);
+    }
+
+    function isV5Page() {
+        return /^\/v5(?:\/|$)/i.test(location.pathname);
+    }
+
+    function addStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            #${BUTTON_ID} {
+                position: fixed !important;
+                top: 16px !important;
+                right: 88px !important;
+                z-index: 2147483000 !important;
+                min-height: 34px !important;
+                padding: 0 12px !important;
+                border: 1px solid #c4b5fd !important;
+                border-radius: 8px !important;
+                background: #f5f3ff !important;
+                color: #5b21b6 !important;
+                font: 700 12px/32px Arial, sans-serif !important;
+                cursor: pointer !important;
+                box-shadow: 0 4px 12px rgba(91, 33, 182, .16) !important;
+            }
+            #${BUTTON_ID}:hover { background: #ede9fe !important; }
+            #${BUTTON_ID}[data-busy="yes"] { opacity: .65 !important; cursor: wait !important; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function getOrganizationButton() {
+        const knownKeys = ORGANIZATIONS.map(item => item.key);
+        return Array.from(document.querySelectorAll('button')).find(button => {
+            if (!button.getBoundingClientRect().width) return false;
+            const imgAlt = button.querySelector('img')?.getAttribute('alt') || '';
+            const text = clean([button.textContent, button.getAttribute('aria-label'), imgAlt].join(' ')).toLowerCase();
+            return knownKeys.some(key => text === key || text.includes(` ${key}`));
+        }) || null;
+    }
+
+    function getOrganizationOption(key) {
+        return document.querySelector(`[role="option"][data-value="${CSS.escape(key)}"]`) ||
+            document.querySelector(`[role="option"][data-value="${key}"]`);
+    }
+
+    function showStatus(message, error = false) {
+        const button = document.getElementById(BUTTON_ID);
+        if (!button) return;
+        button.title = message;
+        button.dataset.busy = error ? 'no' : 'yes';
+        button.textContent = error ? 'Switch Account' : message;
+        window.setTimeout(() => {
+            if (button.isConnected) {
+                button.textContent = 'Switch Account';
+                button.dataset.busy = 'no';
+            }
+        }, 2600);
+    }
+
+    function installClassicButton() {
+        if (!isClassicCMSPage()) return;
+        addStyles();
+        if (document.getElementById(BUTTON_ID)) return;
+
+        const button = document.createElement('button');
+        button.id = BUTTON_ID;
+        button.type = 'button';
+        button.textContent = 'Switch Account';
+        button.title = 'Switch CMS organization';
+        button.addEventListener('click', () => {
+            const current = prompt('Enter CMS account: lightning, liv-golf, or schn', 'lightning');
+            const key = clean(current).toLowerCase();
+            if (!ORGANIZATIONS.some(item => item.key === key)) return;
+
+            safeSetPending({ key, returnUrl: location.href, startedAt: Date.now() });
+            showStatus('Switching...');
+            location.href = `${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(key)}`;
+        });
+        document.body.appendChild(button);
+    }
+
+    function runV5Switch() {
+        if (!isV5Page()) return;
+        if (switchRunning) return;
+        const pending = safeGetPending();
+        if (!pending || !pending.key) return;
+        if (Date.now() - Number(pending.startedAt || 0) > 30000) {
+            clearPending();
+            return;
+        }
+
+        const accountButton = getOrganizationButton();
+        if (!accountButton) {
+            window.setTimeout(runV5Switch, 250);
+            return;
+        }
+
+        switchRunning = true;
+        accountButton.click();
+        window.setTimeout(() => {
+            const option = getOrganizationOption(pending.key);
+            if (!option || option.getAttribute('aria-disabled') === 'true' || option.getAttribute('data-disabled') === 'true') {
+                console.warn('[CMS Account Switcher] Account is unavailable:', pending.key);
+                clearPending();
+                switchRunning = false;
+                return;
+            }
+
+            option.click();
+            const returnUrl = pending.returnUrl || `${location.origin}/users/search`;
+            clearPending();
+            // Give the v5 app time to persist the selected organization before
+            // returning to the classic route.
+            window.setTimeout(() => location.replace(returnUrl), 1200);
+        }, 500);
+    }
+
+    installClassicButton();
+    runV5Switch();
+    new MutationObserver(() => {
+        installClassicButton();
+        runV5Switch();
+    }).observe(document.documentElement, { childList: true, subtree: true });
+})();
 
 
 /* ============================================================
