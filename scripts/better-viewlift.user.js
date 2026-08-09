@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.3
+// @version      3.0.4
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.3');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.4');
 
   (function () {
 /* ============================================================
@@ -76,8 +76,8 @@
   ];
 
   const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
-  const CMS_USER_ID_RE = /\/(?:users\/(?:search\/)?|v5\/customer-support\/user\/)([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/(?:users\/(?:search\/)?|v5\/customer-support\/user\/)(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
+  const CMS_USER_ID_RE = /\/users\/(?:search\/)?([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 
   const PAYMENT_PATTERNS = [
@@ -125,7 +125,7 @@
   }
 
   function isCMSUserPage() {
-    return isCMSHost() && /^\/(?:users|v5\/customer-support\/user)(\/|$)/i.test(location.pathname);
+    return isCMSHost() && /^\/users(?:\/|$)/i.test(location.pathname);
   }
 
   function isSupportedPage() {
@@ -263,7 +263,7 @@
     const hostMatch = String(url || '').match(/^https:\/\/((?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com))/i);
     const host = hostMatch ? hostMatch[1].toLowerCase() : location.hostname.toLowerCase();
 
-    return `https://${host}/v5/customer-support/user/${id}?tab=overview`;
+    return `https://${host}/users/${id}`;
   }
 
   function isIgnoredElement(element) {
@@ -427,7 +427,7 @@
       const id = getCMSUserIdFromURL(location.href);
       if (id) return normalizeCMSUrl(location.href);
 
-      if (/^https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/(?:users\/search|v5\/customer-support\/user)\//i.test(location.href)) {
+      if (/^https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users(?:\/|$)/i.test(location.href)) {
         return normalizeCMSUrl(location.href);
       }
     }
@@ -1482,7 +1482,7 @@
         }
       }
 
-      /* CMS v5 dark theme */
+      /* CMS classic dark theme */
       #refund-capture-panel.cms-theme {
         width: 332px;
         max-height: calc(100vh - 32px);
@@ -2079,7 +2079,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     }
 
     function getCancellationReasonValue() {
-        if (/^\/v5\/customer-support(?:\/|$)/i.test(location.pathname)) {
+        if (/^\/users(?:\/|$)/i.test(location.pathname)) {
             return getFreshdeskTicketURL();
         }
 
@@ -3811,7 +3811,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
 
 /* ============================================================
- * Feature 3: CMS v5 Percentage Refund Workflow
+ * Feature 3: CMS Percentage Refund Workflow
  * Opens Refund > Percentage and prepares the Issue Refund form.
  * Completes the Issue Refund form and submits it automatically.
  * ============================================================ */
@@ -4178,7 +4178,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         return;
     }
 
-    if (/^\/v5\/customer-support(?:\/|$)/i.test(location.pathname)) {
+    if (/^\/users(?:\/|$)/i.test(location.pathname)) {
         return;
     }
 
@@ -4245,11 +4245,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     ];
 
     function isUserPage() {
-        return /^\/(?:users|v5\/customer-support\/user)(\/|$)/i.test(location.pathname);
+        return /^\/users(?:\/|$)/i.test(location.pathname);
     }
 
     function isCustomerSupportSearchPage() {
-        return /^\/v5\/customer-support\/?$/i.test(location.pathname);
+        return /^\/users\/search\/?$/i.test(location.pathname);
     }
 
     function isSnapshotPage() {
@@ -4739,15 +4739,15 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     }
 
     function findClientNameHeader() {
-        const v5Header = Array.from(document.querySelectorAll("h3.flex.gap-3"))
+        const pageHeader = Array.from(document.querySelectorAll("h3.flex.gap-3"))
             .find(element => !element.closest("[role='dialog'], #refund-capture-panel"));
 
-        if (v5Header) return v5Header;
+        if (pageHeader) return pageHeader;
 
-        const pageHeader = document.querySelector("#header");
+        const headerContainer = document.querySelector("#header");
 
-        if (pageHeader) {
-            const h4 = pageHeader.querySelector("h4");
+        if (headerContainer) {
+            const h4 = headerContainer.querySelector("h4");
             if (h4) return h4;
         }
 
@@ -7752,9 +7752,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     'use strict';
 
     const CMS_USERS_URLS = {
-        standard: 'https://cms.viewlift.com/v5/customer-support',
-        gcp: 'https://cms-gcp.viewlift.com/v5/customer-support',
-        msn: 'https://cms.monumentalsportsnetwork.com/v5/customer-support'
+        standard: 'https://cms.viewlift.com/users/search',
+        gcp: 'https://cms-gcp.viewlift.com/users/search',
+        msn: 'https://cms.monumentalsportsnetwork.com/users/search'
     };
     const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
     const BUTTON_ID = 'viewlift-open-cms-header-button';
@@ -7771,12 +7771,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function isCMSUsersPage() {
         return CMS_HOST_RE.test(location.hostname) &&
-            /^\/v5\/customer-support(?:\/|$)/i.test(location.pathname);
+            /^\/users\/search(?:\/|$)/i.test(location.pathname);
     }
 
     function isCMSPage() {
         return CMS_HOST_RE.test(location.hostname) &&
-            /^\/v5(?:\/|$)/i.test(location.pathname);
+            /^\/users(?:\/|$)/i.test(location.pathname);
     }
 
     function cleanText(value) {
@@ -7899,7 +7899,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return 'msn';
         }
 
-        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\b|\bliv\s*golf(?:\s*(?:\+|plus))?\b|\blivgolf(?:\+|plus)?\b|livgolfplus\.com|\blightning\b/i.test(normalized)) {
+        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\b|\bliv\s*golf(?:\s*(?:\+|plus))?\b|\blivgolf(?:\+|plus)?\b|livgolfplus\.com|\blightning\b|\btampa\b|\btampa\s+bay\b/i.test(normalized)) {
             return 'gcp';
         }
 
@@ -8317,7 +8317,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function openCustomerSupportPage(email) {
         if (isCMSUsersPage()) return true;
 
-        const target = new URL('/v5/customer-support', location.origin);
+        const target = new URL('/users/search', location.origin);
         target.searchParams.set(CMS_EMAIL_PARAM, email);
         console.log('[CMS Search] Redirecting directly to Customer Support:', target.href);
         location.replace(target.href);
