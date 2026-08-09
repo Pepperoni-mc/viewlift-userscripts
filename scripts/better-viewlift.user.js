@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.3.0
+// @version      3.4.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.3.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.4.0');
 
   (function () {
 /* ============================================================
@@ -2214,6 +2214,20 @@
         return /^\/v5(?:\/|$)/i.test(location.pathname);
     }
 
+    function captureQuerySwitchRequest() {
+        try {
+            const params = new URLSearchParams(location.search);
+            const key = clean(params.get('betterSwitch')).toLowerCase();
+            if (!ORGANIZATIONS.some(item => item.key === key)) return;
+
+            const email = clean(params.get('openCmsEmail'));
+            const returnUrl = `${location.origin}/users/search${email ? `?openCmsEmail=${encodeURIComponent(email)}` : ''}`;
+            safeSetPending({ key, returnUrl, startedAt: Date.now() });
+        } catch (error) {
+            console.warn('[CMS Account Switcher] Could not read the requested account.', error);
+        }
+    }
+
     function addStyles() {
         if (document.getElementById(STYLE_ID)) return;
 
@@ -2408,6 +2422,7 @@
         }, 500);
     }
 
+    captureQuerySwitchRequest();
     installClassicButton();
     runV5Switch();
     new MutationObserver(() => {
@@ -8383,6 +8398,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return CMS_USERS_URLS[cmsKey];
     }
 
+    function getCMSAccountForClient(clientContext) {
+        const text = cleanText([
+            clientContext && clientContext.primary,
+            clientContext && clientContext.fallback
+        ].filter(Boolean).join(' ')).toLowerCase();
+
+        if (/\bschn\b|space\s+city\s+home\s+network/.test(text)) return 'schn';
+        if (/\bliv\b|liv\s*golf|livgolfplus/.test(text)) return 'liv-golf';
+        if (/\blightning\b|\btampa\b|tampa\s+bay/.test(text)) return 'lightning';
+        return '';
+    }
+
     function extractEmailFromText(text) {
         const match = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
 
@@ -8658,11 +8685,20 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
             const clientContext = getFreshdeskClientContext();
             const cmsUsersURL = getCMSUsersURLForClient(clientContext);
-            const url = cmsUsersURL + '?' + CMS_EMAIL_PARAM + '=' + encodeURIComponent(email);
+            const account = getCMSAccountForClient(clientContext);
+            const url = new URL(cmsUsersURL);
 
-            console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', cmsUsersURL);
+            // GCP's classic CMS has no account selector. Route through the
+            // existing v5 selector when the ticket identifies the account.
+            if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
+                url.pathname = '/v5/overview';
+                url.searchParams.set('betterSwitch', account);
+            }
+            url.searchParams.set(CMS_EMAIL_PARAM, email);
 
-            window.open(url, '_blank');
+            console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
+
+            window.open(url.href, '_blank');
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);
