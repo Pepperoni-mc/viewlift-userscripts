@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.2.0
+// @version      3.2.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.2.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.2.1');
 
   (function () {
 /* ============================================================
@@ -2110,6 +2110,7 @@
 
     const HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
     const BUTTON_ID = 'better-cms-account-switcher';
+    const MENU_ID = 'better-cms-account-switcher-menu';
     const STYLE_ID = 'better-cms-account-switcher-style';
     const PENDING_KEY = 'betterCmsPendingAccountSwitch';
     const ORGANIZATIONS = [
@@ -2181,8 +2182,47 @@
             }
             #${BUTTON_ID}:hover { background: #ede9fe !important; }
             #${BUTTON_ID}[data-busy="yes"] { opacity: .65 !important; cursor: wait !important; }
+            #${MENU_ID} {
+                position: fixed !important;
+                z-index: 2147483001 !important;
+                display: none;
+                min-width: 170px;
+                padding: 6px;
+                border: 1px solid #d8d4fe;
+                border-radius: 10px;
+                background: #fff;
+                box-shadow: 0 12px 30px rgba(15, 23, 42, .22);
+            }
+            #${MENU_ID}[data-open="yes"] { display: grid; gap: 3px; }
+            #${MENU_ID} button {
+                width: 100%;
+                padding: 9px 11px;
+                border: 0;
+                border-radius: 7px;
+                background: transparent;
+                color: #1f2937;
+                font: 600 13px/18px Arial, sans-serif;
+                text-align: left;
+                cursor: pointer;
+            }
+            #${MENU_ID} button:hover { background: #ede9fe; color: #5b21b6; }
         `;
         document.head.appendChild(style);
+    }
+
+    function findLogoControl() {
+        const candidates = Array.from(document.querySelectorAll('img, a, button, [role="button"]'));
+        return candidates.find(element => {
+            if (!element.getBoundingClientRect().width) return false;
+            const image = element.tagName.toLowerCase() === 'img' ? element : element.querySelector('img');
+            const text = clean([
+                element.getAttribute('aria-label'),
+                element.getAttribute('title'),
+                image?.getAttribute('alt'),
+                image?.getAttribute('src')
+            ].join(' ')).toLowerCase();
+            return /schn|viewlift|liv.?golf|altitude|monumental|logo/.test(text);
+        }) || null;
     }
 
     function getOrganizationButton() {
@@ -2214,25 +2254,66 @@
         }, 2600);
     }
 
+    function closeAccountMenu() {
+        const menu = document.getElementById(MENU_ID);
+        if (menu) menu.dataset.open = 'no';
+    }
+
+    function openAccountMenu(anchor) {
+        let menu = document.getElementById(MENU_ID);
+        if (!menu) {
+            menu = document.createElement('div');
+            menu.id = MENU_ID;
+            menu.setAttribute('role', 'menu');
+            ORGANIZATIONS.forEach(item => {
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.textContent = item.label;
+                option.dataset.account = item.key;
+                option.setAttribute('role', 'menuitem');
+                option.addEventListener('click', event => {
+                    event.stopPropagation();
+                    const key = option.dataset.account;
+                    safeSetPending({ key, returnUrl: location.href, startedAt: Date.now() });
+                    closeAccountMenu();
+                    showStatus('Switching...');
+                    location.href = `${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(key)}`;
+                });
+                menu.appendChild(option);
+            });
+            document.body.appendChild(menu);
+        }
+
+        const rect = anchor.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, rect.left)}px`;
+        menu.style.top = `${Math.min(window.innerHeight - 12, rect.bottom + 6)}px`;
+        menu.dataset.open = menu.dataset.open === 'yes' ? 'no' : 'yes';
+    }
+
     function installClassicButton() {
         if (!isClassicCMSPage()) return;
         addStyles();
-        if (document.getElementById(BUTTON_ID)) return;
+        const logo = findLogoControl();
+        if (logo && !logo.dataset.betterAccountSwitcherBound) {
+            logo.dataset.betterAccountSwitcherBound = 'yes';
+            logo.style.cursor = 'pointer';
+            logo.title = 'Switch CMS account';
+            logo.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                openAccountMenu(logo);
+            }, true);
+            return;
+        }
 
+        // Fallback for themes that render the logo after the page loads.
+        if (logo || document.getElementById(BUTTON_ID)) return;
         const button = document.createElement('button');
         button.id = BUTTON_ID;
         button.type = 'button';
         button.textContent = 'Switch Account';
-        button.title = 'Switch CMS organization';
-        button.addEventListener('click', () => {
-            const current = prompt('Enter CMS account: lightning, liv-golf, or schn', 'lightning');
-            const key = clean(current).toLowerCase();
-            if (!ORGANIZATIONS.some(item => item.key === key)) return;
-
-            safeSetPending({ key, returnUrl: location.href, startedAt: Date.now() });
-            showStatus('Switching...');
-            location.href = `${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(key)}`;
-        });
+        button.title = 'Switch CMS account';
+        button.addEventListener('click', () => openAccountMenu(button));
         document.body.appendChild(button);
     }
 
@@ -2278,6 +2359,10 @@
         installClassicButton();
         runV5Switch();
     }).observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('click', event => {
+        const menu = document.getElementById(MENU_ID);
+        if (menu && menu.dataset.open === 'yes' && !menu.contains(event.target)) closeAccountMenu();
+    });
 })();
 
 
