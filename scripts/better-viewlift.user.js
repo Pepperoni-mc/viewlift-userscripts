@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.6
+// @version      3.0.7
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.6');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.7');
 
   (function () {
 /* ============================================================
@@ -4015,6 +4015,15 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         }) || null;
     }
 
+    function isRefundActionIconClick(target) {
+        const path = target?.closest?.('path');
+        if (!path) return false;
+
+        const pathData = cleanText(path.getAttribute('d')).replace(/\s+/g, '');
+        const refundEyePath = 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3'.replace(/\s+/g, '');
+        return pathData === refundEyePath;
+    }
+
     function selectNativeROTH(dialog) {
         const select = Array.from(dialog?.querySelectorAll('select') || []).find(candidate =>
             Array.from(candidate.options || []).some(option => getText(option).toLowerCase().startsWith('roth'))
@@ -4165,6 +4174,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
     document.addEventListener('click', function (event) {
         if (internalClick) return;
+
+        if (isRefundActionIconClick(event.target)) {
+            startWorkflow(false);
+            return;
+        }
 
         if (isRefundTrigger(event.target)) {
             startWorkflow(false);
