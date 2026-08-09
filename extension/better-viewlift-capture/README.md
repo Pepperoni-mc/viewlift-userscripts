@@ -1,6 +1,6 @@
-# Better ViewLift Capture Helper
+# ViewLift Helper
 
-This companion Chrome extension lets Better ViewLift capture the visible CMS tab without showing Chrome's screen-sharing confirmation on every screenshot.
+This companion Chrome extension lets Better ViewLift capture the visible CMS tab without showing Chrome's screen-sharing confirmation on every screenshot. It is named broadly so additional ViewLift productivity tools can be added later.
 
 ## One-time installation
 

@@ -8,8 +8,8 @@ A unified Tampermonkey toolkit for ViewLift CMS and Freshdesk workflows.
 |---|---|---|
 | **Better&nbsp;Viewlift** | All Freshdesk and CMS productivity tools in one userscript | [Install](https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js) |
 
-For screenshots without Chrome's screen-sharing confirmation, optionally install the
-[Better ViewLift Capture Helper](https://github.com/Pepperoni-mc/viewlift-userscripts/tree/main/extension/better-viewlift-capture)
+For screenshots without Chrome's screen-sharing confirmation, optionally install
+[ViewLift Helper](https://github.com/Pepperoni-mc/viewlift-userscripts/tree/main/extension/better-viewlift-capture)
 as an unpacked Chrome extension. Chrome requires this one-time manual installation;
 Tampermonkey cannot install extensions silently.
 

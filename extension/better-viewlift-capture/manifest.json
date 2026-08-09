@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Better ViewLift Capture Helper",
+  "name": "ViewLift Helper",
   "version": "1.0.0",
-  "description": "Captures the active ViewLift CMS tab for Better ViewLift without a screen-share prompt on every capture.",
+  "description": "ViewLift productivity helper with automatic CMS tab capture and future workflow tools.",
   "permissions": ["tabs"],
   "host_permissions": [
     "https://cms.viewlift.com/*",
