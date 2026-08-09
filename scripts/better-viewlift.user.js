@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.7
+// @version      3.0.8
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.7');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.8');
 
   (function () {
 /* ============================================================
@@ -3976,7 +3976,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             const title = getText(element.querySelector(
                 '[data-slot="dialog-title"], h1, h2, h3'
             )).toLowerCase();
-            return title === 'issue refund';
+            return title === 'issue refund' || title === 'issue percentage refund';
         });
 
         if (dialog) return dialog;
@@ -3984,7 +3984,20 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         const input = document.querySelector(
             'input[placeholder*="50 for 50%" i], input[placeholder*="refund percentage" i]'
         );
-        return input?.closest?.('[role="dialog"], [data-slot="dialog-content"], form') || null;
+        if (!input) return null;
+
+        const semanticParent = input.closest?.(
+            '[role="dialog"], [data-slot="dialog-content"], form, .modal-content, .modal-dialog, [class*="modal-content" i]'
+        );
+        if (semanticParent) return semanticParent;
+
+        let parent = input.parentElement;
+        for (let depth = 0; parent && depth < 7; depth += 1, parent = parent.parentElement) {
+            const text = getText(parent).toLowerCase();
+            if (text.includes('issue percentage refund') && parent.querySelector('textarea')) return parent;
+        }
+
+        return input.parentElement?.parentElement || null;
     }
 
     function getPercentageInput(dialog) {
@@ -4046,7 +4059,10 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     function getIssueRefundButton(dialog) {
         return Array.from(dialog?.querySelectorAll('button, [role="button"]') || [])
             .filter(isVisible)
-            .find(button => getText(button).toLowerCase() === 'issue refund' && !button.disabled) || null;
+            .find(button => {
+                const text = getText(button).toLowerCase();
+                return !button.disabled && (text === 'issue refund' || text === 'confirm refund');
+            }) || null;
     }
 
     function extractFreshdeskTicketId(value) {
@@ -4086,6 +4102,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             workflowActive = false;
             console.warn('[Better CMS Refund] Timed out before all fields were prepared.');
             return;
+        }
+
+        const openDialog = getIssueRefundDialog();
+        if (openDialog) {
+            percentageOptionClicked = true;
         }
 
         if (!percentageOptionClicked) {
