@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.5.0
+// @version      3.6.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.5.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.6.0');
 
   (function () {
 /* ============================================================
@@ -3324,7 +3324,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         );
     }
 
-    function waitForAgentOptions(trigger, timeout = 3500) {
+    function waitForAgentOptions(trigger, timeout = 1800) {
         return new Promise(resolve => {
             const startedAt = Date.now();
 
@@ -3336,7 +3336,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     return;
                 }
 
-                setTimeout(check, 100);
+                setTimeout(check, 60);
             }
 
             check();
@@ -3594,6 +3594,23 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         closeSetAgentMenu();
 
         try {
+            const fastTrigger = findAgentNameTrigger();
+            const fastCurrentName = getSelectedAgentText(fastTrigger);
+
+            if (
+                fastTrigger &&
+                normalizeAgentName(fastCurrentName) === normalizeAgentName(savedAgentName)
+            ) {
+                closeFreshdeskAgentDropdown(fastTrigger);
+                const fastUpdateButton = await waitForAgentUpdateButton(fastTrigger, 800);
+
+                if (fastUpdateButton) {
+                    clickAgentElement(fastUpdateButton);
+                    showSetAgentToast(`Agent updated: ${savedAgentName}`);
+                    return;
+                }
+            }
+
             const result = await openAgentOptions();
             const liveNames = getAgentOptionNames(result.options);
 
@@ -3619,7 +3636,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         }
     }
 
-    function waitForSelectedAgent(trigger, agentName, timeout = 2500) {
+    function waitForSelectedAgent(trigger, agentName, timeout = 1200) {
         return new Promise(resolve => {
             const startedAt = Date.now();
             const expectedName = normalizeAgentName(agentName);
@@ -3635,7 +3652,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     return;
                 }
 
-                setTimeout(check, 100);
+                setTimeout(check, 60);
             }
 
             check();
@@ -3707,7 +3724,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             })[0] || null;
     }
 
-    function waitForAgentUpdateButton(trigger, timeout = 2500) {
+    function waitForAgentUpdateButton(trigger, timeout = 1400) {
         return new Promise(resolve => {
             const startedAt = Date.now();
 
@@ -3719,7 +3736,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                     return;
                 }
 
-                setTimeout(check, 100);
+                setTimeout(check, 60);
             }
 
             check();
@@ -3992,7 +4009,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 } finally {
                     replayingSendEmailAction = false;
                 }
-            }, 80);
+            }, 40);
         });
     }, true);
 
@@ -4770,6 +4787,8 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     let autoOpenAttempted = false;
     let lastUrl = location.href;
     let routeTimer = null;
+    let reusableCaptureStream = null;
+    let reusableCaptureVideo = null;
 
     const GREEN_HANDLERS = [
         "roku",
@@ -5309,7 +5328,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
         const originalText = "📸";
         let restoreHiddenElements = null;
-        let stream;
+        let streamCreated = false;
 
         try {
             updatePaymentHandlerBadge();
@@ -5323,39 +5342,46 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             await nextFrame();
             await delay(150);
 
-            stream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    displaySurface: "browser",
-                    logicalSurface: true,
-                    cursor: "never"
-                },
-                audio: false,
-                preferCurrentTab: true
-            });
+            if (!reusableCaptureStream || reusableCaptureStream.getVideoTracks().some(track => track.readyState === "ended")) {
+                reusableCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        displaySurface: "browser",
+                        logicalSurface: true,
+                        cursor: "never"
+                    },
+                    audio: false,
+                    preferCurrentTab: true
+                });
+                streamCreated = true;
+                reusableCaptureStream.getVideoTracks().forEach(track => {
+                    track.addEventListener("ended", () => {
+                        reusableCaptureStream = null;
+                        reusableCaptureVideo = null;
+                    }, { once: true });
+                });
+            }
 
-            const video = document.createElement("video");
-            video.srcObject = stream;
-            video.muted = true;
-            video.playsInline = true;
+            if (!reusableCaptureVideo) {
+                reusableCaptureVideo = document.createElement("video");
+                reusableCaptureVideo.srcObject = reusableCaptureStream;
+                reusableCaptureVideo.muted = true;
+                reusableCaptureVideo.playsInline = true;
+                await reusableCaptureVideo.play();
 
-            await video.play();
-
-            await new Promise(resolve => {
-                if (video.readyState >= 2) {
-                    resolve();
-                } else {
-                    video.onloadedmetadata = resolve;
-                }
-            });
+                await new Promise(resolve => {
+                    if (reusableCaptureVideo.readyState >= 2) resolve();
+                    else reusableCaptureVideo.onloadedmetadata = resolve;
+                });
+            }
 
             await nextFrame();
 
             const canvas = document.createElement("canvas");
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            canvas.width = reusableCaptureVideo.videoWidth;
+            canvas.height = reusableCaptureVideo.videoHeight;
 
             const context = canvas.getContext("2d");
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            context.drawImage(reusableCaptureVideo, 0, 0, canvas.width, canvas.height);
 
             const blob = await canvasToBlob(canvas);
 
@@ -5379,9 +5405,6 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 })
             ]);
 
-            stopStream(stream);
-            stream = null;
-
             restoreHiddenElements();
             restoreHiddenElements = null;
 
@@ -5394,8 +5417,10 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
             }, 1200);
 
         } catch (error) {
-            if (stream) {
-                stopStream(stream);
+            if (streamCreated && reusableCaptureStream) {
+                stopStream(reusableCaptureStream);
+                reusableCaptureStream = null;
+                reusableCaptureVideo = null;
             }
 
             if (restoreHiddenElements) {
@@ -6577,6 +6602,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   const SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
   const STATUS_ID = 'better-freshdesk-snapshot-note-status';
+  let pasteInProgress = false;
 
   function cleanText(value) {
     return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
@@ -6656,7 +6682,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       console.warn('[Freshdesk Snapshot] ClipboardEvent paste failed.', error);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await new Promise(resolve => setTimeout(resolve, 120));
 
     if (!editor.querySelector('img')) {
       editor.innerHTML = `${editor.innerHTML || ''}<p><img src="${dataUrl}" alt="CMS snapshot" style="max-width:100%;height:auto;"></p>`;
@@ -6668,6 +6694,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   async function consumeSnapshotIfReady() {
+    if (pasteInProgress) return;
     const snapshot = getPendingSnapshot();
     if (!snapshot || !snapshot.dataUrl) return;
 
@@ -6681,6 +6708,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     try {
+      pasteInProgress = true;
       if (await pasteSnapshot(snapshot)) {
         GM_deleteValue(SNAPSHOT_KEY);
         showStatus('CMS snapshot added to private note.');
@@ -6688,6 +6716,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     } catch (error) {
       console.error('[Freshdesk Snapshot] Could not add snapshot to note.', error);
       showStatus('Could not add CMS snapshot to the note.', 'error');
+    } finally {
+      pasteInProgress = false;
     }
   }
 
@@ -6697,8 +6727,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return;
     }
 
-    window.setTimeout(consumeSnapshotIfReady, 900);
-    window.setInterval(consumeSnapshotIfReady, 2500);
+    window.setTimeout(consumeSnapshotIfReady, 150);
+    window.setInterval(consumeSnapshotIfReady, 900);
   }
 
   init();
