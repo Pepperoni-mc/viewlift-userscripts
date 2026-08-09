@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.4.2
+// @version      3.5.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.4.2');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.5.0');
 
   (function () {
 /* ============================================================
@@ -2214,6 +2214,10 @@
         return /^\/v5(?:\/|$)/i.test(location.pathname);
     }
 
+    function isLogoutPage() {
+        return /^\/logout(?:\/|$)/i.test(location.pathname);
+    }
+
     function captureQuerySwitchRequest() {
         try {
             const params = new URLSearchParams(location.search);
@@ -2375,6 +2379,22 @@
         menu.dataset.open = menu.dataset.open === 'yes' ? 'no' : 'yes';
     }
 
+    function continueFromLogout() {
+        if (!isLogoutPage()) return;
+        let hasPendingRequest = Boolean(safeGetPending());
+        if (!hasPendingRequest) {
+            try { hasPendingRequest = Boolean(GM_getValue('betterFreshdeskPendingCmsEmail', '')); } catch (error) { /* no-op */ }
+        }
+        if (!hasPendingRequest) return;
+        const loginControl = Array.from(document.querySelectorAll('a, button, [role="button"]'))
+            .find(element => /go\s+to\s+login|login|sign\s+in/i.test(clean(element.textContent)) && element.getBoundingClientRect().width);
+        if (loginControl) {
+            loginControl.click();
+        } else {
+            window.setTimeout(continueFromLogout, 500);
+        }
+    }
+
     function installClassicButton() {
         if (!isClassicCMSPage()) return;
         addStyles();
@@ -2448,9 +2468,11 @@
 
     captureQuerySwitchRequest();
     installClassicButton();
+    continueFromLogout();
     runV5Switch();
     new MutationObserver(() => {
         installClassicButton();
+        continueFromLogout();
         runV5Switch();
     }).observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('click', event => {
@@ -8717,8 +8739,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
                 url.pathname = '/v5/overview';
                 url.searchParams.set('betterSwitch', account);
+                try {
+                    GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
+                        key: account,
+                        returnUrl: `${url.origin}/users/search?openCmsEmail=${encodeURIComponent(email)}`,
+                        startedAt: Date.now()
+                    }));
+                } catch (error) {
+                    console.warn('[CMS Search] Could not save the pending account switch.', error);
+                }
             }
             url.searchParams.set(CMS_EMAIL_PARAM, email);
+
+            try {
+                GM_setValue(CMS_PENDING_EMAIL_KEY, email);
+            } catch (error) {
+                console.warn('[CMS Search] Could not save the shared pending email.', error);
+            }
 
             console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
 
@@ -8800,13 +8837,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         try {
             const storedEmail = extractEmailFromText(sessionStorage.getItem(CMS_PENDING_EMAIL_KEY) || '');
-
-            return storedEmail && !isBlockedCmsSearchEmail(storedEmail)
-                ? storedEmail
-                : '';
+            if (storedEmail && !isBlockedCmsSearchEmail(storedEmail)) return storedEmail;
         } catch (error) {
-            return '';
+            console.warn('[CMS Search] Could not read the pending email.', error);
         }
+
+        try {
+            const sharedEmail = extractEmailFromText(GM_getValue(CMS_PENDING_EMAIL_KEY, '') || '');
+            if (sharedEmail && !isBlockedCmsSearchEmail(sharedEmail)) {
+                sessionStorage.setItem(CMS_PENDING_EMAIL_KEY, sharedEmail);
+                return sharedEmail;
+            }
+        } catch (error) {
+            console.warn('[CMS Search] Could not read the shared pending email.', error);
+        }
+
+        return '';
     }
 
     function clearPendingCMSRequest() {
@@ -8814,6 +8860,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             sessionStorage.removeItem(CMS_PENDING_EMAIL_KEY);
         } catch (error) {
             console.warn('[CMS Search] Could not clear the pending email.', error);
+        }
+
+        try {
+            GM_deleteValue(CMS_PENDING_EMAIL_KEY);
+        } catch (error) {
+            console.warn('[CMS Search] Could not clear the shared pending email.', error);
         }
 
         try {
