@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.5
+// @version      3.0.6
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.5');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.6');
 
   (function () {
 /* ============================================================
@@ -5570,8 +5570,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const TOOLBAR_ID = 'better-freshdesk-unified-toolbar';
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
-  const NEXT_ID = 'better-freshdesk-next-case';
-  const REFUND_LAUNCHER_ID = 'better-freshdesk-refund-launcher';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
   let cachedTicketPath = '';
   let cachedEmail = '';
@@ -5660,20 +5658,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       }
 
       #${EMAIL_ID}[data-copied="yes"] { color: #15803d !important; background: #f0fdf4 !important; }
-
-      #${NEXT_ID}, #${REFUND_LAUNCHER_ID} {
-        min-height: 30px !important;
-        padding: 0 10px !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 6px !important;
-        background: #ffffff !important;
-        color: #17324d !important;
-        font: 600 12px/1.2 Arial, sans-serif !important;
-        cursor: pointer !important;
-      }
-
-      #${NEXT_ID}:hover, #${REFUND_LAUNCHER_ID}:hover { background: #f1f5f9 !important; border-color: #94a3b8 !important; }
-      #${REFUND_LAUNCHER_ID} { color: #5b21b6 !important; border-color: #c4b5fd !important; background: #faf5ff !important; }
 
       #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
         position: absolute !important;
@@ -5888,30 +5872,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
 
-    let next = document.getElementById(NEXT_ID);
-    if (!next) {
-      next = makeButton(NEXT_ID, 'Next case', 'Next case (J)');
-      next.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        const nativeNext = document.querySelector('[data-test-id="next-btn"]');
-        if (nativeNext && !nativeNext.disabled) nativeNext.click();
-      });
-      toolbar.appendChild(next);
-    }
+    // These legacy toolbar controls are intentionally removed. Delete any
+    // copies left behind by an older Better ViewLift version as well.
+    document.getElementById('better-freshdesk-next-case')?.remove();
+    document.getElementById('better-freshdesk-refund-launcher')?.remove();
 
-    let launcher = document.getElementById(REFUND_LAUNCHER_ID);
-    if (!launcher) {
-      launcher = makeButton(REFUND_LAUNCHER_ID, 'Refund capture', 'Open Refund Capture');
-      launcher.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleRefundPanel();
-      });
-      toolbar.appendChild(launcher);
-    }
-
-    const orderedControls = [brand, cms, email, agent, next, launcher].filter(Boolean);
+    const orderedControls = [brand, cms, email, agent].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -5939,8 +5905,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         toolbar &&
         toolbar.isConnected &&
         cachedTicketPath === location.pathname &&
-        document.getElementById(NEXT_ID) &&
-        document.getElementById(REFUND_LAUNCHER_ID)
+        document.getElementById(BRAND_ID) &&
+        document.getElementById(EMAIL_ID)
       ) return;
       window.clearTimeout(timer);
       timer = window.setTimeout(installToolbar, 250);
