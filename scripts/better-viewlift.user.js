@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.8
+// @version      3.0.9
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.8');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.0.9');
 
   (function () {
 /* ============================================================
@@ -4057,10 +4057,16 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     }
 
     function getIssueRefundButton(dialog) {
-        return Array.from(dialog?.querySelectorAll('button, [role="button"]') || [])
+        const controls = Array.from(dialog?.querySelectorAll(
+            'button, [role="button"], input[type="submit"], input[type="button"]'
+        ) || []);
+
+        return controls
             .filter(isVisible)
             .find(button => {
-                const text = getText(button).toLowerCase();
+                const text = cleanText(
+                    getText(button) || button.value || button.getAttribute('aria-label') || ''
+                ).toLowerCase();
                 return !button.disabled && (text === 'issue refund' || text === 'confirm refund');
             }) || null;
     }
