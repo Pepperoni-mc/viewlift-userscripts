@@ -5557,6 +5557,14 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         stream.getTracks().forEach(track => track.stop());
     }
 
+    window.addEventListener("beforeunload", () => {
+        if (reusableCaptureStream) {
+            stopStream(reusableCaptureStream);
+            reusableCaptureStream = null;
+            reusableCaptureVideo = null;
+        }
+    });
+
     function nextFrame() {
         return new Promise(resolve => requestAnimationFrame(resolve));
     }
