@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.0.9
+// @version      3.1.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.0.9');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.1.0');
 
   (function () {
 /* ============================================================
@@ -58,6 +58,22 @@
     lastCaptureAt: 'Refund Last Capture At',
     syncPing: 'Refund Cross Tab Sync Ping'
   };
+
+  const REFUND_SHEET_URLS = {
+    tbl: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=469886271#gid=469886271',
+    schn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=273386395#gid=273386395',
+    altitude: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=716064238#gid=716064238',
+    msn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=291960457#gid=291960457',
+    vgk: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1160085053#gid=1160085053',
+    chsn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1893212316#gid=1893212316',
+    fox: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1677210455#gid=1677210455',
+    rootsport: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=285382536#gid=285382536',
+    livgolf: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=133679065#gid=133679065',
+    dirt: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=735614001#gid=735614001',
+    lnp: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=0#gid=0'
+  };
+
+  const REFUND_SHEET_DATE_FIRST = new Set(['msn', 'vgk', 'chsn', 'fox']);
 
   const BLOCKED_EMAILS = [
     'sc-appsupport@spacecityhn.com',
@@ -908,6 +924,16 @@
       return 'schn';
     }
 
+    if (/tampa|tampa bay|tbl|lightning/i.test(context)) return 'tbl';
+    if (/altitude/i.test(context)) return 'altitude';
+    if (/monumental|\bmsn\b/i.test(context)) return 'msn';
+    if (/golden knights|\bvgk\b/i.test(context)) return 'vgk';
+    if (/chsn|cubs|blackhawks|\bchicago\b/i.test(context)) return 'chsn';
+    if (/foxone|fox sports|\bfox\b/i.test(context)) return 'fox';
+    if (/rootsport|root sports/i.test(context)) return 'rootsport';
+    if (/dirtvision|dirt vision/i.test(context)) return 'dirt';
+    if (/\blnp\b|league network/i.test(context)) return 'lnp';
+
     return '';
   }
 
@@ -974,6 +1000,61 @@
     const clientKey = getRefundClientKey();
 
     return clientKey === 'schn' || clientKey === 'livgolf';
+  }
+
+  function getRefundSheetKey() {
+    const detected = detectRefundClientKeyFromText(getRefundClientContextText());
+    if (detected && REFUND_SHEET_URLS[detected]) {
+      forceSet(STORAGE_KEYS.client, detected);
+      return detected;
+    }
+
+    const stored = safeGet(STORAGE_KEYS.client, '').toLowerCase();
+    return REFUND_SHEET_URLS[stored] ? stored : 'tbl';
+  }
+
+  function getRefundSheetRow() {
+    runCapture(false);
+
+    const paymentField = document.getElementById('refund-payment');
+    if (paymentField && isBadPaymentValue(paymentField.value)) {
+      paymentField.value = '';
+      safeDelete(STORAGE_KEYS.payment);
+    }
+
+    const base = [
+      document.getElementById('refund-email')?.value || '',
+      document.getElementById('refund-freshdesk')?.value || '',
+      document.getElementById('refund-cms')?.value || '',
+      document.getElementById('refund-payment')?.value || '',
+      document.getElementById('refund-reason')?.value || '',
+      document.getElementById('refund-tag')?.value || 'yes',
+      document.getElementById('refund-amount')?.value || '',
+      document.getElementById('refund-refunder')?.value || 'Sebastian'
+    ];
+    const date = document.getElementById('refund-date')?.value || getTodayShortDate();
+    const sheetKey = getRefundSheetKey();
+
+    return {
+      sheetKey,
+      row: REFUND_SHEET_DATE_FIRST.has(sheetKey)
+        ? base.concat(date, '')
+        : base.concat('', date)
+    };
+  }
+
+  function copyForRefundSheet() {
+    const result = getRefundSheetRow();
+    const sheetUrl = REFUND_SHEET_URLS[result.sheetKey] || REFUND_SHEET_URLS.tbl;
+
+    GM_setClipboard(result.row.join('\t'));
+    const opened = window.open(sheetUrl, '_blank', 'noopener');
+    setStatus(
+      opened
+        ? `Copied for ${result.sheetKey.toUpperCase()} sheet. Paste after the last record.`
+        : 'Copied. Open the refund sheet and paste after the last record.'
+    );
+    markAllFieldStates();
   }
 
   function markFieldState(field) {
@@ -1726,6 +1807,7 @@
         </div>
 
         <button id="refund-copy" class="refund-action-button" type="button" style="margin-top:8px;">Copy Row</button>
+        <button id="refund-copy-sheet" class="refund-action-button" type="button" style="margin-top:8px;">Open Refund Sheet</button>
 
         <div id="refund-status"></div>
       </div>
@@ -1757,6 +1839,11 @@
 
     document.getElementById('refund-copy').addEventListener('click', function () {
       copyCurrentRow();
+      anchorPanelBottomRight(panel);
+    });
+
+    document.getElementById('refund-copy-sheet').addEventListener('click', function () {
+      copyForRefundSheet();
       anchorPanelBottomRight(panel);
     });
 
