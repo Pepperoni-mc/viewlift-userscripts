@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.4.1
+// @version      3.4.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.4.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.4.2');
 
   (function () {
 /* ============================================================
@@ -2305,8 +2305,24 @@
     }
 
     function getOrganizationOption(key) {
-        return document.querySelector(`[role="option"][data-value="${CSS.escape(key)}"]`) ||
+        const byValue = document.querySelector(`[role="option"][data-value="${CSS.escape(key)}"]`) ||
             document.querySelector(`[role="option"][data-value="${key}"]`);
+
+        if (byValue) return byValue;
+
+        return Array.from(document.querySelectorAll('[role="option"]')).find(option => {
+            const text = clean(option.textContent).toLowerCase();
+            return text === key || text.startsWith(`${key} `) || text.includes(` ${key}`);
+        }) || null;
+    }
+
+    function getOrganizationKeyFromButton(button) {
+        const text = clean([
+            button?.textContent,
+            button?.getAttribute('aria-label'),
+            button?.querySelector('img')?.getAttribute('alt')
+        ].join(' ')).toLowerCase();
+        return ORGANIZATIONS.find(item => text === item.key || text.includes(item.key))?.key || '';
     }
 
     function showStatus(message, error = false) {
@@ -2402,8 +2418,17 @@
             return;
         }
 
+        const currentKey = getOrganizationKeyFromButton(accountButton);
+        const returnUrl = pending.returnUrl || `${location.origin}/users/search`;
+        if (currentKey === pending.key) {
+            clearPending();
+            window.setTimeout(() => location.replace(returnUrl), 400);
+            return;
+        }
+
         switchRunning = true;
-        accountButton.click();
+        const existingOption = getOrganizationOption(pending.key);
+        if (!existingOption) accountButton.click();
         window.setTimeout(() => {
             const option = getOrganizationOption(pending.key);
             if (!option || option.getAttribute('aria-disabled') === 'true' || option.getAttribute('data-disabled') === 'true') {
@@ -2414,7 +2439,6 @@
             }
 
             option.click();
-            const returnUrl = pending.returnUrl || `${location.origin}/users/search`;
             clearPending();
             // Give the v5 app time to persist the selected organization before
             // returning to the classic route.
