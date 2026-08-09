@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ViewLift Helper",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "ViewLift productivity helper with automatic CMS tab capture and future workflow tools.",
   "icons": {
     "128": "icon128.png"
