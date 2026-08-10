@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.9.0
+// @version      3.10.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -19,6 +19,11 @@
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        GM_addValueChangeListener
+// @grant        GM_xmlhttpRequest
+// @connect      cms.viewlift.com
+// @connect      cms-gcp.viewlift.com
+// @connect      cms-qcp.viewlift.com
+// @connect      cms.monumentalsportsnetwork.com
 // ==/UserScript==
 
 (function () {
@@ -26,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.8.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.10.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -2174,6 +2179,58 @@
     window.setTimeout(checkSession, 15000);
     window.setInterval(checkSession, KEEP_ALIVE_INTERVAL);
     window.addEventListener('focus', () => window.setTimeout(checkSession, 250));
+})();
+
+
+/* ============================================================
+ * Feature 1b2: CMS Session Keep-Alive (driven from Freshdesk)
+ * Chrome freezes a backgrounded tab's own timers, so the keep-alive above
+ * stops firing as soon as you tab away from CMS to work in Freshdesk. This
+ * pings the same CMS hosts from the Freshdesk tab instead, since that's the
+ * tab you're actually using and Chrome won't freeze it.
+ * This does not bypass OTP or store authentication data.
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    if (location.hostname !== 'viewlift.freshdesk.com') return;
+    if (typeof GM_xmlhttpRequest !== 'function') return;
+
+    const CMS_KEEP_ALIVE_HOSTS = [
+        'https://cms.viewlift.com/',
+        'https://cms-gcp.viewlift.com/',
+        'https://cms-qcp.viewlift.com/',
+        'https://cms.monumentalsportsnetwork.com/'
+    ];
+    const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
+
+    function pingCMSHost(url) {
+        GM_xmlhttpRequest({
+            method: 'HEAD',
+            url,
+            timeout: 15000,
+            anonymous: false,
+            onload: response => {
+                if (response.status === 401 || /\/login(?:\/|$)/i.test(response.finalUrl || '')) {
+                    console.debug('[Better ViewLift] CMS session (' + url + ') requires OTP/login again.');
+                }
+            },
+            onerror: () => {},
+            ontimeout: () => {}
+        });
+    }
+
+    function pingAllCMSHosts() {
+        // Only bother while Freshdesk is actually the tab being looked at -
+        // if neither tab is active there is nothing useful to keep alive.
+        if (document.visibilityState !== 'visible') return;
+        CMS_KEEP_ALIVE_HOSTS.forEach(pingCMSHost);
+    }
+
+    window.setTimeout(pingAllCMSHosts, 20000);
+    window.setInterval(pingAllCMSHosts, KEEP_ALIVE_INTERVAL);
+    window.addEventListener('focus', () => window.setTimeout(pingAllCMSHosts, 250));
 })();
 
 

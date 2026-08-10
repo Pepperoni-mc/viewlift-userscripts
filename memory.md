@@ -117,6 +117,32 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## CMS session keep-alive (2026-08-10)
+
+The old keep-alive (better-viewlift.user.js, "Feature 1b: CMS Session Keep-Alive", ~line 2126)
+only *detects* an expired session (HEAD request every 8 min, logs a console warning) — it never
+prevented expiry. Root cause of "still get OTP-prompted": user confirmed the logout is
+inactivity-triggered (backgrounding the CMS tab to work in Freshdesk, not a fixed absolute
+timer). Chrome freezes/throttles JS timers in backgrounded tabs (Page Lifecycle API — a tab can
+be frozen after ~5 min in the background even without full "discard"), which stops the in-page
+`setInterval` from firing until the tab is foregrounded again.
+
+**User explicitly rejected the ViewLift Helper extension as part of the fix ("no quiero nada
+con la extensión, de momento todo con Tampermonkey") — a first attempt that moved the ping into
+the extension's background service worker was reverted.** Reason this matters technically: a
+page-scoped script fundamentally cannot run while its own tab is frozen — no code running only
+in the CMS tab can defeat this, extension or not. The approach actually shipped instead pings
+the CMS hosts from the **Freshdesk tab** via `GM_xmlhttpRequest` (needs `@connect` for the 4 CMS
+hosts) — since Freshdesk is the tab the user is actively driving, it doesn't get frozen, so it
+can carry the keep-alive load for CMS even while the CMS tab itself is backgrounded. Whether
+`GM_xmlhttpRequest` actually carries the CMS session cookie cross-origin depends on that
+cookie's `SameSite` attribute — unverified, needs real-world confirmation. The existing
+same-origin CMS-side interval was kept as a fallback for whenever CMS itself is the active tab.
+Independent of any code: excluding the CMS hosts from Chrome's tab discarding
+(`chrome://settings/performance` → "Always keep these sites active") is the one fix that isn't
+limited by page-JS constraints at all, since it stops the freeze/discard from happening in the
+first place.
+
 ## Deep architecture findings (2026-08-09 analysis)
 
 `better-viewlift.user.js` is a **mechanical merge of two formerly-separate scripts, never

@@ -34,5 +34,7 @@ Tampermonkey cannot install extensions silently.
 - Shows the payment handler badge next to the camera button
 - Hides helper UI from screenshots
 - Works across internal CMS navigation without refreshing
+- Keeps the CMS session alive from the Freshdesk tab too, so tabbing away from CMS
+  doesn't force another login/OTP
 
 
