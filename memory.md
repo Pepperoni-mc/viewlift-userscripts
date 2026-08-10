@@ -660,3 +660,113 @@ behavior is unconfirmed; worth asking the user directly before assuming what it 
    latency win per ticket.
 4. Extract shared helpers (`waitFor`, `isVisible`, `cleanText`, `isCMSHost`) once flattened.
 5. Harden fragile selectors — reactively, unless getting ahead of it is wanted.
+
+## 2026-08-10 — Session catch-up + ViewLift Support Bot integration
+
+**Catch-up note:** this file's last entry above was the original one-shot deep analysis; every
+fix from the optimization pass that followed shipped as commits but was never written up here.
+For the record, since `d337cfb` (dropped the legacy `better-cms.user.js`/`better-freshdesk.user.js`
+scripts): the double-IIFE SPA-detectors were unified into one shared route bus (`e2bd953`), three
+GM-storage keys were centralized (`2b7a55a`), the toolbar's load-then-jump race was fixed with a
+4s grace period before falling back to the bare action-bar container (`6b08026`), the Freshdesk
+daily-goal tracker was removed per request (`da6f278`), a shared `bvNotify` toast system replaced
+silent `console.warn`s (`5a8f5f5`) and one bug it caused (false "email not found" on the tickets
+list page) was fixed same-day (`1e31242`), the CMS keep-alive (both same-tab and cross-tab) was
+repointed from a CloudFront-static SPA-shell URL to the real `/api/auth/verify` endpoint after the
+user reported the CMS still logging out (`fa76321`), and a CMS session status dot plus manual
+"check now" button were added so that fix is self-verifiable without waiting hours (`2702004`,
+`71c630f`). The CMS header button was also fixed to only render inside a ticket
+(`installHeaderButton`'s ticket-path guard, mirroring Set Agent's existing pattern) after the
+user reported it appearing elsewhere.
+
+### Bot integration: CMS-lookup pre-check + basic "Generate Reply"
+
+Two features requested together ("Las dos, aunque 'generate' quede básico"), both built on top
+of the internal ViewLift Support Assistant bot at `http://135.181.37.72:3001` (a separate FastAPI
++ React app with its own login, unrelated to Freshdesk/CMS auth). `@version` bumped to 3.26.0.
+
+**Investigation (live browser, `135.181.37.72:3001`):**
+- `GET /api/cms/lookup?email=<email>&site=<site>` returns `{"found": bool, "email": string}`,
+  confirmed live: `site=schn` for a SCHN-tagged ticket returned `found:false` with a real
+  `Authorization: Bearer <token>` header built from that origin's own `localStorage['token']`
+  (a JWT obtained by logging into the bot directly - never read, logged, or stored by this
+  script; only entered by the user themselves).
+- `POST /api/generate` (the "Analyze and Generate" button's real endpoint, found by patching
+  `XMLHttpRequest.prototype.send` in-page since the app uses axios, not `fetch`) - request body:
+  `message` (string), `platform_id` (number), `images` (null), `agent_notes` (null),
+  `cms_account` (null), `cms_not_found` (bool), `cms_no_subscription` (bool). Response body keys:
+  `parsed, response, next_steps, bot_notes, needs_verification, faq_sources, canned_sources,
+  cache_hit, history_id, learned_count, is_spam`. `response` is the plain-text generated reply.
+  `platform_id: 1` was confirmed live for a SCHN ticket (the bot's active platform at the time).
+  The bot's platform switcher dropdown lists 9 platforms in this order: SCHN+, LIV Golf, Altitude
+  Sports, Monumental Sports, TBL, FOX One, Knight Time, MOTV, DIRTVision - repeated attempts to
+  click through each and re-capture `platform_id` for the other 8 were blocked by the dropdown
+  closing before the next click landed (component re-render timing), then by a bundle-source
+  workaround tripping this environment's own cookie/JWT-shaped-string content filter. **Only
+  `platform_id: 1` (SCHN) is independently confirmed.** The mapping used in code for the other 5
+  brands this script cares about (LIV=2, ALTITUDE=3, MSN=4, FOX=6, DIRT=9) assumes the dropdown's
+  display order matches ascending DB ids - a reasonable but unverified guess. This is safe by
+  design: the generated draft is always reviewed and copied by hand, never auto-inserted or
+  auto-sent, so a wrong `platform_id` can only make the draft's wording worse, not send anything
+  wrong.
+- The bot's "⚡ Full Automated" mode is not a per-ticket generation mode - it's a shared
+  round-robin queue across all admins that auto-assigns whatever ticket is next in the shared
+  pool. Confirmed by inspecting its own on-screen description; ruled out as a way to test
+  additional platform_ids.
+
+**Code (`better-viewlift.user.js`):**
+- Header: added `@grant GM_registerMenuCommand` and `@connect 135.181.37.72`.
+- Prelude (shared, before the first Feature IIFE): `BV_BOT_BASE_URL`, `BV_BOT_TOKEN_KEY`,
+  `BV_BOT_BRAND_MAP` (brand label -> `{site, platformId}`), `getBotToken()`,
+  `promptForBotToken()` (registered via `GM_registerMenuCommand('ViewLift Bot: Set API Token', ...)`,
+  mirroring `schn-case-tracker.user.js`'s existing "Set API Key" pattern - a native `prompt()`
+  the user types their own token into directly; blank + OK clears it), and `botApiRequest()` (a
+  thin `GM_xmlhttpRequest` wrapper adding the `Authorization: Bearer` header, JSON-encoding the
+  body when present, and normalizing 401/403 to an `unauthorized` error). Everything no-ops
+  silently if no token is saved - neither feature does anything until the user runs the menu
+  command once.
+- Feature 3 (CMS user search, `installHeaderButton`'s click handler): after the existing
+  `window.open(...)` (unchanged, still fires synchronously so the popup blocker doesn't catch
+  it), added a fire-and-forget `checkCmsAccountViaBot(email, clientContext)`. It maps the ticket's
+  client context to a bot `site` slug via a new local `BOT_SITE_RULES`/`getBotSiteSlugForClient`
+  (6 brands: schn/liv/dirt/altitude/msn/fox), then calls `/api/cms/lookup` for the primary email
+  and, if not found, walks every other email mentioned anywhere in the ticket (via the
+  already-existing `collectTextFromRoot`, filtered through the existing
+  `isBlockedCmsSearchEmail` denylist) until one is found or the list is exhausted. If a
+  different email than the one just searched turns out to have the account, it shows a
+  `bvNotify` telling the agent to try that email instead - directly actionable for the
+  originally-reported "CMS search returns No Data Available for a real customer" bug, instead of
+  just diagnosing it. If truly no candidate has an account, it says so once. Any bot/network
+  error is swallowed silently - this check can never make the CMS-search flow worse, only
+  supplement it.
+- Feature 8 (unified toolbar): added a 5th toolbar button (🤖, `GENERATE_TOGGLE_ID`) and an inline
+  panel (`GENERATE_PANEL_ID`, styled like the refund panel but built fresh in
+  `mountGeneratePanel` since there's no pre-existing DOM to reuse). Clicking it opens the panel
+  and immediately calls `runGenerate()`: resolves `platform_id` from `detectBrand()` +
+  `BV_BOT_BRAND_MAP`, builds `message` from every `.ticket_note` element's text (same selector
+  Feature 5's email/phone quick-copy chips already scan) joined with the ticket's `document.title`
+  as a subject line and capped to the last 12,000 characters, then `POST /api/generate` with
+  `cms_account: null` and both `cms_*` flags `false` (the "básico" simplification - this script
+  doesn't yet feed real CMS-account state into the request the way the bot's own UI does when an
+  agent has looked one up first). The response's `.response` text lands in a readonly textarea
+  with Copy and Regenerate buttons only - no agent-notes field, no screenshot attach, no
+  FAQ-sources display, no queue system, and critically no "insert into reply"/auto-send: the
+  agent always copies and pastes by hand. `copyGeneratedText()` is a small local clipboard helper,
+  written separately from Feature 8's existing `copyText()` on purpose - `copyText` hardcodes
+  the tooltip it reverts to after the copied-flash to email-specific text, which would have been
+  wrong on a reused Copy button.
+- Verified end-to-end against the live bot (both endpoints hit for real from the browser, response
+  shapes matched what the code expects) before writing this entry; did not verify inside
+  Tampermonkey's own sandbox since triggering the real `GM_registerMenuCommand` prompt from
+  browser automation would block the extension (blocks on any native `prompt()`/`confirm()`), so
+  that specific path is `node --check`-verified plus reviewed only, not click-tested live.
+
+**Open threads:**
+- `platform_id` for LIV/ALTITUDE/MSN/FOX/DIRT is unconfirmed (see above) - worth a 5-minute
+  manual check next time someone is in the bot's UI on one of those brands: switch platform,
+  paste something short, hit Analyze and Generate, and read `platform_id` off the request.
+- The bot's own UI passes a real `cms_account`/`cms_not_found`/`cms_no_subscription` when the
+  agent has already looked the account up in its flow; this integration always sends
+  `cms_not_found: false`. Wiring `checkCmsAccountViaBot`'s result into `runGenerate()`'s request
+  body would make the draft's "no account found" framing accurate instead of always assuming an
+  account exists - straightforward follow-up once the two features have been used a bit.
