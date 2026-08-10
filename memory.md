@@ -117,6 +117,30 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Two more cleanups, one deliberate non-change (retryCapture)
+
+Found via a second grep sweep (`.forEach` wrapping `setTimeout`, and remaining `setInterval`
+calls) after the previous round:
+- Header Cleanup module's `init()` had a 3rd hidden fixed cascade (`[500,1500,3500].forEach(...)`)
+  - didn't just convert to `waitFor` (no clean boolean signal - `removeHeaderClutter` doesn't
+  return anything meaningful and clutter can reappear at any time, not just once), instead
+  subscribed it to `onRouteChange` directly, which is strictly better: reacts to actual DOM
+  changes instead of guessing at 3 fixed checkpoints.
+- CMS payment-handler badge's `waitForPaymentHandler` was another hand-rolled `waitFor` clone
+  (setInterval-based this time, 300ms poll) - replaced with a one-line wrapper.
+
+**Deliberately did NOT touch** `retryCapture()` (Refund Capture module, 1s/2.5s/5s/9s fixed
+cascade calling `runCapture`) despite it looking like the same pattern - there's an explicit
+comment right above its call site: "Startup, route, focus and periodic passes cover
+asynchronous rendering without reacting to every DOM mutation on Freshdesk and the CMS." That's
+a deliberate prior design decision to NOT make this one reactive to DOM mutations, and I have no
+evidence it's wrong - respecting a documented intentional choice over "this looks like the same
+pattern as the others." Also left the Refund Capture Tool's periodic 8s reconciliation pass
+(`setInterval` at what's now ~line 2040) alone - it does more than plain route-change reaction
+(a full create/capture/remove state reconciliation with an else-branch), so folding it into
+`onRouteChange` risked losing that behavior for an unclear benefit given the shared engine's own
+5s fallback already covers the pure route-change portion.
+
 ## Stage 2 follow-up: 4 more observers Codex's pass missed, one more timeout cascade
 
 Codex's Stage 2 migration scoped itself to observers explicitly about *navigation* detection and

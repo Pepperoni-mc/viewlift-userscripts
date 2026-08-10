@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.14.0
+// @version      3.15.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.14.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.15.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -5219,24 +5219,8 @@ if (isCMSHost()) {
     }
 
     function waitForPaymentHandler(timeoutMs) {
-        return new Promise(resolve => {
-            const startedAt = Date.now();
-
-            const timer = setInterval(() => {
-                const handler = findPaymentHandlerValue();
-
-                if (handler) {
-                    clearInterval(timer);
-                    resolve(handler);
-                    return;
-                }
-
-                if (Date.now() - startedAt >= timeoutMs) {
-                    clearInterval(timer);
-                    resolve("");
-                }
-            }, 300);
-        });
+        return waitFor(findPaymentHandlerValue, { timeout: timeoutMs, pollMs: 300 })
+            .then(result => result || "");
     }
 
     function findPaymentHandlerValue() {
@@ -7256,9 +7240,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     addStyles();
     removeHeaderClutter();
-    [500, 1500, 3500].forEach(function (delay) {
-      setTimeout(removeHeaderClutter, delay);
-    });
+    onRouteChange(removeHeaderClutter);
   }
 
   init();
