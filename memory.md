@@ -117,6 +117,43 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Root cause of "CMS keeps logging out" - the keep-alive was pinging a static SPA shell (2026-08-10)
+
+User pushed back that the anti-logout fix from last night wasn't working. Investigated live via
+`read_network_requests` on real CMS tabs (cms.viewlift.com and cms-gcp.viewlift.com) and found
+the actual bug: both keep-alive mechanisms (same-tab `fetch` and cross-tab `GM_xmlhttpRequest`)
+were re-requesting the CURRENT PAGE ROUTE (e.g. `/users/search`) - but CMS is a CloudFront-served
+React SPA, confirmed via `curl -I` showing `X-Cache: ... cloudfront` and a plain static
+`text/html` response. Re-requesting a page route just gets the same static `index.html` shell
+back, **always 200 regardless of whether the session is valid or not** - it never touches the
+backend's real session/auth logic at all. The keep-alive was never actually keeping anything
+alive; at best it gave a false "alive" reading forever, at worst it did nothing while also
+reporting nothing wrong.
+
+Found the real endpoint by watching what the CMS app itself calls on load:
+**`GET /api/auth/verify`** (confirmed 200 on both cms.viewlift.com and cms-gcp.viewlift.com via
+live network capture) - an actual authenticated API route, not a static asset. Repointed both
+keep-alive mechanisms at `<origin>/api/auth/verify` instead of the bare page route, GET instead
+of HEAD (matching what the real app does - unverified whether HEAD is even handled the same by
+this route). Could not verify end-to-end that this actually prevents the real-world logout
+(would need hours of real usage to confirm) - flagged this clearly to the user rather than
+claiming certainty. **If this recurs, the next thing to check is whether `/api/auth/verify`
+itself resets an idle timer server-side, or only reports current status without extending
+anything** - those are different guarantees and I only confirmed the latter (the response is
+real and endpoint-accurate), not the former.
+
+**Related, same complaint's second half**: user reported other toolbar controls "appear in
+other places" too, same as the CMS button did before its earlier fix. Checked every button-
+creating module's page guard: Set Agent (`installSetAgentButton`) already correctly restricts
+to `isTicketPage()` and actively removes itself when navigating away - not part of the bug. The
+CMS button (`installHeaderButton`) had NO ticket restriction (`isFreshdeskPage()` only, any
+Freshdesk page) - added the same create-on-ticket/remove-elsewhere pattern Set Agent already
+used. Also fixed a second bug in the `onRouteChange` subscriber that re-triggers
+`installHeaderButton()`: it early-returned whenever the button already existed, which meant
+navigating FROM a ticket TO a non-ticket page via SPA routing (not a hard reload) would never
+re-invoke the function that contains the removal logic - changed the guard to compare
+button-exists against should-exist-here instead of just checking existence.
+
 ## Regression from the bvNotify migration, fixed same session (2026-08-10)
 
 The "could not find a customer email" notification fired on the tickets list/filters page

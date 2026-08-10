@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.23.1
+// @version      3.24.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.23.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.24.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -2368,8 +2368,14 @@
         const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
         try {
-            const response = await fetch(`${location.origin}${location.pathname}${location.search}`, {
-                method: 'HEAD',
+            // Hitting the page route itself does nothing useful here - CMS
+            // is a CloudFront-served SPA shell, so re-requesting e.g.
+            // /users/search just gets the same static index.html back
+            // (always 200, whether the session is alive or not) without ever
+            // touching the backend's actual session/auth logic. api/auth/verify
+            // is the real endpoint the app itself calls to check the session.
+            const response = await fetch(`${location.origin}/api/auth/verify`, {
+                method: 'GET',
                 credentials: 'include',
                 cache: 'no-store',
                 redirect: 'follow',
@@ -2420,17 +2426,24 @@
     if (location.hostname !== 'viewlift.freshdesk.com') return;
     if (typeof GM_xmlhttpRequest !== 'function') return;
 
+    // Requesting the bare page route does nothing useful - CMS is a
+    // CloudFront-served SPA shell, so it returns the same static
+    // index.html (always 200) whether the session is alive or not,
+    // without ever touching the backend's real session/auth logic.
+    // api/auth/verify is the actual endpoint the app itself calls to
+    // check the session - confirmed live on cms.viewlift.com and
+    // cms-gcp.viewlift.com via the browser's own network requests.
     const CMS_KEEP_ALIVE_HOSTS = [
-        'https://cms.viewlift.com/',
-        'https://cms-gcp.viewlift.com/',
-        'https://cms-qcp.viewlift.com/',
-        'https://cms.monumentalsportsnetwork.com/'
+        'https://cms.viewlift.com/api/auth/verify',
+        'https://cms-gcp.viewlift.com/api/auth/verify',
+        'https://cms-qcp.viewlift.com/api/auth/verify',
+        'https://cms.monumentalsportsnetwork.com/api/auth/verify'
     ];
     const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
 
     function pingCMSHost(url, onDone) {
         GM_xmlhttpRequest({
-            method: 'HEAD',
+            method: 'GET',
             url,
             timeout: 15000,
             anonymous: false,
@@ -8857,6 +8870,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     function installHeaderButton() {
         if (!isFreshdeskPage()) return;
 
+        // Only makes sense on a specific ticket - there's no contact info or
+        // ticket body to search from on the tickets list/filters/leaderboard
+        // views, and leaving the button there just invites clicking it with
+        // no ticket context (which then can't find any email at all).
+        if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) {
+            document.getElementById(BUTTON_ID)?.remove();
+            return;
+        }
+
         if (document.getElementById(BUTTON_ID)) return;
 
         const insertionPoint = findHeaderInsertionPoint();
@@ -9226,7 +9248,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         let timer = null;
 
         onRouteChange(function () {
-            if (document.getElementById(BUTTON_ID)) return;
+            const isTicketPage = /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
+            const buttonExists = !!document.getElementById(BUTTON_ID);
+
+            // Nothing to do if we're already in the right state for this
+            // page (button present on a ticket, or absent everywhere else).
+            if (buttonExists === isTicketPage) return;
+
             clearTimeout(timer);
 
             timer = setTimeout(function () {
