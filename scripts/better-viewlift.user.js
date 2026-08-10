@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.12.0
+// @version      3.13.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.12.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.13.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -3427,22 +3427,12 @@ if (isCMSHost()) {
     }
 
     function waitForAgentOptions(trigger, timeout = 1800) {
-        return new Promise(resolve => {
-            const startedAt = Date.now();
+        let lastOptions = [];
 
-            function check() {
-                const options = getAgentOptions(trigger);
-
-                if (options.length || Date.now() - startedAt >= timeout) {
-                    resolve(options);
-                    return;
-                }
-
-                setTimeout(check, 60);
-            }
-
-            check();
-        });
+        return waitFor(() => {
+            lastOptions = getAgentOptions(trigger);
+            return lastOptions.length ? lastOptions : null;
+        }, { timeout, pollMs: 60 }).then(() => lastOptions);
     }
 
     async function openAgentOptions() {
@@ -3739,26 +3729,12 @@ if (isCMSHost()) {
     }
 
     function waitForSelectedAgent(trigger, agentName, timeout = 1200) {
-        return new Promise(resolve => {
-            const startedAt = Date.now();
-            const expectedName = normalizeAgentName(agentName);
+        const expectedName = normalizeAgentName(agentName);
 
-            function check() {
-                const currentName = normalizeAgentName(getSelectedAgentText(trigger));
-
-                if (
-                    currentName === expectedName ||
-                    Date.now() - startedAt >= timeout
-                ) {
-                    resolve(currentName === expectedName);
-                    return;
-                }
-
-                setTimeout(check, 60);
-            }
-
-            check();
-        });
+        return waitFor(
+            () => normalizeAgentName(getSelectedAgentText(trigger)) === expectedName || null,
+            { timeout, pollMs: 60 }
+        ).then(Boolean);
     }
 
     function findAgentUpdateButton(trigger) {
@@ -3827,22 +3803,7 @@ if (isCMSHost()) {
     }
 
     function waitForAgentUpdateButton(trigger, timeout = 1400) {
-        return new Promise(resolve => {
-            const startedAt = Date.now();
-
-            function check() {
-                const updateButton = findAgentUpdateButton(trigger);
-
-                if (updateButton || Date.now() - startedAt >= timeout) {
-                    resolve(updateButton);
-                    return;
-                }
-
-                setTimeout(check, 60);
-            }
-
-            check();
-        });
+        return waitFor(() => findAgentUpdateButton(trigger), { timeout, pollMs: 60 });
     }
 
     async function applySavedAgent() {

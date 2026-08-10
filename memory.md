@@ -117,6 +117,28 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Helper duplication: consolidated waitFor clones, deliberately left isVisible/cleanText/realClick alone
+
+The Set Agent module (Feature 9, IIFE A) had three hand-rolled clones of the exact same
+"poll every 60ms until predicate true or timeout" pattern (`waitForAgentOptions`,
+`waitForSelectedAgent`, `waitForAgentUpdateButton`) - structurally identical to each other and
+to the shared `waitFor()` added in Stage 1. Replaced all three with thin wrappers around
+`waitFor()`, checked every caller's usage first to make sure the return contract matched exactly
+(`waitForAgentOptions` must resolve an array even on timeout, not null, because callers do
+`.length` on it without a null-check - handled with `.then(() => lastOptions)`; `waitForSelectedAgent`
+must resolve a boolean - handled with `.then(Boolean)`; `waitForAgentUpdateButton` already matched
+`waitFor`'s native element-or-null contract, no wrapper needed).
+
+**Did NOT** consolidate the ~20 duplicated `isVisible`/`cleanText`/`realClick` definitions the
+original architecture analysis flagged, despite them looking like the same kind of easy win.
+Checked several side by side first - they're NOT identical: e.g. the one in the header-cleanup
+module requires `rect.width > 100 && rect.height > 30` (a deliberate minimum-size filter, not
+just "is it visible at all"), and some check `element.nodeType !== 1` or `style.opacity !== '0'`
+while others don't. Blindly replacing these with one shared version would silently change
+filtering behavior in at least one module. Not worth the risk for a pure cosmetic/duplication
+cleanup with zero user-facing benefit - left as-is. If someone wants to tackle this later, audit
+each call site's actual behavior first, don't assume same-name means same-behavior.
+
 ## Cross-tab snapshot race fixed (2026-08-10)
 
 `betterFreshdeskPendingSnapshot` (GM storage) was a single value: two snapshot requests within
