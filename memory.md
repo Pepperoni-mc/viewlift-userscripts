@@ -117,6 +117,30 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Root-caused "the button appears then disappears after ~1s" - orphaned toggle (2026-08-10)
+
+Real bug, unrelated to anything from today's other fixes. Sequence: `createUI()` first shows the
+panel as a floating minimized "$" pill (visible). Shortly after, `installToolbar()` runs and
+calls `mountRefundPanel(toolbar)`, which re-parents the panel INTO the unified toolbar and adds
+`.better-freshdesk-inline-panel`. Once inline-mounted, a different CSS rule takes over:
+`[data-better-open="no"] { display: none !important; }` - and since `betterOpen` defaults to
+`'no'`, the panel goes fully invisible the moment it gets absorbed into the toolbar. That's the
+"~1 second" timing: however long `installToolbar()` takes to first run after `createUI()`.
+
+There WAS a `toggleRefundPanel()` function already written to flip `betterOpen` and show it -
+confirmed via `grep` that it had **zero callers anywhere in the file**. A comment nearby
+(`// These legacy toolbar controls are intentionally removed`) removing
+`better-freshdesk-refund-launcher` explains it: some earlier cleanup pass removed the OLD button
+that used to call `toggleRefundPanel()` and never added a replacement trigger, leaving the
+function orphaned. Diagnosed by instrumenting `Element.prototype.remove` (confirmed the panel is
+never actually removed from the DOM - it's a pure CSS visibility issue) and by directly checking
+`getComputedStyle(panel).display` before/after manually toggling `betterOpen` (none -> block,
+confirmed).
+
+Fix: added a new `#better-freshdesk-refund-toggle` button ("$" icon) to the unified toolbar's
+`orderedControls`, wired to call `toggleRefundPanel()`, styled with the same gradient/glow
+treatment as the other toolbar buttons from today's visual pass.
+
 ## Missed one in the visual pass: the refund-capture floating launcher (2026-08-10)
 
 User pointed out "the refund capture button" specifically. Checked live: `#refund-capture-panel`

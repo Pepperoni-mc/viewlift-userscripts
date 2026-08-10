@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.18.1
+// @version      3.19.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.18.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.19.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -6131,6 +6131,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const TOOLBAR_ID = 'better-freshdesk-unified-toolbar';
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
+  const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
   let cachedTicketPath = '';
   let cachedEmail = '';
@@ -6180,6 +6181,36 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         margin-right: 8px !important;
         vertical-align: middle !important;
         z-index: 30 !important;
+      }
+
+      #${REFUND_TOGGLE_ID} {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 32px !important;
+        height: 32px !important;
+        margin-right: 6px !important;
+        padding: 0 !important;
+        border: 1px solid #0e4d8c !important;
+        border-radius: 999px !important;
+        background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%) !important;
+        color: #ffffff !important;
+        font-size: 15px !important;
+        font-weight: 800 !important;
+        cursor: pointer !important;
+        box-shadow: 0 4px 12px rgba(11, 92, 171, .32), inset 0 1px 0 rgba(255, 255, 255, .2) !important;
+        transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
+      }
+
+      #${REFUND_TOGGLE_ID}:hover {
+        background: linear-gradient(180deg, #3d8bea 0%, #0e4d8c 100%) !important;
+        box-shadow: 0 6px 16px rgba(11, 92, 171, .4), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
+        transform: translateY(-1px) !important;
+      }
+
+      #${REFUND_TOGGLE_ID}:active {
+        transform: translateY(0) !important;
+        box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
       }
 
       #${BRAND_ID}, #${EMAIL_ID} {
@@ -6468,12 +6499,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
 
+    let refundToggle = document.getElementById(REFUND_TOGGLE_ID);
+    if (!refundToggle) {
+      refundToggle = document.createElement('button');
+      refundToggle.id = REFUND_TOGGLE_ID;
+      refundToggle.type = 'button';
+      refundToggle.textContent = '$';
+      refundToggle.title = 'Open refund capture panel';
+      refundToggle.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRefundPanel();
+      });
+    }
+
     // These legacy toolbar controls are intentionally removed. Delete any
     // copies left behind by an older Better ViewLift version as well.
     document.getElementById('better-freshdesk-next-case')?.remove();
     document.getElementById('better-freshdesk-refund-launcher')?.remove();
 
-    const orderedControls = [brand, cms, email, agent].filter(Boolean);
+    const orderedControls = [brand, cms, email, agent, refundToggle].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
