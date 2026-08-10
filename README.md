@@ -35,9 +35,4 @@ Tampermonkey cannot install extensions silently.
 - Hides helper UI from screenshots
 - Works across internal CMS navigation without refreshing
 
-## Migrating from the old scripts
-
-Previous Better CMS installations update to Better Viewlift automatically. After
-updating, uninstall the `Better Freshdesk (Merged - Remove)` legacy entry from
-Tampermonkey. New installations should use the Better Viewlift link above.
 

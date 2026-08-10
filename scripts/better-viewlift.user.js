@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.8.0
+// @version      3.9.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -27,6 +27,44 @@
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
   installMarker.setAttribute('data-better-viewlift-installed', '3.8.0');
+
+  function isCMSHost(hostname = location.hostname) {
+    return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
+  }
+
+  function isV5UI() {
+    return Boolean(document.querySelector('[role="combobox"], .MuiSelect-select, .MuiInputBase-root'));
+  }
+
+  function waitFor(predicateFn, { timeout = 5000, pollMs = 50 } = {}) {
+    return new Promise(resolve => {
+      const startedAt = Date.now();
+
+      function check() {
+        let value = null;
+
+        try {
+          value = predicateFn();
+        } catch (error) {
+          value = null;
+        }
+
+        if (value) {
+          resolve(value);
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeout) {
+          resolve(null);
+          return;
+        }
+
+        setTimeout(check, pollMs);
+      }
+
+      check();
+    });
+  }
 
   (function () {
 /* ============================================================
@@ -92,7 +130,6 @@
     'processor'
   ];
 
-  const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
   const CMS_USER_ID_RE = /\/users\/(?:search\/)?([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
   const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
@@ -135,10 +172,6 @@
       pathname === '/a/tickets' ||
       pathname === '/a/tickets/filters/781604'
     );
-  }
-
-  function isCMSHost() {
-    return CMS_HOST_RE.test(location.hostname);
   }
 
   function isCMSUserPage() {
@@ -444,7 +477,7 @@
       const id = getCMSUserIdFromURL(location.href);
       if (id) return normalizeCMSUrl(location.href);
 
-      if (/^https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users(?:\/|$)/i.test(location.href)) {
+      if (/^\/users(?:\/|$)/i.test(location.pathname)) {
         return normalizeCMSUrl(location.href);
       }
     }
@@ -1934,33 +1967,23 @@
     setInterval(handleRefundToolRouteChange, 5000);
   }
 
-  function runRefundToolStartupPasses() {
+  async function runRefundToolStartupPasses() {
     cleanStoredBadValues();
-    createUI();
 
-    setTimeout(function () {
+    await waitFor(() => {
+      if (!isSupportedPage()) {
+        removeUI();
+        return true;
+      }
+
       createUI();
+      return document.getElementById('refund-capture-panel');
+    }, { timeout: 6200, pollMs: 50 });
+
+    if (isSupportedPage()) {
       runCapture(true);
       updateSyncStatusFromStorage();
-    }, 300);
-
-    setTimeout(function () {
-      createUI();
-      runCapture(true);
-      updateSyncStatusFromStorage();
-    }, 900);
-
-    setTimeout(function () {
-      createUI();
-      runCapture(true);
-      updateSyncStatusFromStorage();
-    }, 1800);
-
-    setTimeout(function () {
-      createUI();
-      runCapture(true);
-      updateSyncStatusFromStorage();
-    }, 3200);
+    }
   }
 
   function initRefundCaptureTool() {
@@ -2109,11 +2132,10 @@
 (function () {
     'use strict';
 
-    const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
     const KEEP_ALIVE_INTERVAL = 8 * 60 * 1000;
     const REQUEST_TIMEOUT = 15000;
 
-    if (!CMS_HOST_RE.test(location.hostname) || /^\/login(?:\/|$)/i.test(location.pathname)) return;
+    if (!isCMSHost() || /^\/login(?:\/|$)/i.test(location.pathname)) return;
 
     let requestInFlight = false;
 
@@ -2164,7 +2186,6 @@
 (function () {
     'use strict';
 
-    const HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
     const BUTTON_ID = 'better-cms-account-switcher';
     const MENU_ID = 'better-cms-account-switcher-menu';
     const STYLE_ID = 'better-cms-account-switcher-style';
@@ -2176,7 +2197,7 @@
     ];
     let switchRunning = false;
 
-    if (!HOST_RE.test(location.hostname)) return;
+    if (!isCMSHost()) return;
 
     function clean(value) {
         return String(value || '').replace(/\s+/g, ' ').trim();
@@ -2489,7 +2510,7 @@
  * ============================================================ */
 
 
-if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
+if (isCMSHost()) {
 
 (function () {
     'use strict';
@@ -2668,7 +2689,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
     }
 
     function fillReasonField() {
-        if (!shouldFillReason) return;
+        if (!shouldFillReason) return false;
 
         fillAttempts += 1;
 
@@ -2681,7 +2702,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 console.warn('[ViewLift Cancel Reason] Freshdesk ticket was not available.');
             }
 
-            return;
+            return false;
         }
 
         const field = getBestReasonField();
@@ -2693,7 +2714,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
                 console.log('[ViewLift Cancel Reason] No reason field found');
             }
 
-            return;
+            return false;
         }
 
         if (field.isContentEditable) {
@@ -2711,16 +2732,12 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         fillAttempts = 0;
 
         console.log('[ViewLift Cancel Reason] Cancellation reason filled:', reasonValue);
+        return true;
     }
 
-    function scheduleFillReason() {
+    async function scheduleFillReason() {
         fillAttempts = 0;
-
-        setTimeout(fillReasonField, 300);
-        setTimeout(fillReasonField, 700);
-        setTimeout(fillReasonField, 1200);
-        setTimeout(fillReasonField, 2000);
-        setTimeout(fillReasonField, 3000);
+        await waitFor(fillReasonField, { timeout: 3000, pollMs: 50 });
     }
 
     document.addEventListener('click', function (event) {
@@ -4061,7 +4078,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
  * by the Refund Capture Tool.
  * ============================================================ */
 
-if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
+if (isCMSHost()) {
 
 (function () {
     'use strict';
@@ -4342,7 +4359,7 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
  * Completes the Issue Refund form and submits it automatically.
  * ============================================================ */
 
-if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
+if (isCMSHost()) {
 
 (function () {
     'use strict';
@@ -4727,46 +4744,12 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
 
 
 /* ============================================================
- * Feature 3 Legacy: CMS Auto Percentage Refund After Action
- * Source: exact original standalone script, injected into page context.
- * Reason: the original script uses @grant none. Better CMS needs GM_* grants,
- * so this module is injected into the page to preserve the original behavior.
- * ============================================================ */
-
-(function () {
-    'use strict';
-
-    if (!/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
-        return;
-    }
-
-    // The maintained workflow above supersedes this legacy injected copy.
-    if (window.__betterCmsV5PercentageRefundInstalled) {
-        return;
-    }
-
-    if (/^\/users(?:\/|$)/i.test(location.pathname)) {
-        return;
-    }
-
-    if (document.getElementById('better-cms-original-refund-workflow-script')) {
-        return;
-    }
-
-    const script = document.createElement('script');
-    script.id = 'better-cms-original-refund-workflow-script';
-    script.type = 'text/javascript';
-    script.textContent = "(function () {\n    'use strict';\n\n    const REFUND_PERCENTAGE = '100';\n    const REFUND_REASON_VALUE = 'ROTH';\n    const ADDITIONAL_COMMENT_PREFIX = 'Customer wanted a refund: ';\n\n    let workflowActive = false;\n    let attempts = 0;\n\n    let refundClicked = false;\n    let issuePercentageClicked = false;\n    let percentageFilled = false;\n    let reasonDropdownOpened = false;\n    let reasonSelected = false;\n    let additionalCommentsHandled = false;\n\n    function isVisible(element) {\n        if (!element) return false;\n\n        const rect = element.getBoundingClientRect();\n        const style = window.getComputedStyle(element);\n\n        return (\n            rect.width > 0 &&\n            rect.height > 0 &&\n            style.display !== 'none' &&\n            style.visibility !== 'hidden' &&\n            style.opacity !== '0'\n        );\n    }\n\n    function cleanText(value) {\n        return (value || '').replace(/\\s+/g, ' ').trim();\n    }\n\n    function getText(element) {\n        return cleanText(element.innerText || element.textContent || '');\n    }\n\n    function realClick(element, logMessage) {\n        if (!element || !isVisible(element)) return false;\n\n        element.scrollIntoView({\n            block: 'center',\n            inline: 'center'\n        });\n\n        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));\n        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));\n        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));\n        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));\n\n        if (logMessage) {\n            console.log(logMessage);\n        }\n\n        return true;\n    }\n\n    function setNativeValue(element, value) {\n        const tagName = element.tagName.toLowerCase();\n\n        let prototype = null;\n\n        if (tagName === 'input') {\n            prototype = window.HTMLInputElement.prototype;\n        } else if (tagName === 'textarea') {\n            prototype = window.HTMLTextAreaElement.prototype;\n        }\n\n        const descriptor = prototype\n            ? Object.getOwnPropertyDescriptor(prototype, 'value')\n            : null;\n\n        if (descriptor && descriptor.set) {\n            descriptor.set.call(element, value);\n        } else {\n            element.value = value;\n        }\n\n        element.dispatchEvent(new Event('input', { bubbles: true }));\n        element.dispatchEvent(new Event('change', { bubbles: true }));\n        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));\n        element.dispatchEvent(new Event('blur', { bubbles: true }));\n    }\n\n    function isActionIconClick(target) {\n        const icon = target.closest('[data-testid=\"VisibilityIcon\"]');\n\n        if (icon) return true;\n\n        const clickable = target.closest('button, [role=\"button\"], a, td, div');\n\n        if (!clickable) return false;\n\n        return Boolean(clickable.querySelector('[data-testid=\"VisibilityIcon\"]'));\n    }\n\n    function findButtonByText(text) {\n        const targetText = text.toLowerCase();\n\n        return Array.from(document.querySelectorAll('button, [role=\"button\"]'))\n            .filter(isVisible)\n            .find(button => getText(button).toLowerCase() === targetText);\n    }\n\n    function findMenuItemByText(text) {\n        const targetText = text.toLowerCase();\n\n        return Array.from(document.querySelectorAll('li, [role=\"menuitem\"], [role=\"option\"]'))\n            .filter(isVisible)\n            .find(item => getText(item).toLowerCase() === targetText);\n    }\n\n    function getRefundPercentageInput() {\n        const exact = document.querySelector('input[placeholder=\"Enter refund percentage\"]');\n\n        if (exact && isVisible(exact)) {\n            return exact;\n        }\n\n        return Array.from(document.querySelectorAll('input'))\n            .filter(input => {\n                if (!isVisible(input)) return false;\n                if (input.disabled || input.readOnly) return false;\n\n                const text = [\n                    input.getAttribute('aria-label'),\n                    input.getAttribute('placeholder'),\n                    input.getAttribute('name'),\n                    input.getAttribute('id'),\n                    input.closest('.MuiFormControl-root')?.innerText,\n                    input.closest('.MuiDialog-root')?.innerText\n                ].filter(Boolean).join(' ').toLowerCase();\n\n                return text.includes('refund') || text.includes('percentage');\n            })[0] || null;\n    }\n\n    function fillRefundPercentage() {\n        const input = getRefundPercentageInput();\n\n        if (!input) return false;\n\n        input.focus();\n        setNativeValue(input, REFUND_PERCENTAGE);\n\n        percentageFilled = true;\n\n        console.log('[ViewLift Refund] Refund percentage filled: 100');\n\n        return true;\n    }\n\n    function getReasonDropdown() {\n        const candidates = Array.from(document.querySelectorAll(\n            '[role=\"combobox\"], .MuiSelect-select, .MuiInputBase-root'\n        )).filter(element => {\n            if (!isVisible(element)) return false;\n\n            const text = [\n                element.getAttribute('aria-label'),\n                element.getAttribute('placeholder'),\n                element.getAttribute('name'),\n                element.getAttribute('id'),\n                getText(element),\n                element.closest('.MuiFormControl-root')?.innerText,\n                element.closest('.MuiDialog-root')?.innerText\n            ].filter(Boolean).join(' ').toLowerCase();\n\n            if (text.includes('refund percentage')) return false;\n            if (text.includes('enter refund percentage')) return false;\n\n            return (\n                text.includes('reason') ||\n                text.includes('refund reason') ||\n                element.getAttribute('role') === 'combobox' ||\n                String(element.className).includes('MuiSelect')\n            );\n        });\n\n        if (!candidates.length) return null;\n\n        const scored = candidates.map(element => {\n            const text = [\n                element.getAttribute('aria-label'),\n                element.getAttribute('placeholder'),\n                getText(element),\n                element.closest('.MuiFormControl-root')?.innerText,\n                element.closest('.MuiDialog-root')?.innerText\n            ].filter(Boolean).join(' ').toLowerCase();\n\n            let score = 0;\n\n            if (text.includes('refund reason')) score += 50;\n            if (text.includes('reason')) score += 30;\n            if (element.getAttribute('role') === 'combobox') score += 20;\n            if (String(element.className).includes('MuiSelect')) score += 15;\n\n            return { element, score };\n        });\n\n        scored.sort((a, b) => b.score - a.score);\n\n        return scored[0].element;\n    }\n\n    function getROTHOption() {\n        const exact = document.querySelector(\n            'li[data-value=\"ROTH\"], [role=\"option\"][data-value=\"ROTH\"]'\n        );\n\n        if (exact && isVisible(exact)) {\n            return exact;\n        }\n\n        return Array.from(document.querySelectorAll('li, [role=\"option\"], [role=\"menuitem\"]'))\n            .filter(isVisible)\n            .find(option => {\n                const text = getText(option).toLowerCase();\n                const value = option.getAttribute('data-value');\n\n                return value === REFUND_REASON_VALUE || text.includes('roth');\n            }) || null;\n    }\n\n    function getAdditionalCommentsField() {\n        const selectors = [\n            'textarea[rows=\"4\"][required]',\n            'textarea.MuiInputBase-inputMultiline[required]',\n            'textarea.MuiInputBase-inputMultiline',\n            'textarea[rows=\"4\"]'\n        ];\n\n        for (const selector of selectors) {\n            const fields = Array.from(document.querySelectorAll(selector))\n                .filter(field => {\n                    return (\n                        isVisible(field) &&\n                        !field.disabled &&\n                        !field.readOnly\n                    );\n                });\n\n            if (fields.length) {\n                return fields[fields.length - 1];\n            }\n        }\n\n        const textareas = Array.from(document.querySelectorAll('textarea'))\n            .filter(field => {\n                return (\n                    isVisible(field) &&\n                    !field.disabled &&\n                    !field.readOnly\n                );\n            });\n\n        if (textareas.length) {\n            return textareas[textareas.length - 1];\n        }\n\n        return null;\n    }\n\n    function getFreshdeskURLFromRefundCaptureTool() {\n        const field = document.getElementById('refund-freshdesk');\n\n        if (!field) {\n            console.log('[ViewLift Refund] Refund Capture Tool field #refund-freshdesk not found');\n            return '';\n        }\n\n        const value = cleanText(field.value);\n\n        if (/^https:\\/\\/viewlift\\.freshdesk\\.com\\/a\\/tickets\\/\\d+$/i.test(value)) {\n            return value;\n        }\n\n        console.log('[ViewLift Refund] Refund Capture Tool field found but no valid Freshdesk URL:', value || 'empty');\n\n        return '';\n    }\n\n    function handleAdditionalComments() {\n        const field = getAdditionalCommentsField();\n\n        if (!field) {\n            console.log('[ViewLift Refund] Additional comments field not found.');\n            return false;\n        }\n\n        field.scrollIntoView({\n            block: 'center',\n            inline: 'center'\n        });\n\n        field.focus();\n        field.click();\n\n        const freshdeskURL = getFreshdeskURLFromRefundCaptureTool();\n\n        if (freshdeskURL) {\n            const comment = ADDITIONAL_COMMENT_PREFIX + freshdeskURL;\n\n            setNativeValue(field, comment);\n\n            console.log('[ViewLift Refund] Additional comments filled from Refund Capture Tool:', comment);\n        } else {\n            console.log('[ViewLift Refund] No Freshdesk URL available. Additional comments focused for manual paste.');\n        }\n\n        additionalCommentsHandled = true;\n\n        return true;\n    }\n\n    function selectROTHReason() {\n        const option = getROTHOption();\n\n        if (option) {\n            realClick(option, '[ViewLift Refund] Refund reason selected: ROTH');\n\n            reasonSelected = true;\n\n            setTimeout(handleAdditionalComments, 400);\n            setTimeout(handleAdditionalComments, 1000);\n\n            return true;\n        }\n\n        if (!reasonDropdownOpened) {\n            const dropdown = getReasonDropdown();\n\n            if (dropdown) {\n                reasonDropdownOpened = true;\n                realClick(dropdown, '[ViewLift Refund] Refund reason dropdown opened');\n                return true;\n            }\n        }\n\n        return false;\n    }\n\n    function runWorkflow() {\n        if (!workflowActive) return;\n\n        attempts += 1;\n\n        if (attempts > 50) {\n            workflowActive = false;\n            console.log('[ViewLift Refund] Workflow stopped after too many attempts');\n            return;\n        }\n\n        if (!refundClicked) {\n            const refundButton = findButtonByText('Refund');\n\n            if (refundButton) {\n                refundClicked = realClick(refundButton, '[ViewLift Refund] Refund clicked automatically');\n                setTimeout(runWorkflow, 400);\n                return;\n            }\n        }\n\n        if (!issuePercentageClicked) {\n            const item = findMenuItemByText('Issue percentage refund');\n\n            if (item) {\n                issuePercentageClicked = realClick(item, '[ViewLift Refund] Issue percentage refund clicked automatically');\n                setTimeout(runWorkflow, 400);\n                return;\n            }\n        }\n\n        if (!percentageFilled) {\n            if (fillRefundPercentage()) {\n                setTimeout(runWorkflow, 400);\n                return;\n            }\n        }\n\n        if (!reasonSelected) {\n            if (selectROTHReason()) {\n                setTimeout(runWorkflow, 400);\n                return;\n            }\n        }\n\n        if (reasonSelected && !additionalCommentsHandled) {\n            if (handleAdditionalComments()) {\n                workflowActive = false;\n                console.log('[ViewLift Refund] Refund form prepared. Final confirmation was NOT clicked.');\n                return;\n            }\n        }\n\n        if (\n            refundClicked &&\n            issuePercentageClicked &&\n            percentageFilled &&\n            reasonSelected &&\n            additionalCommentsHandled\n        ) {\n            workflowActive = false;\n            console.log('[ViewLift Refund] Refund form prepared. Final confirmation was NOT clicked.');\n        }\n    }\n\n    function startWorkflow() {\n        workflowActive = true;\n        attempts = 0;\n\n        refundClicked = false;\n        issuePercentageClicked = false;\n        percentageFilled = false;\n        reasonDropdownOpened = false;\n        reasonSelected = false;\n        additionalCommentsHandled = false;\n\n        console.log('[ViewLift Refund] Action clicked. Starting refund workflow.');\n\n        setTimeout(runWorkflow, 300);\n        setTimeout(runWorkflow, 700);\n        setTimeout(runWorkflow, 1200);\n        setTimeout(runWorkflow, 1800);\n        setTimeout(runWorkflow, 2600);\n        setTimeout(runWorkflow, 3600);\n        setTimeout(runWorkflow, 5000);\n    }\n\n    document.addEventListener('click', function (event) {\n        if (isActionIconClick(event.target)) {\n            startWorkflow();\n        }\n    }, true);\n\n    const observer = new MutationObserver(function () {\n        if (workflowActive) {\n            runWorkflow();\n        }\n    });\n\n    observer.observe(document.body, {\n        childList: true,\n        subtree: true\n    });\n\n})();";
-    (document.head || document.documentElement).appendChild(script);
-})();
-
-/* ============================================================
  * Feature 4: CMS Real Snapshot to Clipboard
  * Source: ViewLift CMS Real Snapshot to Clipboard 2.9
  * ============================================================ */
 
 
-if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(location.hostname)) {
+if (isCMSHost()) {
 
 (function () {
     "use strict";
@@ -5525,14 +5508,11 @@ if (/^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.
         setInterval(handleRouteChange, 5000);
     }
 
-    function runStartupPasses() {
-        createOrMoveTools();
-
-        setTimeout(createOrMoveTools, 250);
-        setTimeout(createOrMoveTools, 600);
-        setTimeout(createOrMoveTools, 1200);
-        setTimeout(createOrMoveTools, 2200);
-        setTimeout(createOrMoveTools, 3500);
+    async function runStartupPasses() {
+        await waitFor(() => {
+            createOrMoveTools();
+            return !isSnapshotPage() || document.getElementById(WRAPPER_ID);
+        }, { timeout: 3500, pollMs: 50 });
     }
 
     function canvasToBlob(canvas) {
@@ -6471,134 +6451,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   init();
 })();
 
-/* ============================================================
- * Feature 8b: Ticket Tracker goal badge (removed)
- * Reads the private tracker API and shows today's progress in Freshdesk.
- * ============================================================ */
-
-(function () {
-  'use strict';
-
-  // Ticket Tracker integration removed from Better Freshdesk.
-  return;
-
-  if (location.hostname !== 'viewlift.freshdesk.com') return;
-  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
-
-  const API_URL = 'http://135.181.37.72:3001/api/ticket-tracker/stats';
-  const CACHE_KEY = 'schnTrackerProgress';
-  const KEY_NAME = 'betterFreshdeskTrackerApiKey';
-  const BADGE_ID = 'better-freshdesk-tracker-goal';
-  const STYLE_ID = 'better-freshdesk-tracker-style';
-  const REFRESH_MS = 30000;
-
-  function clean(value) { return String(value == null ? '' : value).trim(); }
-
-  // Use the same legacy key name as SCHN+ Case Tracker when values are shared.
-  function getStoredTrackerKey() {
-    return clean(GM_getValue(KEY_NAME, '')) || clean(GM_getValue('api_key', ''));
-  }
-
-  function getCachedProgress() {
-    try {
-      const value = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-      const today = new Date().toISOString().slice(0, 10);
-      if (!value || value.date !== today) return null;
-      return { today: Number(value.count) || 0, goal: Number(value.goal) || 35 };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function setTrackerApiKey() {
-    const current = getStoredTrackerKey();
-    const value = window.prompt('Tracker API key (se guarda solo en Tampermonkey):', current);
-    if (value === null) return;
-    const next = clean(value);
-    if (next) {
-      GM_setValue(KEY_NAME, next);
-      GM_setValue('api_key', next);
-    } else {
-      GM_deleteValue(KEY_NAME);
-      GM_deleteValue('api_key');
-    }
-    updateStats();
-  }
-
-  if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Set Tracker API Key', setTrackerApiKey);
-  }
-
-  function addStyles() {
-    if (document.getElementById(STYLE_ID)) return;
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = `
-      #${BADGE_ID} { display:inline-flex; align-items:center; gap:6px; min-height:30px; margin-left:8px; padding:0 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; color:#334155; font:600 12px/1.2 Arial,sans-serif; white-space:nowrap; cursor:pointer; }
-      #${BADGE_ID}[data-state="goal"] { color:#166534; background:#f0fdf4; border-color:#bbf7d0; }
-      #${BADGE_ID}[data-state="error"] { color:#92400e; background:#fffbeb; border-color:#fde68a; }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function findRightSlot() {
-    return document.querySelector('section#mainactionbar .page-actions__right') ||
-      document.querySelector('section#mainactionbar .detail-pagination') ||
-      document.querySelector('section#mainactionbar .page-actions') ||
-      document.querySelector('section#mainactionbar');
-  }
-
-  function installBadge() {
-    addStyles();
-    const slot = findRightSlot();
-    if (!slot) return null;
-    let badge = document.getElementById(BADGE_ID);
-    if (!badge) {
-      badge = document.createElement('button');
-      badge.id = BADGE_ID;
-      badge.type = 'button';
-      badge.title = 'Open Ticket Tracker';
-      badge.addEventListener('click', () => {
-        if (!getStoredTrackerKey()) {
-          setTrackerApiKey();
-          return;
-        }
-        window.open('http://135.181.37.72:3001/tracker', '_blank');
-      });
-    }
-    if (badge.parentElement !== slot) slot.appendChild(badge);
-    return badge;
-  }
-
-  function render(text, state, title) {
-    const badge = installBadge();
-    if (!badge) return;
-    badge.textContent = text;
-    badge.dataset.state = state || '';
-    badge.title = title || 'Open Ticket Tracker';
-  }
-
-  function updateStats() {
-    const cached = getCachedProgress();
-    if (!cached) {
-      render('Tracker: —', '', 'Instala/activa SCHN+ Case Tracker 1.5; el contador aparecerá al registrar el próximo ticket.');
-      return;
-    }
-    render(cached.today + ' / ' + cached.goal + ' goal', cached.today >= cached.goal ? 'goal' : '', 'Ticket Tracker local: ' + cached.today + ' de ' + cached.goal);
-  }
-
-  function init() {
-    if (!document.body) return window.setTimeout(init, 300);
-    installBadge();
-    updateStats();
-    const observer = new MutationObserver(() => installBadge());
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setInterval(() => { installBadge(); updateStats(); }, REFRESH_MS);
-    window.addEventListener('focus', updateStats);
-  }
-
-  init();
-})();
 
 /* ============================================================
  * Feature 9: Queue CMS snapshots into a private note
@@ -7994,30 +7846,27 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function runReplyShortcutCleanupWhenEditorAppears() {
-        if (!hasPendingReplyShortcut()) return;
+        if (!hasPendingReplyShortcut()) return false;
 
         const editor = getNewestVisibleEditor();
 
         if (!editor) {
-            return;
+            return false;
         }
 
         pendingReplyShortcutHandled = true;
         shouldRemoveQuotedMarker = true;
         markForceRewrite('reply-shortcut');
         scheduleClean();
+        return true;
     }
 
-    function handleReplyShortcutKeydown(event) {
+    async function handleReplyShortcutKeydown(event) {
         if (!isReplyShortcut(event)) return;
 
         markPendingReplyShortcut();
 
-        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 250);
-        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 700);
-        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 1200);
-        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 2000);
-        window.setTimeout(runReplyShortcutCleanupWhenEditorAppears, 3500);
+        await waitFor(runReplyShortcutCleanupWhenEditorAppears, { timeout: 3500, pollMs: 50 });
     }
 
     function getButtonSearchText(element) {
@@ -8209,7 +8058,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return realClickElement(summaryButton, '[Freshdesk Summary Shortcut] Summary button clicked');
     }
 
-    function handleSummaryShortcutKeydown(event) {
+    async function handleSummaryShortcutKeydown(event) {
         if (!isSummaryShortcut(event)) return;
 
         event.preventDefault();
@@ -8217,9 +8066,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         if (clickSummaryButtonFromShortcut()) return;
 
-        window.setTimeout(clickSummaryButtonFromShortcut, 100);
-        window.setTimeout(clickSummaryButtonFromShortcut, 300);
-        window.setTimeout(clickSummaryButtonFromShortcut, 700);
+        await waitFor(clickSummaryButtonFromShortcut, { timeout: 1100, pollMs: 50 });
     }
 
     function markForceRewrite(reason) {
@@ -8353,7 +8200,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         gcp: 'https://cms-gcp.viewlift.com/users/search',
         msn: 'https://cms.monumentalsportsnetwork.com/users/search'
     };
-    const CMS_HOST_RE = /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i;
     const BUTTON_ID = 'viewlift-open-cms-header-button';
     const CMS_EMAIL_PARAM = 'openCmsEmail';
     const CMS_PENDING_EMAIL_KEY = 'betterFreshdeskPendingCmsEmail';
@@ -8367,12 +8213,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function isCMSUsersPage() {
-        return CMS_HOST_RE.test(location.hostname) &&
+        return isCMSHost() &&
             /^\/users\/search(?:\/|$)/i.test(location.pathname);
     }
 
     function isCMSPage() {
-        return CMS_HOST_RE.test(location.hostname) &&
+        return isCMSHost() &&
             /^\/users(?:\/|$)/i.test(location.pathname);
     }
 
@@ -9109,6 +8955,27 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return runCMSSearch(email);
     }
 
+    async function initCMSFlow() {
+        await waitFor(() => {
+            if (cmsSearchCompleted) return true;
+
+            const email = getPendingCMSEmail();
+
+            if (!email) {
+                stopCMSFlow();
+                return true;
+            }
+
+            if (!isCMSUsersPage()) {
+                return runCMSFlow();
+            }
+
+            if (!getSearchUserInput()) return false;
+
+            return runCMSFlow();
+        }, { timeout: 10200, pollMs: 50 });
+    }
+
     function scheduleCMSFlow(delay = 200) {
         if (cmsSearchCompleted) return;
 
@@ -9142,7 +9009,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     if (isCMSPage()) {
         getPendingCMSEmail();
-        scheduleCMSFlow(250);
 
         cmsFlowObserver = new MutationObserver(function () {
             scheduleCMSFlow(200);
@@ -9153,10 +9019,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             subtree: true
         });
 
-        setTimeout(runCMSFlow, 700);
-        setTimeout(runCMSFlow, 1500);
-        setTimeout(runCMSFlow, 3000);
-        setTimeout(runCMSFlow, 5000);
+        initCMSFlow();
     }
 
     window.__betterFreshdeskGetCustomerEmail = getCustomerEmailFromContactInfo;
