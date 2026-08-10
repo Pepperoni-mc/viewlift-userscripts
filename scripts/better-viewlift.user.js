@@ -6271,7 +6271,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function getActionBar() {
     return document.querySelector('section#mainactionbar .reply-bar-top') ||
-      document.querySelector('section#mainactionbar .page-actions__left');
+      document.querySelector('section#mainactionbar .page-actions__left') ||
+      document.querySelector('section#mainactionbar button[data-test-email-action="reply"]')?.parentElement ||
+      document.querySelector('section#mainactionbar');
   }
 
   function getContextText() {
@@ -6487,22 +6489,144 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const scheduleInstall = () => {
       if (document.visibilityState === 'hidden') return;
       const toolbar = document.getElementById(TOOLBAR_ID);
+      // Re-verify the toolbar is still inside the CURRENT action bar, not just
+      // "somewhere in the document" - Ember can replace the whole action bar
+      // subtree, which would leave a stale toolbar node connected but orphaned
+      // from the bar the user actually sees.
       if (
         toolbar &&
-        toolbar.isConnected &&
+        toolbar.parentElement === getActionBar() &&
         cachedTicketPath === location.pathname &&
         document.getElementById(BRAND_ID) &&
         document.getElementById(EMAIL_ID)
       ) return;
       window.clearTimeout(timer);
-      timer = window.setTimeout(installToolbar, 250);
+      timer = window.setTimeout(installToolbar, 80);
     };
 
     const observer = new MutationObserver(scheduleInstall);
     observer.observe(document.body, { childList: true, subtree: true });
     window.setInterval(() => {
       if (document.visibilityState === 'visible') installToolbar();
-    }, 8000);
+    }, 4000);
+    window.addEventListener('focus', () => window.setTimeout(installToolbar, 100));
+  }
+
+  init();
+})();
+
+
+/* ============================================================
+ * Feature 8b: SCHN+ Daily Goal Badge
+ * Reads the local progress cache SCHN+ Case Tracker already writes to
+ * localStorage (shared across userscripts on this origin - not GM storage,
+ * which is per-script) and shows it as a badge in the ticket header.
+ * Read-only: does not track anything itself and needs no API key.
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+
+  const CACHE_KEY = 'schnTrackerProgress';
+  const BADGE_ID = 'better-freshdesk-tracker-goal';
+  const STYLE_ID = 'better-freshdesk-tracker-goal-style';
+  const REFRESH_MS = 20000;
+
+  function addStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${BADGE_ID} {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        min-height: 30px !important;
+        margin-left: 8px !important;
+        padding: 0 10px !important;
+        border: 1px solid #d8e0e8 !important;
+        border-radius: 6px !important;
+        background: #f8fafc !important;
+        color: #334155 !important;
+        font: 600 12px/1.2 Arial, sans-serif !important;
+        white-space: nowrap !important;
+        text-decoration: none !important;
+        cursor: pointer !important;
+      }
+      #${BADGE_ID}[data-state="goal"] { color: #166534 !important; background: #f0fdf4 !important; border-color: #bbf7d0 !important; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function getCachedProgress() {
+    try {
+      const value = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      const today = new Date().toISOString().slice(0, 10);
+      if (!value || value.date !== today) return null;
+      return { count: Number(value.count) || 0, goal: Number(value.goal) || 35 };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function getHeaderSlot() {
+    return document.querySelector('section#mainactionbar .page-actions__right') ||
+      document.querySelector('section#mainactionbar');
+  }
+
+  function render() {
+    const slot = getHeaderSlot();
+    if (!slot) return;
+
+    addStyles();
+
+    let badge = document.getElementById(BADGE_ID);
+    if (!badge) {
+      badge = document.createElement('a');
+      badge.id = BADGE_ID;
+      badge.target = '_blank';
+      badge.rel = 'noopener noreferrer';
+      badge.href = 'http://135.181.37.72:3001/';
+      badge.title = 'Open SCHN+ Ticket Tracker';
+    }
+    if (badge.parentElement !== slot) slot.appendChild(badge);
+
+    const progress = getCachedProgress();
+    if (!progress) {
+      badge.textContent = 'Tracker: —';
+      badge.dataset.state = '';
+      return;
+    }
+
+    badge.textContent = progress.count + ' / ' + progress.goal + ' today';
+    badge.dataset.state = progress.count >= progress.goal ? 'goal' : '';
+  }
+
+  function init() {
+    if (!document.body) {
+      window.setTimeout(init, 250);
+      return;
+    }
+
+    render();
+
+    let timer = null;
+    const scheduleRender = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(render, 300);
+    };
+
+    const observer = new MutationObserver(scheduleRender);
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.setInterval(render, REFRESH_MS);
+    window.addEventListener('storage', event => {
+      if (event.key === CACHE_KEY) render();
+    });
+    window.addEventListener('focus', () => window.setTimeout(render, 200));
   }
 
   init();

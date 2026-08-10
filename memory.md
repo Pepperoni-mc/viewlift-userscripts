@@ -117,6 +117,35 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Overnight session 2026-08-10: toolbar hardening + daily-goal badge
+
+User asked to work unattended overnight through a punch list, with no more check-ins possible
+(no Tampermonkey click access to confirm live updates). Two findings from that session:
+
+**Unified toolbar (brand/email badge) "bug" reported earlier turned out inconclusive live.**
+Manually re-implementing `getActionBar`/`installToolbar`'s exact logic via direct DOM injection
+(bypassing Tampermonkey entirely, using the browser tool's `javascript_tool`) on a real ticket
+worked fine and the injected node survived 5+ seconds untouched — no evidence Ember actually
+rips out the toolbar on an idle page. Most likely explanation for the earlier failure: Tampermonkey
+was running a stale/different version, not a code bug. Hardened it anyway as cheap insurance:
+`getActionBar()` now has two more fallback selectors ending in a bare `section#mainactionbar`,
+and `scheduleInstall()` now re-verifies `toolbar.parentElement === getActionBar()` (catches Ember
+replacing the action bar subtree wholesale, not just the toolbar node going missing) with an
+80ms debounce (was 250ms) and a 4s backstop interval (was 8s). Verified the self-heal loop live
+by injecting the real logic and manually deleting the test node — it recreated within the
+debounce window.
+
+**Reactivated the SCHN+ daily-goal badge** ("Feature 8b", right after Feature 8 in
+better-viewlift.user.js) that Stage 1 deleted as dead code. Key insight: it doesn't need the
+tracker's API key or to talk to `135.181.37.72:3001` at all — `schn-case-tracker.user.js`
+already writes today's count to `localStorage['schnTrackerProgress']`, and `localStorage` (unlike
+`GM_getValue`/`GM_setValue`, which is per-script-isolated) is shared per-origin across all
+userscripts running on that page. So this badge is purely read-only against a cache another
+script already maintains — no new configuration needed from the user. Verified live by seeding
+a fake cache value via `javascript_tool` and confirming the render logic picks it up (then
+cleaned the fake value back out immediately — don't leave test data in real `localStorage`
+caches, there's no way to know what real value, if any, you clobbered).
+
 ## CMS session keep-alive (2026-08-10)
 
 The old keep-alive (better-viewlift.user.js, "Feature 1b: CMS Session Keep-Alive", ~line 2126)
