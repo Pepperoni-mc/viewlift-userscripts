@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.18.0
+// @version      3.18.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.18.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.18.1');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -1421,6 +1421,11 @@
         box-shadow: 0 16px 34px rgba(11, 92, 171, 0.42);
       }
 
+      #refund-capture-panel.is-minimized:active {
+        transform: translateY(0) scale(0.97);
+        box-shadow: 0 6px 16px rgba(11, 92, 171, 0.3), inset 0 2px 5px rgba(0, 0, 0, 0.16);
+      }
+
       #refund-header {
         min-height: 46px;
         display: flex;
@@ -1437,9 +1442,11 @@
         padding: 6px;
         justify-content: center;
         border-bottom: none;
-        background: #0b5cab;
+        background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
         min-height: 40px;
         height: 40px;
+        transition: background 140ms ease;
       }
 
       #refund-title-wrap {
@@ -1488,12 +1495,24 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        background: #0b5cab;
+        background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%);
+        box-shadow: 0 2px 6px rgba(11, 92, 171, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.22);
         color: #ffffff;
         font-weight: 800;
         flex: 0 0 auto;
         border: none;
         cursor: pointer;
+        transition: box-shadow 140ms ease, transform 140ms ease;
+      }
+
+      #refund-icon:hover {
+        box-shadow: 0 3px 9px rgba(11, 92, 171, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        transform: translateY(-1px);
+      }
+
+      #refund-icon:active {
+        transform: translateY(0);
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.18);
       }
 
       #refund-capture-panel.is-minimized #refund-icon {

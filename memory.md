@@ -117,6 +117,21 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Missed one in the visual pass: the refund-capture floating launcher (2026-08-10)
+
+User pointed out "the refund capture button" specifically. Checked live: `#refund-capture-panel`
+is NOT mounted inside the unified toolbar on Freshdesk (`mountRefundPanel` isn't actually
+attaching it there in practice - parent is the top-level `ember-application` div) - it renders as
+its own fixed-position floating "$" pill, bottom-right of the whole page, independent of the
+toolbar. That's "the refund capture button" - missed it in the first visual pass because it
+lives in the Refund Capture Tool module (`#refund-icon`/`#refund-header.is-minimized`), not
+in the Unified Toolbar module I was focused on. Same fix as everywhere else: flat `#0b5cab` ->
+gradient, added an inset highlight, added a proper `:active` press state (there wasn't one -
+only a hover lift existed before). **Worth remembering**: `mountRefundPanel`'s toolbar-mounting
+path may not be working as intended - didn't investigate further since visual polish, not
+behavior, was the ask, but if the panel's placement itself comes up as a complaint later, start
+there.
+
 ## Visual pass across all injected buttons (2026-08-10)
 
 User asked for a visual improvement pass on every button/badge the toolkit injects. Surveyed
