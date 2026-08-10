@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.24.0
+// @version      3.25.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.24.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.25.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -1532,6 +1532,36 @@
     }, 700);
   }
 
+  // A human-readable block for a note or Slack message - "Copy Row" above
+  // is tab-separated for pasting into the refund sheet, not for reading.
+  function copyCurrentSummary() {
+    runCapture(false);
+
+    const fields = [
+      ['Email', 'refund-email'],
+      ['Freshdesk', 'refund-freshdesk'],
+      ['CMS', 'refund-cms'],
+      ['Payment handler', 'refund-payment'],
+      ['Amount', 'refund-amount'],
+      ['Refunder', 'refund-refunder']
+    ];
+
+    const lines = fields
+      .map(([label, id]) => {
+        const value = cleanText(document.getElementById(id)?.value);
+        return value ? `${label}: ${value}` : '';
+      })
+      .filter(Boolean);
+
+    if (!lines.length) {
+      setStatus('Nothing captured yet to summarize.', 'warn');
+      return;
+    }
+
+    GM_setClipboard(lines.join('\n'));
+    setStatus('Summary copied to clipboard.');
+  }
+
   function addStyles() {
     GM_addStyle(`
       #refund-capture-panel {
@@ -2096,6 +2126,7 @@
         </div>
 
         <button id="refund-copy" class="refund-action-button" type="button" style="margin-top:8px;">Copy Row</button>
+        <button id="refund-copy-summary" class="refund-action-button" type="button" style="margin-top:8px;" title="Copies a readable text block - for a note or Slack message, not the sheet">Copy Summary</button>
         <button id="refund-copy-sheet" class="refund-action-button" type="button" style="margin-top:8px;">Open Refund Sheet</button>
 
         <div id="refund-status"></div>
@@ -2128,6 +2159,11 @@
 
     document.getElementById('refund-copy').addEventListener('click', function () {
       copyCurrentRow();
+      anchorPanelBottomRight(panel);
+    });
+
+    document.getElementById('refund-copy-summary').addEventListener('click', function () {
+      copyCurrentSummary();
       anchorPanelBottomRight(panel);
     });
 
@@ -2487,10 +2523,13 @@
         } catch (error) { /* storage unavailable, skip */ }
     }
 
-    function pingAllCMSHosts() {
+    function pingAllCMSHosts(onComplete) {
         // Only bother while Freshdesk is actually the tab being looked at -
         // if neither tab is active there is nothing useful to keep alive.
-        if (document.visibilityState !== 'visible') return;
+        if (document.visibilityState !== 'visible') {
+            onComplete?.();
+            return;
+        }
 
         const hostResults = {};
         let remaining = CMS_KEEP_ALIVE_HOSTS.length;
@@ -2499,7 +2538,10 @@
             pingCMSHost(url, status => {
                 hostResults[url] = status;
                 remaining -= 1;
-                if (remaining === 0) recordKeepAliveStatus(hostResults);
+                if (remaining === 0) {
+                    recordKeepAliveStatus(hostResults);
+                    onComplete?.();
+                }
             });
         });
     }
@@ -2507,6 +2549,10 @@
     window.setTimeout(pingAllCMSHosts, 20000);
     window.setInterval(pingAllCMSHosts, KEEP_ALIVE_INTERVAL);
     window.addEventListener('focus', () => window.setTimeout(pingAllCMSHosts, 250));
+
+    // Lets the toolbar's session dot trigger an immediate check on click,
+    // instead of waiting up to 5 minutes for the next scheduled ping.
+    window.__bvPingCMSHostsNow = pingAllCMSHosts;
 })();
 
 
@@ -6406,6 +6452,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         box-shadow: 0 0 0 3px rgba(217, 119, 6, .18) !important;
       }
 
+      #${CMS_SESSION_DOT_ID}[data-status="checking"] {
+        background: #60a5fa !important;
+        box-shadow: 0 0 0 3px rgba(96, 165, 250, .22) !important;
+        animation: bv-dot-pulse 900ms ease-in-out infinite !important;
+      }
+
+      @keyframes bv-dot-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: .35; }
+      }
+
       #${REFUND_TOGGLE_ID} {
         display: inline-flex !important;
         align-items: center !important;
@@ -6654,7 +6711,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     if (!state || !state.checkedAt) {
       dot.dataset.status = '';
-      dot.title = 'CMS session: not checked yet';
+      dot.title = 'CMS session: not checked yet. Click to check now.';
       return;
     }
 
@@ -6663,13 +6720,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     if (state.overall === 'needs-login') {
       dot.dataset.status = 'needs-login';
-      dot.title = `CMS session needs login/OTP (checked ${staleness})`;
+      dot.title = `CMS session needs login/OTP (checked ${staleness}). Click to check again.`;
     } else if (state.overall === 'error') {
       dot.dataset.status = 'error';
-      dot.title = `Could not reach CMS to check the session (checked ${staleness})`;
+      dot.title = `Could not reach CMS to check the session (checked ${staleness}). Click to retry.`;
     } else {
       dot.dataset.status = 'alive';
-      dot.title = `CMS session looks alive (checked ${staleness})`;
+      dot.title = `CMS session looks alive (checked ${staleness}). Click to check now.`;
     }
   }
 
@@ -6768,6 +6825,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       cmsSessionDot = document.createElement('span');
       cmsSessionDot.id = CMS_SESSION_DOT_ID;
       cmsSessionDot.setAttribute('aria-label', 'CMS session status');
+      cmsSessionDot.style.cursor = 'pointer';
+      cmsSessionDot.addEventListener('click', () => {
+        if (typeof window.__bvPingCMSHostsNow !== 'function') return;
+
+        cmsSessionDot.dataset.status = 'checking';
+        cmsSessionDot.title = 'Checking CMS session...';
+        window.__bvPingCMSHostsNow(() => updateCmsSessionDot(cmsSessionDot));
+      });
     }
     updateCmsSessionDot(cmsSessionDot);
 

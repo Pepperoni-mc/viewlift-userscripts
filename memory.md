@@ -117,6 +117,23 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Manual "check now" + Copy Summary (2026-08-10)
+
+**Manual CMS session check**: `pingAllCMSHosts()` now takes an optional `onComplete` callback and
+exposes itself as `window.__bvPingCMSHostsNow` so the toolbar can trigger it on demand. Made the
+session dot clickable - sets a new pulsing `data-status="checking"` state immediately, calls the
+ping, then re-renders with the real result. Exists specifically so the user can verify the
+`/api/auth/verify` keep-alive fix from this session actually works right after logging into CMS,
+instead of waiting up to 5 minutes for the next scheduled check. Verified the checking->result
+state transition with a simulated async ping.
+
+**Copy Summary button**: added `#refund-copy-summary` next to the existing "Copy Row" in the
+refund panel. "Copy Row" was already there but copies a tab-separated row formatted for pasting
+directly into the Google Sheet - not something a human would want to read. Copy Summary instead
+builds a plain `Label: value` block (email/Freshdesk/CMS/payment handler/amount/refunder),
+skipping any field that's empty, for pasting into a note or Slack message. Verified the
+formatting logic (including the empty-field-skip) with a standalone DOM simulation.
+
 ## Root cause of "CMS keeps logging out" - the keep-alive was pinging a static SPA shell (2026-08-10)
 
 User pushed back that the anti-logout fix from last night wasn't working. Investigated live via
