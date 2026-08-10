@@ -117,6 +117,28 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Stage 2 follow-up: 4 more observers Codex's pass missed, one more timeout cascade
+
+Codex's Stage 2 migration scoped itself to observers explicitly about *navigation* detection and
+missed several MORE raw `document.body`-subtree `MutationObserver`s that exist for a different
+reason (reacting to new content appearing) but use the EXACT SAME trigger condition the shared
+engine already watches. Found by grepping `new MutationObserver` post-Stage-2 and checking what
+was left. Migrated 4 more to `onRouteChange`, keeping each one's own local debounce unchanged:
+Refund Capture's `observeDynamicChanges` (1200ms), Cancellation Reason autofill's observer (no
+debounce, unchanged), Save & End Session's observer (50ms), and the Classic CMS Account
+Switcher's observer (no debounce, unchanged). Also found and fixed one more fixed-timeout
+cascade Stage 1 missed (it used a `[0,100,250,500,900,1500].forEach(setTimeout(...))` array
+form instead of individual `setTimeout` lines, so the original grep-based sweep didn't catch
+it): Save & End Session's `scheduleFill()`, replaced with `waitFor(fillEndSessionForm, ...)`.
+
+**Deliberately left alone** (checked, not missed): Refund Percentage Workflow's observer (drives
+an active multi-step refund automation with `workflowActive` state - real financial action,
+didn't want to touch it without a concrete problem), Reply Cleanup's observer (the single
+highest-frequency feature in daily use, same reasoning), and Requester Email's observer (needs
+`characterData:true`, which the shared engine doesn't watch - already correctly left by Codex).
+Final state: 1 canonical observer inside the shared engine itself + these 3 deliberate holdouts,
+down from ~14 raw MutationObservers found across the whole file before any of this work started.
+
 ## Helper duplication: consolidated waitFor clones, deliberately left isVisible/cleanText/realClick alone
 
 The Set Agent module (Feature 9, IIFE A) had three hand-rolled clones of the exact same

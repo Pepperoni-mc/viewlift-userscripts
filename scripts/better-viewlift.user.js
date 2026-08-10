@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.13.0
+// @version      3.14.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.13.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.14.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -1265,7 +1265,7 @@
   function observeDynamicChanges() {
     let timer = null;
 
-    const observer = new MutationObserver(function () {
+    onRouteChange(function () {
       if (document.visibilityState === 'hidden') return;
       clearTimeout(timer);
 
@@ -1278,11 +1278,6 @@
           runCapture(false);
         }
       }, 1200);
-    });
-
-    observer.observe(document.body || document.documentElement, {
-      childList: true,
-      subtree: true
     });
   }
 
@@ -2576,11 +2571,11 @@
     installClassicButton();
     continueFromLogout();
     runV5Switch();
-    new MutationObserver(() => {
+    onRouteChange(() => {
         installClassicButton();
         continueFromLogout();
         runV5Switch();
-    }).observe(document.documentElement, { childList: true, subtree: true });
+    });
     document.addEventListener('click', event => {
         const menu = document.getElementById(MENU_ID);
         if (menu && menu.dataset.open === 'yes' && !menu.contains(event.target)) closeAccountMenu();
@@ -2833,15 +2828,10 @@ if (isCMSHost()) {
         console.log('[ViewLift Cancel Reason] Cancel button clicked');
     }, true);
 
-    const observer = new MutationObserver(function () {
+    onRouteChange(function () {
         if (shouldFillReason) {
             fillReasonField();
         }
-    });
-
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
     });
 
 })();
@@ -4346,9 +4336,7 @@ if (isCMSHost()) {
     }
 
     function scheduleFill() {
-        [0, 100, 250, 500, 900, 1500].forEach(delay => {
-            window.setTimeout(fillEndSessionForm, delay);
-        });
+        waitFor(fillEndSessionForm, { timeout: 1500, pollMs: 50 });
     }
 
     document.addEventListener('click', function (event) {
@@ -4363,20 +4351,15 @@ if (isCMSHost()) {
         }
     }, true);
 
-    const observer = new MutationObserver(function () {
-        clearTimeout(observerTimer);
-        observerTimer = window.setTimeout(fillEndSessionForm, 50);
-    });
-
     function init() {
         if (!document.body) {
             window.setTimeout(init, 250);
             return;
         }
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
+        onRouteChange(function () {
+            clearTimeout(observerTimer);
+            observerTimer = window.setTimeout(fillEndSessionForm, 50);
         });
 
         scheduleFill();
