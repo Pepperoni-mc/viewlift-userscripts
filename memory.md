@@ -117,6 +117,35 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Stage 2 landed: unified route-change engine (2026-08-10)
+
+Consolidated the 8-10 duplicate "SPA change detector" instances (each with its own
+MutationObserver + backup setInterval + sometimes its own history.pushState/replaceState
+patch) into one shared engine, declared in module scope before the first IIFE alongside
+`isCMSHost`/`waitFor`: `startRouteChangeEngine()` (single history patch, single popstate/
+hashchange listener, single 100ms-debounced MutationObserver on document.body, single 5s
+fallback interval) + `onRouteChange(callback)` (subscribe, get an immediate async first call,
+returns an unsubscribe function).
+
+Migrated: Refund Capture, Refunder Preference, Set Agent, CMS Snapshot toolbar (2 separate
+subscriptions - route watcher + payment-handler-badge observer), Unified Toolbar, Daily Goal
+Badge, CMS user-search header button + CMS flow observer (needed a `{disconnect: fn}` shim
+since calling code elsewhere does `cmsFlowObserver.disconnect()`), and Status Placement.
+Each kept its own local debounce timing (80-500ms) wrapping the shared callback, so per-module
+responsiveness is unchanged - only the underlying "how do I know something changed" mechanism
+was consolidated.
+
+**Deliberately NOT migrated**, and this is correct, not an oversight: the Requester Email badge
+module observes with `characterData: true` (the shared engine only watches `childList`), so
+folding it in would silently lose text-node-content-change detection. Keep-alive timers, form
+autofill polling, and snapshot-consumption polling aren't route-change detection at all and were
+correctly left alone.
+
+Verified: full diff read line-by-line (each migrated site checked against what its old
+observer/interval/pushState-patch actually did before removing it), plus a live integration
+test injecting the actual shared-engine code into a real Freshdesk tab and confirming pushState,
+a DOM mutation, and the initial callback all correctly fire a subscriber.
+
 ## Overnight session 2026-08-10: toolbar hardening + daily-goal badge
 
 User asked to work unattended overnight through a punch list, with no more check-ins possible

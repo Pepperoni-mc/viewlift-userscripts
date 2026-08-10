@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.10.0
+// @version      3.11.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.10.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.11.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -69,6 +69,65 @@
 
       check();
     });
+  }
+
+  const ROUTE_CHANGE_EVENT = 'better-viewlift-routechange';
+  let routeChangeEngineStarted = false;
+  let routeChangeObserver = null;
+
+  function dispatchRouteChange() {
+    document.dispatchEvent(new CustomEvent(ROUTE_CHANGE_EVENT));
+  }
+
+  function startRouteChangeEngine() {
+    if (routeChangeEngineStarted) return;
+    routeChangeEngineStarted = true;
+
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+
+    history.pushState = function () {
+      const result = originalPushState.apply(this, arguments);
+      dispatchRouteChange();
+      return result;
+    };
+
+    history.replaceState = function () {
+      const result = originalReplaceState.apply(this, arguments);
+      dispatchRouteChange();
+      return result;
+    };
+
+    window.addEventListener('popstate', dispatchRouteChange);
+    window.addEventListener('hashchange', dispatchRouteChange);
+    window.setInterval(dispatchRouteChange, 5000);
+
+    function observeBody() {
+      if (routeChangeObserver || !document.body) return;
+
+      let timer = null;
+      routeChangeObserver = new MutationObserver(() => {
+        clearTimeout(timer);
+        timer = setTimeout(dispatchRouteChange, 100);
+      });
+
+      routeChangeObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+    }
+
+    observeBody();
+  }
+
+  function onRouteChange(callback) {
+    startRouteChangeEngine();
+    document.addEventListener(ROUTE_CHANGE_EVENT, callback);
+    queueMicrotask(callback);
+
+    return function removeRouteChangeListener() {
+      document.removeEventListener(ROUTE_CHANGE_EVENT, callback);
+    };
   }
 
   (function () {
@@ -1946,30 +2005,7 @@
   }
 
   function installRefundToolRouteWatcher() {
-    const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
-
-    history.pushState = function () {
-      const result = originalPushState.apply(this, arguments);
-      setTimeout(handleRefundToolRouteChange, 0);
-      return result;
-    };
-
-    history.replaceState = function () {
-      const result = originalReplaceState.apply(this, arguments);
-      setTimeout(handleRefundToolRouteChange, 0);
-      return result;
-    };
-
-    window.addEventListener('popstate', function () {
-      setTimeout(handleRefundToolRouteChange, 0);
-    });
-
-    window.addEventListener('hashchange', function () {
-      setTimeout(handleRefundToolRouteChange, 0);
-    });
-
-    setInterval(handleRefundToolRouteChange, 5000);
+    onRouteChange(handleRefundToolRouteChange);
   }
 
   async function runRefundToolStartupPasses() {
@@ -2107,20 +2143,11 @@
 
     installRefunderPreference();
 
-    const observer = new MutationObserver(function () {
+    onRouteChange(function () {
       const select = document.getElementById(REFUNDER_SELECT_ID);
       if (select && select.dataset.betterCmsRefunderPreferenceInstalled) return;
       installRefunderPreference();
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    setInterval(function () {
-      if (document.visibilityState === 'visible') installRefunderPreference();
-    }, 8000);
   }
 
   initRefunderPreference();
@@ -4112,20 +4139,11 @@ if (isCMSHost()) {
 
     installSetAgentButton();
 
-    const observer = new MutationObserver(function () {
+    onRouteChange(function () {
         const button = document.getElementById(BUTTON_ID);
         if (button && button.isConnected) return;
         scheduleSetAgentInstall();
     });
-
-    observer.observe(document.body || document.documentElement, {
-        childList: true,
-        subtree: true
-    });
-
-    setInterval(function () {
-        if (document.visibilityState === 'visible') installSetAgentButton();
-    }, 5000);
 })();
 
 
@@ -5539,30 +5557,7 @@ if (isCMSHost()) {
     }
 
     function installRouteWatcher() {
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
-
-        history.pushState = function () {
-            const result = originalPushState.apply(this, arguments);
-            setTimeout(handleRouteChange, 0);
-            return result;
-        };
-
-        history.replaceState = function () {
-            const result = originalReplaceState.apply(this, arguments);
-            setTimeout(handleRouteChange, 0);
-            return result;
-        };
-
-        window.addEventListener("popstate", () => {
-            setTimeout(handleRouteChange, 0);
-        });
-
-        window.addEventListener("hashchange", () => {
-            setTimeout(handleRouteChange, 0);
-        });
-
-        setInterval(handleRouteChange, 5000);
+        onRouteChange(handleRouteChange);
     }
 
     async function runStartupPasses() {
@@ -5629,7 +5624,7 @@ if (isCMSHost()) {
     function installObserver() {
         let timer = null;
 
-        const observer = new MutationObserver(() => {
+        onRouteChange(() => {
             if (document.visibilityState === 'hidden') return;
             const wrapper = document.getElementById(WRAPPER_ID);
             if (location.href === lastUrl && wrapper && wrapper.isConnected) return;
@@ -5639,11 +5634,6 @@ if (isCMSHost()) {
                 createOrMoveTools();
                 updatePaymentHandlerBadge();
             }, 500);
-        });
-
-        observer.observe(document.body || document.documentElement, {
-            childList: true,
-            subtree: true
         });
     }
 
@@ -5660,9 +5650,6 @@ if (isCMSHost()) {
 
         setInterval(() => {
             if (document.visibilityState === 'hidden') return;
-            handleRouteChange();
-            createOrMoveTools();
-            updatePaymentHandlerBadge();
 
             if (AUTO_OPEN_SUBSCRIPTION_PLANS && isUserPage()) {
                 autoOpenSubscriptionPlansIfNeeded();
@@ -6504,11 +6491,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       timer = window.setTimeout(installToolbar, 80);
     };
 
-    const observer = new MutationObserver(scheduleInstall);
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setInterval(() => {
-      if (document.visibilityState === 'visible') installToolbar();
-    }, 4000);
+    onRouteChange(scheduleInstall);
     window.addEventListener('focus', () => window.setTimeout(installToolbar, 100));
   }
 
@@ -6533,7 +6516,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const CACHE_KEY = 'schnTrackerProgress';
   const BADGE_ID = 'better-freshdesk-tracker-goal';
   const STYLE_ID = 'better-freshdesk-tracker-goal-style';
-  const REFRESH_MS = 20000;
 
   function addStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -6620,9 +6602,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       timer = window.setTimeout(render, 300);
     };
 
-    const observer = new MutationObserver(scheduleRender);
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setInterval(render, REFRESH_MS);
+    onRouteChange(scheduleRender);
     window.addEventListener('storage', event => {
       if (event.key === CACHE_KEY) render();
     });
@@ -9169,7 +9149,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         let timer = null;
 
-        const observer = new MutationObserver(function () {
+        onRouteChange(function () {
             if (document.getElementById(BUTTON_ID)) return;
             clearTimeout(timer);
 
@@ -9177,28 +9157,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 installHeaderButton();
             }, 250);
         });
-
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        setInterval(function () {
-            if (document.visibilityState === 'visible') installHeaderButton();
-        }, 5000);
     }
 
     if (isCMSPage()) {
         getPendingCMSEmail();
 
-        cmsFlowObserver = new MutationObserver(function () {
-            scheduleCMSFlow(200);
-        });
-
-        cmsFlowObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        cmsFlowObserver = {
+            disconnect: onRouteChange(function () {
+                scheduleCMSFlow(200);
+            })
+        };
 
         initCMSFlow();
     }
@@ -9421,16 +9389,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function installObserver() {
     let timer = null;
 
-    const observer = new MutationObserver(function () {
+    onRouteChange(function () {
       clearTimeout(timer);
       timer = setTimeout(function () {
         moveStatusBelowProperties();
       }, 120);
-    });
-
-    observer.observe(getPropertiesPanel(), {
-      childList: true,
-      subtree: true
     });
   }
 
@@ -9443,10 +9406,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     addStyles();
     moveStatusBelowProperties();
     installObserver();
-
-    setInterval(function () {
-      if (document.visibilityState === 'visible') moveStatusBelowProperties();
-    }, 8000);
   }
 
   init();
