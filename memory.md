@@ -117,6 +117,20 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Cross-tab snapshot race fixed (2026-08-10)
+
+`betterFreshdeskPendingSnapshot` (GM storage) was a single value: two snapshot requests within
+the consumer's ~900ms poll window silently clobbered each other, and there was no way to queue
+a snapshot for ticket A while ticket B's tab wasn't open yet. Changed the producer to push onto
+an array (capped at the last 5) instead of overwriting, and the consumer now peeks for an entry
+matching the CURRENT ticket specifically (`getPendingSnapshotForTicket`) and only removes that
+one entry (`removeSnapshotFromQueue`, matched by `createdAt`+`ticketUrl`) on confirmed paste
+success - other tickets' queued snapshots are left untouched for their own tab. Preserved the
+original retry semantics exactly: a failed paste leaves the snapshot in the queue rather than
+requeuing it, so the existing polling interval just retries the same entry next tick. Verified
+with a standalone simulation of the queue logic (fake GM_* backed by a plain object) confirming
+two different-ticket pushes both survive and consuming one doesn't touch the other.
+
 ## Stage 2 landed: unified route-change engine (2026-08-10)
 
 Consolidated the 8-10 duplicate "SPA change detector" instances (each with its own

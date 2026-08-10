@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.11.0
+// @version      3.12.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.11.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.12.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -5461,11 +5461,19 @@ if (isCMSHost()) {
                 String(GM_getValue('Freshdesk ID', '') || '').trim();
 
             try {
-                GM_setValue(PENDING_SNAPSHOT_KEY, {
+                // A small queue, not a single value: requesting two snapshots
+                // (for the same ticket or different ones) within the consumer's
+                // poll window used to silently overwrite the first one.
+                const existing = GM_getValue(PENDING_SNAPSHOT_KEY, null);
+                const queue = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+
+                queue.push({
                     dataUrl: snapshotDataUrl,
                     ticketUrl,
                     createdAt: Date.now()
                 });
+
+                GM_setValue(PENDING_SNAPSHOT_KEY, queue.slice(-5));
             } catch (storageError) {
                 console.warn("Could not queue snapshot for Freshdesk note.", storageError);
             }
@@ -6637,21 +6645,44 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return match ? match[1] : '';
   }
 
-  function getPendingSnapshot() {
+  function getPendingQueue() {
     try {
-      const value = GM_getValue(SNAPSHOT_KEY, null);
-      if (!value) return null;
-      if (typeof value === 'string') return JSON.parse(value);
-      return value;
+      let value = GM_getValue(SNAPSHOT_KEY, null);
+      if (typeof value === 'string') value = JSON.parse(value);
+      if (!value) return [];
+      return Array.isArray(value) ? value : [value];
     } catch (error) {
       console.warn('[Freshdesk Snapshot] Could not read queued snapshot.', error);
-      return null;
+      return [];
     }
   }
 
   function getPendingTicketId(snapshot) {
     const match = String(snapshot && snapshot.ticketUrl || '').match(/\/tickets\/(\d+)/i);
     return match ? match[1] : '';
+  }
+
+  // Peek only - do NOT remove yet. Mirrors the original single-value design:
+  // a snapshot only leaves the queue once pasteSnapshot() actually succeeds,
+  // so a failed attempt just retries on the next poll instead of being lost.
+  function getPendingSnapshotForTicket(ticketId) {
+    return getPendingQueue().find(snapshot =>
+      snapshot && snapshot.dataUrl && getPendingTicketId(snapshot) === ticketId
+    ) || null;
+  }
+
+  // Remove only the one matching entry, leaving any other tickets' queued
+  // snapshots untouched for their own tab to pick up later.
+  function removeSnapshotFromQueue(snapshot) {
+    const queue = getPendingQueue().filter(item =>
+      !(item && item.createdAt === snapshot.createdAt && item.ticketUrl === snapshot.ticketUrl)
+    );
+
+    if (queue.length) {
+      GM_setValue(SNAPSHOT_KEY, queue);
+    } else {
+      GM_deleteValue(SNAPSHOT_KEY);
+    }
   }
 
   function showStatus(message, type) {
@@ -6719,11 +6750,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   async function consumeSnapshotIfReady() {
     if (pasteInProgress) return;
-    const snapshot = getPendingSnapshot();
-    if (!snapshot || !snapshot.dataUrl) return;
-
     const ticketId = getTicketId();
-    if (!ticketId || getPendingTicketId(snapshot) !== ticketId) return;
+    if (!ticketId) return;
+
+    const snapshot = getPendingSnapshotForTicket(ticketId);
+    if (!snapshot) return;
 
     if (!findEditor()) {
       clickPrivateNote();
@@ -6734,7 +6765,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     try {
       pasteInProgress = true;
       if (await pasteSnapshot(snapshot)) {
-        GM_deleteValue(SNAPSHOT_KEY);
+        removeSnapshotFromQueue(snapshot);
         showStatus('CMS snapshot added to private note.');
       }
     } catch (error) {
