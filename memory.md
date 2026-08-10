@@ -117,6 +117,55 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Live feedback after waking up (2026-08-10, daytime): real regression found + new feature
+
+User updated Tampermonkey and reported 3 things live: (1) the unified toolbar loads misaligned
+then visibly jumps into place, (2) the tracker badge shows nothing, (3) wants a way to
+one-click-copy an email a customer mentions in their own message text (found the concrete case
+live: a customer wrote "It's my email cartwright.keith@gmail.com", different from the ticket's
+registered email).
+
+**(1) was a real regression from the overnight toolbar hardening**, root-caused live: the bare
+`section#mainactionbar` fallback added to `getActionBar()` fires almost every page load because
+Freshdesk's `.reply-bar-top`/`.page-actions__left` render a beat AFTER `#mainactionbar` itself
+exists - so the toolbar installs into the bare section first (different flex layout → looks
+misaligned), then the parent-mismatch re-verify (also added overnight) correctly detects the
+real container appearing and relocates it → the visible jump. Fixed by splitting into a strict
+`getActionBar()` (no fallback) and `getActionBarWithFallback()`, which only settles for the bare
+section after a 4s grace period of the real containers never appearing -
+`installToolbar()` now waits during that window instead of installing early. Verified against a
+simulated DOM racing the real container's arrival before shipping (v3.16.1). **Lesson: the
+"harden the selector" instinct from last night's audit had a blind spot - a broader fallback
+selector isn't free, it can make the common case worse if reached prematurely due to timing.**
+
+**(2) turned out to be correct behavior, not a bug** - `localStorage['schnTrackerProgress']` was
+genuinely empty (schn-case-tracker.user.js hadn't tracked anything that day), so "Tracker: —"
+was the badge working as designed on empty data. User asked to remove the feature entirely
+rather than debug the underlying tracker connection - removed the whole module, left a tiny
+one-time cleanup stub that deletes the badge/style elements for anyone with a stale page open.
+
+**(3) new feature, "Feature 5: Quick-copy emails mentioned in ticket messages"**: for each
+Freshdesk conversation message (`.ticket_note`), scans its text for email addresses and, for any
+NOT already the ticket's known email (read from the Unified Toolbar's email button,
+`#better-freshdesk-action-email`'s `dataset.email`) and not an obvious internal/system address,
+inserts a one-click-copy chip row right after that message. Deliberately does NOT try to
+distinguish "customer message" from "agent reply" - investigated live (Freshdesk gives replies
+from both a `.ticket_note` with no reliable inbound/outbound/customer/agent class; the only clean
+signal found was `.ticket-details__privatenote` for private notes, which are agent-only by
+definition but that alone isn't enough to positively identify customer messages). Instead relies
+on excluding the already-known email + noreply/support/internal patterns, which self-filters
+agent replies quoting the known email in the common case. Verified live against the real ticket
+with Keith's alternate email - correctly surfaced it plus 3 other mentioned emails, correctly
+excluded the ticket's currently-known email.
+
+Also found (while looking at the Requester Email module for the above) that "Feature 5:
+Requester Email in Ticket Header" was ANOTHER disabled dead module (early `return`, comment says
+"Superseded by the cached email control in the unified action bar") that neither the original
+architecture analysis nor last night's sweeps had caught - **this means the "Requester Email"
+observer I deliberately left un-migrated last night (reasoning it needed `characterData:true`)
+was reasoning about unreachable code the whole time; harmless in outcome (leaving dead code alone
+is always safe) but worth knowing the justification was moot.** Deleted it.
+
 ## Centralized 3 GM-storage keys that were duplicated string literals
 
 `betterFreshdeskPendingSnapshot` (producer in the CMS snapshot module, consumer in the Freshdesk

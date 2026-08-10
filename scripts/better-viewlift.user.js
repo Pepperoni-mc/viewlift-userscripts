@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.16.1
+// @version      3.17.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.16.1');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.17.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -6463,116 +6463,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
 
 /* ============================================================
- * Feature 8b: SCHN+ Daily Goal Badge
- * Reads the local progress cache SCHN+ Case Tracker already writes to
- * localStorage (shared across userscripts on this origin - not GM storage,
- * which is per-script) and shows it as a badge in the ticket header.
- * Read-only: does not track anything itself and needs no API key.
+ * Feature 8b: Remove the SCHN+ Daily Goal Badge (removed feature)
+ * Cleans up the badge element/style for anyone who still has a page open
+ * from before this was pulled - the feature itself is gone per request.
  * ============================================================ */
 
 (function () {
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
-  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
 
-  const CACHE_KEY = 'schnTrackerProgress';
-  const BADGE_ID = 'better-freshdesk-tracker-goal';
-  const STYLE_ID = 'better-freshdesk-tracker-goal-style';
-
-  function addStyles() {
-    if (document.getElementById(STYLE_ID)) return;
-
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = `
-      #${BADGE_ID} {
-        display: inline-flex !important;
-        align-items: center !important;
-        gap: 6px !important;
-        min-height: 30px !important;
-        margin-left: 8px !important;
-        padding: 0 10px !important;
-        border: 1px solid #d8e0e8 !important;
-        border-radius: 6px !important;
-        background: #f8fafc !important;
-        color: #334155 !important;
-        font: 600 12px/1.2 Arial, sans-serif !important;
-        white-space: nowrap !important;
-        text-decoration: none !important;
-        cursor: pointer !important;
-      }
-      #${BADGE_ID}[data-state="goal"] { color: #166534 !important; background: #f0fdf4 !important; border-color: #bbf7d0 !important; }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function getCachedProgress() {
-    try {
-      const value = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-      const today = new Date().toISOString().slice(0, 10);
-      if (!value || value.date !== today) return null;
-      return { count: Number(value.count) || 0, goal: Number(value.goal) || 35 };
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function getHeaderSlot() {
-    return document.querySelector('section#mainactionbar .page-actions__right') ||
-      document.querySelector('section#mainactionbar');
-  }
-
-  function render() {
-    const slot = getHeaderSlot();
-    if (!slot) return;
-
-    addStyles();
-
-    let badge = document.getElementById(BADGE_ID);
-    if (!badge) {
-      badge = document.createElement('a');
-      badge.id = BADGE_ID;
-      badge.target = '_blank';
-      badge.rel = 'noopener noreferrer';
-      badge.href = 'http://135.181.37.72:3001/';
-      badge.title = 'Open SCHN+ Ticket Tracker';
-    }
-    if (badge.parentElement !== slot) slot.appendChild(badge);
-
-    const progress = getCachedProgress();
-    if (!progress) {
-      badge.textContent = 'Tracker: —';
-      badge.dataset.state = '';
-      return;
-    }
-
-    badge.textContent = progress.count + ' / ' + progress.goal + ' today';
-    badge.dataset.state = progress.count >= progress.goal ? 'goal' : '';
-  }
-
-  function init() {
-    if (!document.body) {
-      window.setTimeout(init, 250);
-      return;
-    }
-
-    render();
-
-    let timer = null;
-    const scheduleRender = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(render, 300);
-    };
-
-    onRouteChange(scheduleRender);
-    window.addEventListener('storage', event => {
-      if (event.key === CACHE_KEY) render();
-    });
-    window.addEventListener('focus', () => window.setTimeout(render, 200));
-  }
-
-  init();
+  document.getElementById('better-freshdesk-tracker-goal')?.remove();
+  document.getElementById('better-freshdesk-tracker-goal-style')?.remove();
 })();
 
 
@@ -6787,52 +6689,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 })();
 
 /* ============================================================
- * Feature 5: Requester Email in Ticket Header
+ * Feature 5: Quick-copy emails mentioned in ticket messages
+ * A customer sometimes states a different email in their own message than
+ * the one already on file (e.g. "it's my email x@y.com"). Surfaces any such
+ * NEW email as a one-click-copy chip under the message it appears in,
+ * instead of making the agent select the text by hand. Only flags emails
+ * that aren't already the ticket's known email and aren't an obvious
+ * internal/system address - it does not try to tell customer messages
+ * apart from agent replies, since Freshdesk doesn't expose that reliably.
  * ============================================================ */
 
 (function () {
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
+  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
 
-  // Superseded by the cached email control in the unified action bar.
-  return;
-
-  const STYLE_ID = 'better-freshdesk-requester-email-style';
-  const EMAIL_BADGE_ID = 'better-freshdesk-requester-email';
-  const COPY_FEEDBACK_ID = 'better-freshdesk-copy-feedback';
-  const TICKET_PATH_PATTERN = /\/a\/tickets\/(\d+)/i;
-  const CUSTOMER_EMAIL_BLOCKLIST = new Set([
-    'support@livgolfplus.com',
-    'sc-appsupport@spacecityhn.com',
-    'customersupport@altitudeplus.com',
-    'customer.support@altitudeplus.com',
-    'support@altitudeplus.com',
-    'noreply@viewlift.com',
-    'no-reply@viewlift.com'
-  ]);
-
-  function cleanText(value) {
-    return String(value || '')
-      .replace(/\u00a0/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function isVisible(element) {
-    if (!element || element.nodeType !== 1) return false;
-
-    const rect = element.getBoundingClientRect();
-    const style = window.getComputedStyle(element);
-
-    return (
-      rect.width > 0 &&
-      rect.height > 0 &&
-      style.display !== 'none' &&
-      style.visibility !== 'hidden' &&
-      style.opacity !== '0'
-    );
-  }
+  const STYLE_ID = 'better-freshdesk-mentioned-emails-style';
+  const ROW_CLASS = 'better-freshdesk-mentioned-emails';
+  const CHIP_CLASS = 'better-freshdesk-mentioned-email-chip';
+  const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  const EXCLUDED_LOCAL_PARTS = /^(no-?reply|do-?not-?reply|support|customer\.?support|help|info|contact)@/i;
+  const scannedNotes = new WeakSet();
 
   function addStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -6840,333 +6718,90 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${EMAIL_BADGE_ID} {
+      .${ROW_CLASS} {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        margin: 4px 0 12px !important;
+      }
+      .${CHIP_CLASS} {
         display: inline-flex !important;
         align-items: center !important;
-        max-width: min(360px, 42vw) !important;
-        margin-left: 10px !important;
-        color: #475569 !important;
-        font-size: 12px !important;
-        font-weight: 500 !important;
-        line-height: 1.35 !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        vertical-align: middle !important;
+        gap: 5px !important;
+        padding: 3px 10px !important;
+        border-radius: 12px !important;
+        border: 1px solid #bfdbfe !important;
+        background: #eff6ff !important;
+        color: #1e40af !important;
+        font: 600 11.5px Arial, sans-serif !important;
         cursor: copy !important;
-        user-select: text !important;
-      }
-
-      #${EMAIL_BADGE_ID}[data-copied="yes"] {
-        color: #15803d !important;
-      }
-
-      #${COPY_FEEDBACK_ID} {
-        display: inline-flex !important;
-        margin-left: 6px !important;
-        color: #15803d !important;
-        font-size: 11px !important;
-        font-weight: 700 !important;
-        line-height: 1.35 !important;
         white-space: nowrap !important;
-        vertical-align: middle !important;
+      }
+      .${CHIP_CLASS}::before { content: "\\2709"; }
+      .${CHIP_CLASS}[data-copied="yes"] {
+        background: #f0fdf4 !important;
+        border-color: #bbf7d0 !important;
+        color: #166534 !important;
       }
     `;
-
     document.head.appendChild(style);
   }
 
-  function getTicketId() {
-    const match = location.pathname.match(TICKET_PATH_PATTERN);
-    return match ? match[1] : '';
+  function getKnownTicketEmail() {
+    const badge = document.getElementById('better-freshdesk-action-email');
+    return String(badge?.dataset.email || '').trim().toLowerCase();
   }
 
-  function extractEmails(value) {
-    return String(value || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  function isExcludedEmail(email, knownEmail) {
+    if (email === knownEmail) return true;
+    if (EXCLUDED_LOCAL_PARTS.test(email)) return true;
+    if (/@(viewlift\.com|freshdesk\.com)$/i.test(email)) return true;
+    return false;
   }
 
-  function isCustomerEmail(email) {
-    const normalized = cleanText(email).toLowerCase();
-
-    return Boolean(
-      normalized &&
-      !CUSTOMER_EMAIL_BLOCKLIST.has(normalized) &&
-      !/^(noreply|no-reply|donotreply|do-not-reply)@/i.test(normalized)
-    );
+  function copyEmail(chip, email) {
+    navigator.clipboard.writeText(email).then(function () {
+      chip.dataset.copied = 'yes';
+      window.setTimeout(function () { chip.dataset.copied = ''; }, 1500);
+    }, function () {});
   }
 
-  function addEmailCandidate(candidates, email, score) {
-    const normalized = cleanText(email).toLowerCase();
+  function scanNote(note) {
+    if (scannedNotes.has(note)) return;
 
-    if (!isCustomerEmail(normalized)) return;
+    const knownEmail = getKnownTicketEmail();
+    const matches = note.textContent ? note.textContent.match(EMAIL_RE) : null;
+    if (!matches) return;
 
-    const existing = candidates.get(normalized);
-    if (!existing || score > existing.score) {
-      candidates.set(normalized, { email: normalized, score });
-    }
-  }
+    const found = Array.from(new Set(matches.map(function (email) { return email.toLowerCase(); })))
+      .filter(function (email) { return !isExcludedEmail(email, knownEmail); });
 
-  function getRequesterEmail() {
-    const candidates = new Map();
+    if (!found.length) return;
 
-    if (typeof window.__betterFreshdeskGetCustomerEmail === 'function') {
-      addEmailCandidate(candidates, window.__betterFreshdeskGetCustomerEmail(), 180);
-    }
-
-    document.querySelectorAll('a[href^="mailto:" i]').forEach(function (link) {
-      const href = link.getAttribute('href') || '';
-      const email = decodeURIComponent(href.replace(/^mailto:/i, '').split('?')[0]);
-      extractEmails(email).forEach(function (match) {
-        addEmailCandidate(candidates, match, 120);
-      });
-    });
-
-    const prioritySelector = [
-      '[data-test-id*="email" i]',
-      '[data-testid*="email" i]',
-      '[class*="email" i]',
-      '[class*="contact" i]'
-    ].join(',');
-
-    document.querySelectorAll(prioritySelector).forEach(function (element) {
-      if (element.closest('#' + EMAIL_BADGE_ID)) return;
-
-      const attributes = [
-        element.getAttribute('data-test-id'),
-        element.getAttribute('data-testid'),
-        element.className
-      ].filter(Boolean).join(' ').toLowerCase();
-
-      const score = /email/.test(attributes) ? 105 : 90;
-      extractEmails(element.textContent).forEach(function (match) {
-        addEmailCandidate(candidates, match, score);
-      });
-    });
-
-    const lines = String(document.body && document.body.innerText || '')
-      .split(/\r?\n/)
-      .map(cleanText)
-      .filter(Boolean);
-
-    lines.forEach(function (line) {
-      const emails = extractEmails(line);
-      if (!emails.length) return;
-
-      const isContactLine = /^(to|from|email|e-mail)\s*:/i.test(line);
-      const score = isContactLine ? 100 : 45;
-
-      emails.forEach(function (match) {
-        addEmailCandidate(candidates, match, score);
-      });
-    });
-
-    const best = Array.from(candidates.values())
-      .sort(function (left, right) {
-        return right.score - left.score;
-      })[0];
-
-    return best ? best.email : '';
-  }
-
-  function getHeaderTicketIdElement(ticketId) {
-    const breadcrumbId = document.querySelector('[data-test-id="breadcrumb-item"]');
-
-    if (
-      breadcrumbId &&
-      cleanText(breadcrumbId.textContent) === ticketId &&
-      !breadcrumbId.closest('#' + EMAIL_BADGE_ID)
-    ) {
-      return breadcrumbId;
-    }
-
-    const ticketHrefPattern = new RegExp('/a/tickets/' + ticketId + '(?:[/?#]|$)', 'i');
-    const exactMatches = Array.from(document.querySelectorAll('a, button, span, div, p'))
-      .filter(function (element) {
-        if (!isVisible(element)) return false;
-        if (element.closest('#' + EMAIL_BADGE_ID)) return false;
-        return cleanText(element.textContent) === ticketId;
-      });
-
-    const ranked = exactMatches.map(function (element) {
-      const href = element.getAttribute('href') || '';
-      let score = 0;
-
-      if (element.matches('a')) score += 50;
-      if (ticketHrefPattern.test(href)) score += 200;
-      if (element.parentElement && element.parentElement.matches('a')) score += 160;
-
-      const rect = element.getBoundingClientRect();
-      if (rect.width < 180 && rect.height < 50) score += 20;
-
-      return { element, score };
-    }).sort(function (left, right) {
-      return right.score - left.score;
-    });
-
-    if (!ranked.length) return null;
-
-    const best = ranked[0].element;
-    return best.matches('a') ? best : best.closest('a') || best;
-  }
-
-  function removeEmailBadge() {
-    document.querySelectorAll('#' + EMAIL_BADGE_ID).forEach(function (badge) {
-      badge.remove();
-    });
-
-    document.querySelectorAll('#' + COPY_FEEDBACK_ID).forEach(function (feedback) {
-      feedback.remove();
-    });
-  }
-
-  function fallbackCopyToClipboard(text) {
-    const textarea = document.createElement('textarea');
-
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '0';
-
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-
-    let copied = false;
-
-    try {
-      copied = document.execCommand('copy');
-    } catch (error) {
-      copied = false;
-    }
-
-    textarea.remove();
-    return copied;
-  }
-
-  function showCopiedFeedback(badge) {
-    badge.setAttribute('title', 'Copied to clipboard');
-    badge.setAttribute('data-copied', 'yes');
-
-    document.querySelectorAll('#' + COPY_FEEDBACK_ID).forEach(function (feedback) {
-      feedback.remove();
-    });
-
-    const feedback = document.createElement('span');
-    feedback.id = COPY_FEEDBACK_ID;
-    feedback.textContent = 'Copied';
-    feedback.setAttribute('role', 'status');
-    badge.insertAdjacentElement('afterend', feedback);
-
-    window.setTimeout(function () {
-      if (!badge.isConnected) return;
-
-      badge.setAttribute('title', 'Click to copy requester email');
-      badge.removeAttribute('data-copied');
-      feedback.remove();
-    }, 1200);
-  }
-
-  function copyEmailToClipboard(email, badge) {
-    if (!email) return;
-
-    if (typeof GM_setClipboard === 'function') {
-      try {
-        GM_setClipboard(email, 'text');
-        showCopiedFeedback(badge);
-        return;
-      } catch (error) {
-        // Continue with the browser clipboard fallbacks.
-      }
-    }
-
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(email)
-        .then(function () {
-          showCopiedFeedback(badge);
-        })
-        .catch(function () {
-          if (fallbackCopyToClipboard(email)) {
-            showCopiedFeedback(badge);
-          }
-        });
-
-      return;
-    }
-
-    if (fallbackCopyToClipboard(email)) {
-      showCopiedFeedback(badge);
-    }
-  }
-
-  function renderRequesterEmail() {
-    const ticketId = getTicketId();
-
-    if (!ticketId) {
-      removeEmailBadge();
-      return;
-    }
-
-    const ticketIdElement = getHeaderTicketIdElement(ticketId);
-    if (!ticketIdElement) return;
-
-    const email = getRequesterEmail();
-    if (!email) {
-      removeEmailBadge();
-      return;
-    }
-
-    let badge = document.getElementById(EMAIL_BADGE_ID);
-
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.id = EMAIL_BADGE_ID;
-      badge.setAttribute('title', 'Click to copy requester email');
-      badge.setAttribute('aria-label', 'Requester email: ' + email);
-
-      badge.addEventListener('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        copyEmailToClipboard(badge.textContent, badge);
-      });
-    }
-
-    badge.textContent = email;
-    badge.setAttribute('aria-label', 'Requester email: ' + email);
-
-    if (badge.parentElement !== ticketIdElement.parentElement || badge.previousElementSibling !== ticketIdElement) {
-      badge.remove();
-      ticketIdElement.insertAdjacentElement('afterend', badge);
-    }
-  }
-
-  function init() {
-    if (!document.body) {
-      setTimeout(init, 300);
-      return;
-    }
-
+    scannedNotes.add(note);
     addStyles();
 
-    let timer = null;
-    const scheduleRender = function () {
-      clearTimeout(timer);
-      timer = setTimeout(renderRequesterEmail, 180);
-    };
+    const row = document.createElement('div');
+    row.className = ROW_CLASS;
 
-    scheduleRender();
-
-    const observer = new MutationObserver(scheduleRender);
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true
+    found.forEach(function (email) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = CHIP_CLASS;
+      chip.textContent = email;
+      chip.title = 'Click to copy';
+      chip.addEventListener('click', function () { copyEmail(chip, email); });
+      row.appendChild(chip);
     });
 
-    setInterval(renderRequesterEmail, 1500);
+    if (note.parentElement) note.parentElement.insertBefore(row, note.nextSibling);
   }
 
-  init();
+  function scanAllNotes() {
+    document.querySelectorAll('.ticket_note').forEach(scanNote);
+  }
+
+  onRouteChange(scanAllNotes);
 })();
 
 /* ============================================================
