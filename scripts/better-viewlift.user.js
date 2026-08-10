@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.21.0
+// @version      3.22.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.21.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.22.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -132,6 +132,7 @@
   const BV_SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
   const BV_CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
   const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
+  const BV_CMS_KEEP_ALIVE_STATUS_KEY = 'betterViewliftCmsSessionStatus';
 
   (function () {
 /* ============================================================
@@ -2324,27 +2325,58 @@
     ];
     const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
 
-    function pingCMSHost(url) {
+    function pingCMSHost(url, onDone) {
         GM_xmlhttpRequest({
             method: 'HEAD',
             url,
             timeout: 15000,
             anonymous: false,
             onload: response => {
-                if (response.status === 401 || /\/login(?:\/|$)/i.test(response.finalUrl || '')) {
+                const needsLogin = response.status === 401 || /\/login(?:\/|$)/i.test(response.finalUrl || '');
+                if (needsLogin) {
                     console.debug('[Better ViewLift] CMS session (' + url + ') requires OTP/login again.');
                 }
+                onDone(needsLogin ? 'needs-login' : 'alive');
             },
-            onerror: () => {},
-            ontimeout: () => {}
+            onerror: () => onDone('error'),
+            ontimeout: () => onDone('error')
         });
+    }
+
+    function recordKeepAliveStatus(hostResults) {
+        const values = Object.values(hostResults);
+        let overall = 'alive';
+
+        if (values.some(status => status === 'needs-login')) {
+            overall = 'needs-login';
+        } else if (values.every(status => status === 'error')) {
+            overall = 'error';
+        }
+
+        try {
+            GM_setValue(BV_CMS_KEEP_ALIVE_STATUS_KEY, {
+                overall,
+                hosts: hostResults,
+                checkedAt: Date.now()
+            });
+        } catch (error) { /* storage unavailable, skip */ }
     }
 
     function pingAllCMSHosts() {
         // Only bother while Freshdesk is actually the tab being looked at -
         // if neither tab is active there is nothing useful to keep alive.
         if (document.visibilityState !== 'visible') return;
-        CMS_KEEP_ALIVE_HOSTS.forEach(pingCMSHost);
+
+        const hostResults = {};
+        let remaining = CMS_KEEP_ALIVE_HOSTS.length;
+
+        CMS_KEEP_ALIVE_HOSTS.forEach(url => {
+            pingCMSHost(url, status => {
+                hostResults[url] = status;
+                remaining -= 1;
+                if (remaining === 0) recordKeepAliveStatus(hostResults);
+            });
+        });
     }
 
     window.setTimeout(pingAllCMSHosts, 20000);
@@ -6169,6 +6201,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
+  const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
   let cachedTicketPath = '';
   let cachedEmail = '';
@@ -6218,6 +6251,34 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         margin-right: 8px !important;
         vertical-align: middle !important;
         z-index: 30 !important;
+      }
+
+      #${CMS_SESSION_DOT_ID} {
+        display: inline-flex !important;
+        width: 10px !important;
+        height: 10px !important;
+        margin-right: 4px !important;
+        border-radius: 999px !important;
+        background: #9ca3af !important;
+        box-shadow: 0 0 0 3px rgba(156, 163, 175, .16) !important;
+        flex: 0 0 auto !important;
+        cursor: default !important;
+        transition: background 200ms ease, box-shadow 200ms ease !important;
+      }
+
+      #${CMS_SESSION_DOT_ID}[data-status="alive"] {
+        background: #16a34a !important;
+        box-shadow: 0 0 0 3px rgba(22, 163, 74, .18) !important;
+      }
+
+      #${CMS_SESSION_DOT_ID}[data-status="needs-login"] {
+        background: #dc2626 !important;
+        box-shadow: 0 0 0 3px rgba(220, 38, 38, .18) !important;
+      }
+
+      #${CMS_SESSION_DOT_ID}[data-status="error"] {
+        background: #d97706 !important;
+        box-shadow: 0 0 0 3px rgba(217, 119, 6, .18) !important;
       }
 
       #${REFUND_TOGGLE_ID} {
@@ -6456,6 +6517,37 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return button;
   }
 
+  // Gives the anti-logout keep-alive from Feature 1b2 a visible result -
+  // it was working silently before, with no way to confirm it without
+  // manually digging through GM storage.
+  function updateCmsSessionDot(dot) {
+    let state = null;
+
+    try {
+      state = GM_getValue(BV_CMS_KEEP_ALIVE_STATUS_KEY, null);
+    } catch (error) { /* storage unavailable */ }
+
+    if (!state || !state.checkedAt) {
+      dot.dataset.status = '';
+      dot.title = 'CMS session: not checked yet';
+      return;
+    }
+
+    const minutesAgo = Math.round((Date.now() - state.checkedAt) / 60000);
+    const staleness = minutesAgo <= 1 ? 'just now' : `${minutesAgo} min ago`;
+
+    if (state.overall === 'needs-login') {
+      dot.dataset.status = 'needs-login';
+      dot.title = `CMS session needs login/OTP (checked ${staleness})`;
+    } else if (state.overall === 'error') {
+      dot.dataset.status = 'error';
+      dot.title = `Could not reach CMS to check the session (checked ${staleness})`;
+    } else {
+      dot.dataset.status = 'alive';
+      dot.title = `CMS session looks alive (checked ${staleness})`;
+    }
+  }
+
   function toggleRefundPanel() {
     const panel = document.getElementById('refund-capture-panel');
     if (!panel) return;
@@ -6546,12 +6638,20 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
     }
 
+    let cmsSessionDot = document.getElementById(CMS_SESSION_DOT_ID);
+    if (!cmsSessionDot) {
+      cmsSessionDot = document.createElement('span');
+      cmsSessionDot.id = CMS_SESSION_DOT_ID;
+      cmsSessionDot.setAttribute('aria-label', 'CMS session status');
+    }
+    updateCmsSessionDot(cmsSessionDot);
+
     // These legacy toolbar controls are intentionally removed. Delete any
     // copies left behind by an older Better ViewLift version as well.
     document.getElementById('better-freshdesk-next-case')?.remove();
     document.getElementById('better-freshdesk-refund-launcher')?.remove();
 
-    const orderedControls = [brand, cms, email, agent, refundToggle].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, email, agent, refundToggle].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -6846,7 +6946,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const CHIP_CLASS = 'better-freshdesk-mentioned-email-chip';
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
   const EXCLUDED_LOCAL_PARTS = /^(no-?reply|do-?not-?reply|support|customer\.?support|help|info|contact)@/i;
+  // Requires a separator between the area code and the next group, on
+  // purpose - a bare 10-digit run is more likely an order/account ID than
+  // a phone number, and this cuts down on those false positives.
+  const PHONE_RE = /(?:\+\d{1,3}[-.\s])?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g;
   const scannedNotes = new WeakSet();
+
+  const DETECTORS = [
+    {
+      type: 'email',
+      re: EMAIL_RE,
+      normalize: value => value.toLowerCase(),
+      isExcluded: (value, knownEmail) =>
+        value === knownEmail ||
+        EXCLUDED_LOCAL_PARTS.test(value) ||
+        /@(viewlift\.com|freshdesk\.com)$/i.test(value)
+    },
+    {
+      type: 'phone',
+      re: PHONE_RE,
+      normalize: value => value.trim(),
+      isExcluded: () => false
+    }
+  ];
 
   function addStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -6876,10 +6998,20 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         box-shadow: 0 1px 3px rgba(30, 64, 175, .14) !important;
         transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease !important;
       }
-      .${CHIP_CLASS}::before { content: "\\2709"; }
+      .${CHIP_CLASS}[data-type="email"]::before { content: "\\2709"; }
+      .${CHIP_CLASS}[data-type="phone"]::before { content: "\\260E"; }
       .${CHIP_CLASS}:hover {
         box-shadow: 0 3px 8px rgba(30, 64, 175, .22) !important;
         transform: translateY(-1px) !important;
+      }
+      .${CHIP_CLASS}[data-type="phone"] {
+        border-color: #6ee7b7 !important;
+        background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%) !important;
+        color: #065f46 !important;
+        box-shadow: 0 1px 3px rgba(6, 95, 70, .14) !important;
+      }
+      .${CHIP_CLASS}[data-type="phone"]:hover {
+        box-shadow: 0 3px 8px rgba(6, 95, 70, .22) !important;
       }
       .${CHIP_CLASS}[data-copied="yes"] {
         background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
@@ -6895,15 +7027,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return String(badge?.dataset.email || '').trim().toLowerCase();
   }
 
-  function isExcludedEmail(email, knownEmail) {
-    if (email === knownEmail) return true;
-    if (EXCLUDED_LOCAL_PARTS.test(email)) return true;
-    if (/@(viewlift\.com|freshdesk\.com)$/i.test(email)) return true;
-    return false;
-  }
-
-  function copyEmail(chip, email) {
-    navigator.clipboard.writeText(email).then(function () {
+  function copyValue(chip, value) {
+    navigator.clipboard.writeText(value).then(function () {
       chip.dataset.copied = 'yes';
       window.setTimeout(function () { chip.dataset.copied = ''; }, 1500);
     }, function () {});
@@ -6912,12 +7037,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   function scanNote(note) {
     if (scannedNotes.has(note)) return;
 
-    const knownEmail = getKnownTicketEmail();
-    const matches = note.textContent ? note.textContent.match(EMAIL_RE) : null;
-    if (!matches) return;
+    const text = note.textContent || '';
+    if (!text) return;
 
-    const found = Array.from(new Set(matches.map(function (email) { return email.toLowerCase(); })))
-      .filter(function (email) { return !isExcludedEmail(email, knownEmail); });
+    const knownEmail = getKnownTicketEmail();
+    const found = [];
+    const seen = new Set();
+
+    DETECTORS.forEach(function (detector) {
+      const matches = text.match(detector.re);
+      if (!matches) return;
+
+      matches.forEach(function (rawMatch) {
+        const value = detector.normalize(rawMatch);
+        const dedupeKey = detector.type + ':' + value;
+
+        if (seen.has(dedupeKey)) return;
+        if (detector.isExcluded(value, knownEmail)) return;
+
+        seen.add(dedupeKey);
+        found.push({ type: detector.type, value });
+      });
+    });
 
     if (!found.length) return;
 
@@ -6927,13 +7068,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const row = document.createElement('div');
     row.className = ROW_CLASS;
 
-    found.forEach(function (email) {
+    found.forEach(function (entry) {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = CHIP_CLASS;
-      chip.textContent = email;
+      chip.dataset.type = entry.type;
+      chip.textContent = entry.value;
       chip.title = 'Click to copy';
-      chip.addEventListener('click', function () { copyEmail(chip, email); });
+      chip.addEventListener('click', function () { copyValue(chip, entry.value); });
       row.appendChild(chip);
     });
 

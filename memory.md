@@ -117,6 +117,25 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## CMS session status dot + phone-number chips (2026-08-10)
+
+**Visible keep-alive indicator**: the Freshdesk-side cross-tab keep-alive (Feature 1b2) pinged
+CMS hosts silently with no way to confirm it was working short of digging through GM storage.
+Changed `pingAllCMSHosts()` to track completion of all 4 host pings, then writes an aggregate
+`{overall, hosts, checkedAt}` to a new shared key `BV_CMS_KEEP_ALIVE_STATUS_KEY`
+(`betterViewliftCmsSessionStatus`). Added a small dot (`#better-freshdesk-cms-session-dot`) to
+the Unified Toolbar's `orderedControls` that reads this on every `installToolbar()` pass -
+green/red/amber for alive/needs-login/error, gray+"not checked yet" before the first ping
+completes. Verified the read/render logic with a standalone simulation.
+
+**Phone-number chips**: generalized the email-mention-chip module (added earlier today) into a
+`DETECTORS` array (`{type, re, normalize, isExcluded}`) so it can flag phone numbers the same
+way. `PHONE_RE` deliberately requires a separator between digit groups
+(`\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}`) specifically so a bare 10-digit run (an order/ticket ID)
+doesn't get flagged as a phone number - verified with `node -e` against both real phone formats
+from an actual message in this ticket ("713-651-9333", "(713) 651-9333", "+1 713-651-9333") and
+false-positive candidates (bare digit-string IDs), all behaved as intended.
+
 ## New features + an unresolved colleague-reported bug (2026-08-10)
 
 **Duplicate-refund warning**: added a local, approximate history (`betterViewliftRefundHistory`
