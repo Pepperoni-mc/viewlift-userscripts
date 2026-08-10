@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.23.0
+// @version      3.23.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.23.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.23.1');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -8768,6 +8768,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         const fallbackEmail = findEmailInFreshdeskTicketText();
+        // Only worth a visible note when we're actually on a ticket - on the
+        // tickets list/filters view there's no contact info or ticket body to
+        // find an email in at all, so "not found" there is normal, not a bug.
+        const isOnTicketPage = /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
 
         if (fallbackEmail) {
             // The official Contact Info panel is the reliable source; this
@@ -8775,12 +8779,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             // the customer mentioned that isn't their real account email.
             // Worth flagging visibly, not just in the console, since a wrong
             // email here means "No Data Available" in CMS with no obvious cause.
-            bvNotify('CMS search: using an email found in the ticket text, not the Contact Info panel - double-check it matches the account.', { level: 'info', ttl: 9000 });
+            if (isOnTicketPage) {
+                bvNotify('CMS search: using an email found in the ticket text, not the Contact Info panel - double-check it matches the account.', { level: 'info', ttl: 9000 });
+            }
             return fallbackEmail;
         }
 
         console.log('[CMS Search] Contact info email not found. Checked break-all nodes, mailto links, contact roots, shadow DOM, and visible ticket text.');
-        bvNotify('CMS search: could not find a customer email on this ticket at all.', { level: 'warn' });
+        // No bvNotify here - the click handler that calls this already shows
+        // a native alert() when it gets an empty email back, so a second
+        // toast would just be a redundant, confusing double-message.
 
         return '';
     }

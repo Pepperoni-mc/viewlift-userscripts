@@ -117,6 +117,20 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Regression from the bvNotify migration, fixed same session (2026-08-10)
+
+The "could not find a customer email" notification fired on the tickets list/filters page
+(`/a/tickets/filters/...`), not just individual ticket pages - because `installHeaderButton()`
+puts the CMS button on ANY Freshdesk page (`isFreshdeskPage()`, no path restriction), and
+clicking it with no ticket open naturally finds no contact info (correct, not a bug), but I'd
+made "not found" visible unconditionally when I migrated it to `bvNotify`. Fixed: gated the
+"using ticket-text fallback" info notice to only fire on `/a/tickets/\d+` pages, and removed the
+"total failure" notify entirely - the click handler that calls this function already shows a
+native `alert()` when the email comes back empty, so the toast was a redundant second message
+on top of that, not just noise on the list page. **Lesson: promoting a console.log to a visible
+notification changes its blast radius - check every call site's context before assuming "always
+show" is correct, the same way a new feature would need that scoping.**
+
 ## Unified visible-notification system: bvNotify (2026-08-10)
 
 Structural fix for a pattern that showed up repeatedly today: real problems (CMS session dying,
