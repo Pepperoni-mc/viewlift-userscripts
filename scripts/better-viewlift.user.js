@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.16.0
+// @version      3.16.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.16.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.16.1');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -6199,11 +6199,31 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.head.appendChild(style);
   }
 
+  let actionBarFallbackSince = 0;
+
   function getActionBar() {
     return document.querySelector('section#mainactionbar .reply-bar-top') ||
       document.querySelector('section#mainactionbar .page-actions__left') ||
       document.querySelector('section#mainactionbar button[data-test-email-action="reply"]')?.parentElement ||
-      document.querySelector('section#mainactionbar');
+      null;
+  }
+
+  // Only settle for the bare section (a worse flex container, visually
+  // different from the real action bar) after giving Freshdesk's own
+  // controls a few seconds to render. Falling back immediately causes the
+  // toolbar to render once in the wrong spot and then visibly jump into the
+  // right one the moment the real container shows up.
+  function getActionBarWithFallback() {
+    const actionBar = getActionBar();
+    if (actionBar) {
+      actionBarFallbackSince = 0;
+      return actionBar;
+    }
+
+    if (!actionBarFallbackSince) actionBarFallbackSince = Date.now();
+    if (Date.now() - actionBarFallbackSince < 4000) return null;
+
+    return document.querySelector('section#mainactionbar');
   }
 
   function getContextText() {
@@ -6343,7 +6363,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   function installToolbar() {
     addStyles();
-    const actionBar = getActionBar();
+    const actionBar = getActionBarWithFallback();
     if (!actionBar) return;
 
     let toolbar = document.getElementById(TOOLBAR_ID);
