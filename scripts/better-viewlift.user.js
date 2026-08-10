@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.20.0
+// @version      3.21.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.20.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.21.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -853,6 +853,93 @@
     ].forEach(safeDelete);
 
     recordSync('Freshdesk', 'cleared stale CMS fields');
+    showDuplicateRefundWarning(null);
+  }
+
+  // Local, approximate duplicate-refund detector: not a record of confirmed
+  // completed refunds (the tool never auto-clicks the final CMS confirmation,
+  // by design), just "we captured refund info for this email before" - a
+  // gentle heads-up, not a hard guarantee.
+  const REFUND_HISTORY_KEY = 'betterViewliftRefundHistory';
+  const REFUND_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const REFUND_HISTORY_MAX = 30;
+
+  function getRefundHistory() {
+    try {
+      let value = GM_getValue(REFUND_HISTORY_KEY, null);
+      if (typeof value === 'string') value = JSON.parse(value);
+      return Array.isArray(value) ? value : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function findRecentDuplicateRefund(email, ticketUrl) {
+    const normalizedEmail = cleanText(email).toLowerCase();
+    if (!normalizedEmail) return null;
+
+    const now = Date.now();
+
+    return getRefundHistory().find(entry =>
+      entry &&
+      entry.email === normalizedEmail &&
+      entry.ticketUrl !== ticketUrl &&
+      (now - Number(entry.capturedAt || 0)) < REFUND_HISTORY_WINDOW_MS
+    ) || null;
+  }
+
+  function recordRefundHistory(email, amount, ticketUrl) {
+    const normalizedEmail = cleanText(email).toLowerCase();
+    if (!normalizedEmail || !ticketUrl) return;
+
+    const history = getRefundHistory();
+    const recentSameCapture = history.find(entry =>
+      entry &&
+      entry.email === normalizedEmail &&
+      entry.ticketUrl === ticketUrl &&
+      (Date.now() - Number(entry.capturedAt || 0)) < 5 * 60 * 1000
+    );
+
+    if (recentSameCapture) {
+      recentSameCapture.amount = amount;
+      recentSameCapture.capturedAt = Date.now();
+    } else {
+      history.push({ email: normalizedEmail, amount, ticketUrl, capturedAt: Date.now() });
+    }
+
+    try {
+      GM_setValue(REFUND_HISTORY_KEY, history.slice(-REFUND_HISTORY_MAX));
+    } catch (error) { /* storage unavailable, skip */ }
+  }
+
+  function showDuplicateRefundWarning(entry) {
+    const banner = document.getElementById('refund-duplicate-warning');
+    if (!banner) return;
+
+    if (!entry) {
+      banner.hidden = true;
+      return;
+    }
+
+    const when = new Date(entry.capturedAt);
+    const timeText = Number.isNaN(when.getTime())
+      ? ''
+      : when.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const ticketMatch = String(entry.ticketUrl || '').match(/\/tickets\/(\d+)/i);
+    const ticketText = ticketMatch ? `ticket #${ticketMatch[1]}` : 'another ticket';
+    const amountText = entry.amount ? ` (${entry.amount})` : '';
+
+    banner.textContent = `⚠ This email already had a refund captured${amountText}${timeText ? ` on ${timeText}` : ''} in ${ticketText}. Double-check before issuing another one.`;
+    banner.hidden = false;
+  }
+
+  function checkDuplicateRefund(email, amount, ticketUrl) {
+    if (!email || !ticketUrl) return;
+
+    const duplicate = findRecentDuplicateRefund(email, ticketUrl);
+    showDuplicateRefundWarning(duplicate);
+
+    if (!duplicate) recordRefundHistory(email, amount, ticketUrl);
   }
 
   function maybeResetForFreshdeskContext(ticketURL, email) {
@@ -927,6 +1014,9 @@
       if (refundData.amount) {
         forceSet(STORAGE_KEYS.amount, refundData.amount);
         changed = true;
+
+        const ticketRef = safeGet(STORAGE_KEYS.activeTicket, '') || safeGet(STORAGE_KEYS.freshdesk, '');
+        checkDuplicateRefund(email || safeGet(STORAGE_KEYS.activeEmail, ''), refundData.amount, ticketRef);
       }
 
       if (refundData.payment && !isBadPaymentValue(refundData.payment)) {
@@ -1305,6 +1395,7 @@
 
     markAllFieldStates();
     setStatus('Stored data cleared.');
+    showDuplicateRefundWarning(null);
   }
 
   function copyCurrentRow() {
@@ -1621,6 +1712,18 @@
         box-shadow: 0 10px 22px rgba(11, 92, 171, 0.28);
       }
 
+      #refund-duplicate-warning {
+        margin-bottom: 10px;
+        padding: 8px 10px;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+        background: #fffbeb;
+        color: #92400e;
+        font-size: 11.5px;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+
       #refund-status {
         margin-top: 9px;
         min-height: 16px;
@@ -1843,6 +1946,8 @@
       </div>
 
       <div id="refund-body">
+        <div id="refund-duplicate-warning" hidden></div>
+
         <label for="refund-email">Email</label>
         <input id="refund-email" autocomplete="off">
 
@@ -6897,6 +7002,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       getTarget: function (element) {
         return element.closest('.trigger-button-container') || element;
       }
+    },
+    {
+      selector: 'img[alt="Translate Buddy"]',
+      getTarget: function (element) {
+        return element.closest('button, a') ||
+          element.closest('.conversation-app-icon') ||
+          element;
+      }
     }
   ];
 
@@ -8714,6 +8827,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
     }
 
+    // Makes "why is this showing no results" self-diagnosing: if the email
+    // we searched for isn't actually the customer's real account email
+    // (wrong contact-info detection, or the customer has a different email
+    // on file than the one mentioned in the ticket), this makes that obvious
+    // immediately instead of leaving a blank results table with no clue why.
+    function showSearchedEmailToast(email) {
+        const id = 'viewlift-cms-searched-email-toast';
+        document.getElementById(id)?.remove();
+
+        const toast = document.createElement('div');
+        toast.id = id;
+        toast.textContent = 'Searched: ' + email;
+        toast.style.cssText = [
+            'position:fixed', 'top:16px', 'left:50%', 'transform:translateX(-50%)',
+            'z-index:2147483000', 'padding:8px 14px', 'border-radius:8px',
+            'background:#0b5cab', 'color:#fff', 'font:600 12px Arial,sans-serif',
+            'box-shadow:0 6px 18px rgba(11,92,171,.32)'
+        ].join(';');
+
+        document.body.appendChild(toast);
+        window.setTimeout(() => toast.remove(), 6000);
+    }
+
     function runCMSSearch(email) {
         if (cmsSearchCompleted || cmsSearchStarted) return true;
 
@@ -8738,6 +8874,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         try {
             input.focus();
             setNativeValue(input, email);
+            showSearchedEmailToast(email);
 
             const searchButton = getSearchButton();
             let searchTriggered = false;

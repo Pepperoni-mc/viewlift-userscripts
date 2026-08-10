@@ -117,6 +117,41 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## New features + an unresolved colleague-reported bug (2026-08-10)
+
+**Duplicate-refund warning**: added a local, approximate history (`betterViewliftRefundHistory`
+GM key, capped at 30 entries) recording `{email, amount, ticketUrl, capturedAt}` whenever the
+Refund Capture Tool captures an amount on CMS. Before recording, checks for an entry with the
+same email but a DIFFERENT ticket within the last 24h and shows a banner in the panel
+(`#refund-duplicate-warning`) if found. **Important caveat, load-bearing for how this should be
+understood**: this is NOT a record of confirmed completed refunds — the tool never auto-clicks
+CMS's final "Issue Refund" confirmation (by design, for safety), so there's no signal anywhere
+in the codebase for "a refund actually went through." This only detects "we captured refund info
+for this email before," which is a reasonable gentle-nudge proxy, not a hard guarantee. Verified
+the record/detect logic with a standalone simulation (same email + different ticket flags, same
+ticket doesn't, different email never does).
+
+**Removed a marketplace app icon** ("Translate Buddy") from the conversation view - added to the
+existing Header Clutter Removal module's `removalRules` array, same pattern as the other
+removals there.
+
+**Unresolved: colleague reports the CMS button searches but returns no results for a real
+customer.** Investigated live: tested the exact set-value-then-click-search sequence on both
+`cms-gcp.viewlift.com` and `cms.viewlift.com` (one synthetic email, one real one) - both
+searched correctly, ruling out a naive React-state-timing race. Also checked for a mismatch
+between the CMS-button's account-detection (`getCMSAccountForClient`: schn/liv-golf/lightning)
+and the classic account-switcher's recognized keys (`ORGANIZATIONS`: lightning/liv-golf/schn) -
+they match exactly, ruling that out too. Confirmed symptom (via the user) is specifically "No
+Data Available", not wrong-customer or a non-responsive button. Leading unconfirmed theory:
+`getCustomerEmailFromContactInfo()` (prioritizes Freshdesk's official Contact Info panel, falls
+back to scanning ticket body text) may be picking up an email that isn't actually the
+customer's real CMS account email - either the contact-info lookup silently fails and falls
+back to a less reliable text scan, or the customer's real account is on a different CMS
+domain/brand than the one the ticket routed to. **Shipped a diagnostic instead of a blind fix**:
+a toast on the CMS page ("Searched: x@y.com") showing exactly which email was used, so next
+occurrence is self-explaining instead of a silent empty table. If it recurs, check what email
+the toast shows against the customer's actual on-file email first.
+
 ## Orphaned-function sweep #2, following the toggleRefundPanel pattern (2026-08-10)
 
 After finding `toggleRefundPanel()` had zero callers, ran a systematic sweep (grep every
