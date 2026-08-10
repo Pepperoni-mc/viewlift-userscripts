@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.19.0
+// @version      3.20.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,14 +31,10 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.19.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.20.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
-  }
-
-  function isV5UI() {
-    return Boolean(document.querySelector('[role="combobox"], .MuiSelect-select, .MuiInputBase-root'));
   }
 
   function waitFor(predicateFn, { timeout = 5000, pollMs = 50 } = {}) {
@@ -436,36 +432,6 @@
     cachedPageLines = lines;
     cachedPageLinesAt = now;
     return cachedPageLines;
-  }
-
-  function collectDeepTextFromRoot(root, chunks, depth = 0) {
-    if (!root || depth > 6) return;
-
-    const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
-
-    for (const element of elements) {
-      if (isIgnoredElement(element)) continue;
-
-      if (element.matches && element.matches('input, textarea, select')) {
-        const value = cleanText(element.value);
-        if (value) chunks.push(value);
-      }
-
-      const text = cleanText(element.innerText || element.textContent || '');
-      if (text) chunks.push(text);
-
-      if (element.shadowRoot) {
-        collectDeepTextFromRoot(element.shadowRoot, chunks, depth + 1);
-      }
-    }
-  }
-
-  function getDeepPageTextOutsidePanel() {
-    const chunks = [];
-
-    collectDeepTextFromRoot(document, chunks, 0);
-
-    return chunks.join('\n');
   }
 
   function queryOutsidePanel(selector) {
@@ -5361,36 +5327,6 @@ if (isCMSHost()) {
         return document.querySelector("h4");
     }
 
-    function requestExtensionCapture(timeoutMs = 1200) {
-        return new Promise(resolve => {
-            const requestId = `better-viewlift-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            let finished = false;
-
-            const finish = dataUrl => {
-                if (finished) return;
-                finished = true;
-                window.removeEventListener("message", onMessage);
-                resolve(dataUrl || "");
-            };
-
-            const onMessage = event => {
-                if (event.source !== window) return;
-                const message = event.data;
-                if (!message || message.source !== "better-viewlift-capture-helper" ||
-                    message.type !== "capture-visible-tab-result" || message.requestId !== requestId) return;
-                finish(message.ok ? message.dataUrl : "");
-            };
-
-            window.addEventListener("message", onMessage);
-            window.postMessage({
-                source: "better-viewlift",
-                type: "capture-visible-tab",
-                requestId
-            }, "*");
-            window.setTimeout(() => finish(""), timeoutMs);
-        });
-    }
-
     async function captureRealTabSnapshot() {
         const button = document.getElementById(BUTTON_ID);
         if (!button) return;
@@ -5936,10 +5872,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     boldStandaloneTheBeforeSignature(editor);
   }
 
-  function normalizeEditorFont(editor) {
-    normalizeEditorFormatting(editor);
-  }
-
   function shouldSkipEditor(editor) {
     if (!editor) return true;
 
@@ -6110,7 +6042,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     });
   }
 
-  addEditorFontNormalizerStyles();
+  scanEditors();
 
   document.addEventListener("keydown", handleCannedCommandKeydown, true);
   document.addEventListener("paste", handlePaste, true);
@@ -6501,11 +6433,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     let refundToggle = document.getElementById(REFUND_TOGGLE_ID);
     if (!refundToggle) {
-      refundToggle = document.createElement('button');
-      refundToggle.id = REFUND_TOGGLE_ID;
-      refundToggle.type = 'button';
-      refundToggle.textContent = '$';
-      refundToggle.title = 'Open refund capture panel';
+      refundToggle = makeButton(REFUND_TOGGLE_ID, '$', 'Open refund capture panel');
       refundToggle.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
@@ -7420,6 +7348,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         cleaned = removeRepeatedTopGreeting(cleaned);
         cleaned = removeDefaultTemplateAfterAppliedScenario(cleaned);
+        cleaned = truncateAfterFirstSignature(cleaned);
 
         return cleaned
             .replace(/\n{3,}/g, '\n\n')

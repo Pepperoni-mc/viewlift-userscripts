@@ -117,6 +117,40 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Orphaned-function sweep #2, following the toggleRefundPanel pattern (2026-08-10)
+
+After finding `toggleRefundPanel()` had zero callers, ran a systematic sweep (grep every
+`function name(` declaration, count total occurrences) for more of the same pattern. Found 8;
+fixed the 2 that were real bugs, deleted the rest as confirmed dead code:
+
+- **`scanEditors()`** — the auto-bold/font-normalizer module only reacted to
+  keydown/paste/input; it never did an initial pass over editors already open/populated when
+  the script attaches. Fixed by calling it once at module init (it already internally calls
+  `addEditorFontNormalizerStyles()`, so this replaces that standalone call rather than
+  duplicating it).
+- **`truncateAfterFirstSignature()`** — sibling of `removeRepeatedTopGreeting`/
+  `removeDefaultTemplateAfterAppliedScenario`, both of which ARE called from
+  `cleanAppliedScenarioDuplicates()`, but this one wasn't. Added it as a third step in that same
+  pipeline (handles a canned response applied twice leaving a duplicated signed message).
+- **`makeButton(id, text, title)`** — turned out to be a small helper that creates exactly the
+  kind of button the new refund-toggle needed. Used it instead of leaving it orphaned AND
+  leaving my hand-rolled `document.createElement('button')` version in place.
+- Deleted as dead code: `isV5UI()` (added in Stage 1, never actually migrated to by anything -
+  a half-finished refactor, not a bug), `getDeepPageTextOutsidePanel()` + its recursive
+  `collectDeepTextFromRoot()` helper (28 lines, shadow-DOM text scanning, no callers),
+  `normalizeEditorFont()` (a pure pass-through alias to `normalizeEditorFormatting`, an old
+  rename left behind), and **`requestExtensionCapture()`** (the full postMessage bridge to the
+  ViewLift Helper extension for no-prompt screenshots).
+
+**`requestExtensionCapture()` being dead is a bigger deal than the others**: it confirms
+`captureRealTabSnapshot()` (the actual click handler behind both camera buttons) only uses
+`html2canvas` now and never calls the extension bridge at all - matches the git history
+("Use automatic DOM screenshots" superseded the extension-based capture). **The ViewLift Helper
+Chrome extension currently has no active purpose in the code that calls it** - worth deciding
+explicitly whether to keep maintaining/distributing it (e.g. for the Chrome Web Store listing)
+or treat it as deprecated, rather than it just quietly rotting. Not decided yet, flagged for the
+user.
+
 ## Root-caused "the button appears then disappears after ~1s" - orphaned toggle (2026-08-10)
 
 Real bug, unrelated to anything from today's other fixes. Sequence: `createUI()` first shows the
