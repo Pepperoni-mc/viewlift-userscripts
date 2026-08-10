@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.17.0
+// @version      3.18.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.17.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.18.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -2352,17 +2352,27 @@
                 right: 88px !important;
                 z-index: 2147483000 !important;
                 min-height: 34px !important;
-                padding: 0 12px !important;
+                padding: 0 13px !important;
                 border: 1px solid #c4b5fd !important;
                 border-radius: 8px !important;
-                background: #f5f3ff !important;
+                background: linear-gradient(180deg, #f5f3ff 0%, #ede9fe 100%) !important;
                 color: #5b21b6 !important;
                 font: 700 12px/32px Arial, sans-serif !important;
+                letter-spacing: .02em !important;
                 cursor: pointer !important;
-                box-shadow: 0 4px 12px rgba(91, 33, 182, .16) !important;
+                box-shadow: 0 4px 12px rgba(91, 33, 182, .18), inset 0 1px 0 rgba(255, 255, 255, .6) !important;
+                transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
             }
-            #${BUTTON_ID}:hover { background: #ede9fe !important; }
-            #${BUTTON_ID}[data-busy="yes"] { opacity: .65 !important; cursor: wait !important; }
+            #${BUTTON_ID}:hover {
+                background: linear-gradient(180deg, #ede9fe 0%, #ddd6fe 100%) !important;
+                box-shadow: 0 6px 16px rgba(91, 33, 182, .24), inset 0 1px 0 rgba(255, 255, 255, .5) !important;
+                transform: translateY(-1px) !important;
+            }
+            #${BUTTON_ID}:active {
+                transform: translateY(0) !important;
+                box-shadow: 0 2px 6px rgba(91, 33, 182, .18), inset 0 2px 4px rgba(0, 0, 0, .08) !important;
+            }
+            #${BUTTON_ID}[data-busy="yes"] { opacity: .65 !important; cursor: wait !important; transform: none !important; }
             #${MENU_ID} {
                 position: fixed !important;
                 z-index: 2147483001 !important;
@@ -2959,31 +2969,47 @@ if (isCMSHost()) {
                 justify-content: center !important;
                 height: 32px !important;
                 margin-right: 6px !important;
-                padding: 0 10px !important;
-                border: 1px solid #475569 !important;
-                border-radius: 6px !important;
-                background: #475569 !important;
+                padding: 0 12px !important;
+                border: 1px solid #334155 !important;
+                border-radius: 8px !important;
+                background: linear-gradient(180deg, #64748b 0%, #475569 100%) !important;
                 color: #fff !important;
                 font-size: 12px !important;
-                font-weight: 600 !important;
+                font-weight: 700 !important;
+                letter-spacing: .02em !important;
                 line-height: 30px !important;
                 white-space: nowrap !important;
                 cursor: pointer !important;
+                box-shadow: 0 4px 12px rgba(71, 85, 105, .3), inset 0 1px 0 rgba(255, 255, 255, .16) !important;
+                transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
             }
 
             #${BUTTON_ID}:hover {
-                border-color: #334155 !important;
-                background: #334155 !important;
+                border-color: #1e293b !important;
+                background: linear-gradient(180deg, #475569 0%, #334155 100%) !important;
+                box-shadow: 0 6px 16px rgba(71, 85, 105, .38), inset 0 1px 0 rgba(255, 255, 255, .14) !important;
+                transform: translateY(-1px) !important;
+            }
+
+            #${BUTTON_ID}:active {
+                transform: translateY(0) !important;
+                box-shadow: 0 2px 6px rgba(71, 85, 105, .28), inset 0 2px 4px rgba(0, 0, 0, .16) !important;
             }
 
             #${BUTTON_ID}[data-configured="no"] {
-                border-color: #b45309 !important;
-                background: #b45309 !important;
+                border-color: #92400e !important;
+                background: linear-gradient(180deg, #d97706 0%, #b45309 100%) !important;
+                box-shadow: 0 4px 12px rgba(180, 83, 9, .32), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
+            }
+
+            #${BUTTON_ID}[data-configured="no"]:hover {
+                background: linear-gradient(180deg, #b45309 0%, #92400e 100%) !important;
             }
 
             #${BUTTON_ID}[data-busy="yes"] {
                 opacity: .72 !important;
                 cursor: wait !important;
+                transform: none !important;
             }
 
             #${MENU_ID} {
@@ -6131,7 +6157,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         position: relative !important;
         display: inline-flex !important;
         align-items: center !important;
-        gap: 6px !important;
+        gap: 7px !important;
         margin-right: 8px !important;
         vertical-align: middle !important;
         z-index: 30 !important;
@@ -6140,40 +6166,53 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       #${BRAND_ID}, #${EMAIL_ID} {
         display: inline-flex !important;
         align-items: center !important;
-        min-height: 30px !important;
+        height: 32px !important;
         box-sizing: border-box !important;
         white-space: nowrap !important;
-        border: 1px solid #d8e0e8 !important;
-        border-radius: 6px !important;
-        background: #f8fafc !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 999px !important;
+        background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%) !important;
         color: #334155 !important;
         font: 600 12px/1.2 Arial, sans-serif !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .06) !important;
+        transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease !important;
       }
 
       #${BRAND_ID} {
-        padding: 0 9px !important;
-        letter-spacing: .04em !important;
+        padding: 0 12px !important;
+        letter-spacing: .05em !important;
+        font-weight: 800 !important;
       }
 
-      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; background: #f0fdf4 !important; border-color: #bbf7d0 !important; }
-      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; background: #fffbeb !important; border-color: #fde68a !important; }
-      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; background: #eff6ff !important; border-color: #bfdbfe !important; }
-      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; background: #faf5ff !important; border-color: #e9d5ff !important; }
-      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; background: #fff1f2 !important; border-color: #fecdd3 !important; }
-      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; background: #fff7ed !important; border-color: #fed7aa !important; }
+      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important; border-color: #86efac !important; box-shadow: 0 1px 3px rgba(22, 101, 52, .16) !important; }
+      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%) !important; border-color: #fcd34d !important; box-shadow: 0 1px 3px rgba(146, 64, 14, .16) !important; }
+      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important; border-color: #93c5fd !important; box-shadow: 0 1px 3px rgba(30, 64, 175, .16) !important; }
+      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; background: linear-gradient(180deg, #faf5ff 0%, #f3e8ff 100%) !important; border-color: #d8b4fe !important; box-shadow: 0 1px 3px rgba(88, 28, 135, .16) !important; }
+      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important; border-color: #fda4af !important; box-shadow: 0 1px 3px rgba(159, 18, 57, .16) !important; }
+      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%) !important; border-color: #fdba74 !important; box-shadow: 0 1px 3px rgba(154, 52, 18, .16) !important; }
 
       #${EMAIL_ID} {
         max-width: 260px !important;
-        padding: 0 9px !important;
+        padding: 0 13px !important;
         overflow: hidden !important;
         text-overflow: ellipsis !important;
         cursor: copy !important;
         user-select: text !important;
         color: #475569 !important;
-        font-weight: 500 !important;
+        font-weight: 600 !important;
       }
 
-      #${EMAIL_ID}[data-copied="yes"] { color: #15803d !important; background: #f0fdf4 !important; }
+      #${EMAIL_ID}:hover {
+        border-color: #94a3b8 !important;
+        box-shadow: 0 2px 5px rgba(15, 23, 42, .1) !important;
+        transform: translateY(-1px) !important;
+      }
+
+      #${EMAIL_ID}[data-copied="yes"] {
+        color: #15803d !important;
+        background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
+        border-color: #86efac !important;
+      }
 
       #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
         position: absolute !important;
@@ -6728,19 +6767,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         display: inline-flex !important;
         align-items: center !important;
         gap: 5px !important;
-        padding: 3px 10px !important;
-        border-radius: 12px !important;
-        border: 1px solid #bfdbfe !important;
-        background: #eff6ff !important;
+        padding: 4px 11px !important;
+        border-radius: 999px !important;
+        border: 1px solid #93c5fd !important;
+        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
         color: #1e40af !important;
-        font: 600 11.5px Arial, sans-serif !important;
+        font: 700 11.5px Arial, sans-serif !important;
+        letter-spacing: .01em !important;
         cursor: copy !important;
         white-space: nowrap !important;
+        box-shadow: 0 1px 3px rgba(30, 64, 175, .14) !important;
+        transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease !important;
       }
       .${CHIP_CLASS}::before { content: "\\2709"; }
+      .${CHIP_CLASS}:hover {
+        box-shadow: 0 3px 8px rgba(30, 64, 175, .22) !important;
+        transform: translateY(-1px) !important;
+      }
       .${CHIP_CLASS}[data-copied="yes"] {
-        background: #f0fdf4 !important;
-        border-color: #bbf7d0 !important;
+        background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
+        border-color: #86efac !important;
         color: #166534 !important;
       }
     `;
@@ -8386,25 +8432,51 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return replyButton || leftActions.firstElementChild || leftActions;
     }
 
+    function ensureHeaderButtonStyle() {
+        const styleId = 'viewlift-open-cms-header-button-style';
+        if (document.getElementById(styleId)) return;
+
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = `
+            #${BUTTON_ID} {
+                margin-right: 6px !important;
+                height: 32px !important;
+                padding: 0 12px !important;
+                border: 1px solid #0e4d8c !important;
+                border-radius: 8px !important;
+                background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%) !important;
+                color: #ffffff !important;
+                font-size: 12px !important;
+                font-weight: 700 !important;
+                letter-spacing: .02em !important;
+                cursor: pointer !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                gap: 4px !important;
+                box-shadow: 0 4px 12px rgba(11, 92, 171, .32), inset 0 1px 0 rgba(255, 255, 255, .2) !important;
+                transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
+            }
+            #${BUTTON_ID}:hover {
+                background: linear-gradient(180deg, #3d8bea 0%, #0e4d8c 100%) !important;
+                box-shadow: 0 6px 16px rgba(11, 92, 171, .4), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
+                transform: translateY(-1px) !important;
+            }
+            #${BUTTON_ID}:active {
+                transform: translateY(0) !important;
+                box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
     function styleHeaderButton(button) {
         button.className = 'nucleus-button nucleus-button--secondary app-icon-btn--text hint--rounded hint--bottom';
         button.type = 'button';
         button.setAttribute('aria-label', 'Open CMS user search');
         button.setAttribute('data-viewlift-open-cms-header', 'yes');
 
-        button.style.marginRight = '6px';
-        button.style.height = '32px';
-        button.style.padding = '0 10px';
-        button.style.border = '1px solid #0b5cab';
-        button.style.borderRadius = '6px';
-        button.style.background = '#0b5cab';
-        button.style.color = '#ffffff';
-        button.style.fontSize = '12px';
-        button.style.fontWeight = '600';
-        button.style.cursor = 'pointer';
-        button.style.display = 'inline-flex';
-        button.style.alignItems = 'center';
-        button.style.gap = '4px';
+        ensureHeaderButtonStyle();
     }
 
     function installHeaderButton() {

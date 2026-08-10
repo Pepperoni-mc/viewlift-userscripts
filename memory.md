@@ -117,6 +117,34 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Visual pass across all injected buttons (2026-08-10)
+
+User asked for a visual improvement pass on every button/badge the toolkit injects. Surveyed
+every `addStyles()`/`GM_addStyle()` block first: the CMS snapshot camera button
+(`extension`-independent, in `Feature 4`) and the refund-capture panel were already the most
+polished things in the codebase (gradient backgrounds, color-matched glow shadows, hover-lift +
+active-press states, smooth transitions) — everything else (CMS header button, Set Agent button,
+classic CMS account switcher, the brand/email pills in the unified toolbar, the new email-mention
+chips) was comparatively flat: solid single color, 1px border, no shadow, no hover motion.
+
+Used the camera button's language as the template and applied it consistently: gradient
+background (light-to-darker same hue, ~20% darker at the bottom), border in the same hue,
+`box-shadow` with a color-matched glow + `inset 0 1px 0 rgba(255,255,255,.15-.2)` top highlight,
+`:hover` = lighter gradient + deeper shadow + `translateY(-1px)`, `:active` = reset translate +
+inset shadow (press-down feel), `transition` on background/box-shadow/transform. Brand pills got
+a lighter version (gradient + tinted box-shadow per brand's existing color, kept as a pill shape
+`border-radius: 999px` instead of the old `6px` rounded-rect, to read as a "badge" rather than a
+"button"). Bumped toolbar pill height from `30px` to `32px` to match the buttons next to them
+(CMS/Set Agent are both 32px) — was a small but visible misalignment before.
+
+Touched: `styleHeaderButton`/`ensureHeaderButtonStyle` (CMS button), `addSetAgentStyles` (Set
+Agent), the classic CMS account switcher's `addStyles`, the Unified Toolbar's brand/email pill
+CSS, and the email-mention chip CSS. Did NOT touch the camera button or refund panel (already the
+reference standard) or the payment-handler badge (already has the gradient+glow treatment).
+Verified with `node --check` only - couldn't get a live screenshot confirmation this round, the
+browser tab was unresponsive to the automation tools at the time. User should visually confirm
+once Tampermonkey picks up the update.
+
 ## Live feedback after waking up (2026-08-10, daytime): real regression found + new feature
 
 User updated Tampermonkey and reported 3 things live: (1) the unified toolbar loads misaligned
