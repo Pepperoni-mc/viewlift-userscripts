@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.15.0
+// @version      3.16.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.15.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.16.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -129,6 +129,13 @@
       document.removeEventListener(ROUTE_CHANGE_EVENT, callback);
     };
   }
+
+  // Shared GM storage key names for producer/consumer pairs that used to
+  // each declare their own local copy of the same string literal - a typo
+  // or rename on one side would silently break the pairing with no error.
+  const BV_SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
+  const BV_CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
+  const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
 
   (function () {
 /* ============================================================
@@ -4783,7 +4790,7 @@ if (isCMSHost()) {
   const BADGE_ID = "tm-viewlift-payment-handler-badge";
   const WRAPPER_ID = "tm-viewlift-snapshot-tools";
   const STYLE_ID = "tm-viewlift-snapshot-tools-style";
-  const PENDING_SNAPSHOT_KEY = "betterFreshdeskPendingSnapshot";
+  const PENDING_SNAPSHOT_KEY = BV_SNAPSHOT_KEY;
 
     const AUTO_OPEN_SUBSCRIPTION_PLANS = true;
 
@@ -5612,8 +5619,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const pastedEditors = new WeakMap();
   const PASTE_PROTECTION_MS = 250;
   const EDITOR_FONT_STYLE_ID = 'better-freshdesk-editor-font-normalizer-style';
-  const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
-  const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
+  const CANNED_RESPONSE_LOCK_ATTR = BV_CANNED_RESPONSE_LOCK_ATTR;
+  const CANNED_RESPONSE_GLOBAL_KEY = BV_CANNED_RESPONSE_GLOBAL_KEY;
   const CANNED_RESPONSE_PROTECTION_MS = 15000;
 
   function getEditor(element) {
@@ -6560,7 +6567,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
 
-  const SNAPSHOT_KEY = 'betterFreshdeskPendingSnapshot';
+  const SNAPSHOT_KEY = BV_SNAPSHOT_KEY;
   const STATUS_ID = 'better-freshdesk-snapshot-note-status';
   let pasteInProgress = false;
 
@@ -7273,8 +7280,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     let pendingReplyShortcutHandled = false;
     let lastForceRewriteReason = '';
     const lastForcedRewriteFingerprint = new WeakMap();
-    const CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
-    const CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
+    const CANNED_RESPONSE_LOCK_ATTR = BV_CANNED_RESPONSE_LOCK_ATTR;
+    const CANNED_RESPONSE_GLOBAL_KEY = BV_CANNED_RESPONSE_GLOBAL_KEY;
     const CANNED_RESPONSE_PROTECTION_MS = 15000;
 
     function tryClickRemoveButton() {

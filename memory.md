@@ -117,6 +117,18 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Centralized 3 GM-storage keys that were duplicated string literals
+
+`betterFreshdeskPendingSnapshot` (producer in the CMS snapshot module, consumer in the Freshdesk
+snapshot-queue module) and `__betterFreshdeskCannedResponseProtectionUntil` +
+`data-better-freshdesk-canned-response-lock` (both declared identically in two different reply-
+cleanup-related spots) were each re-declared as a fresh local string literal in 2 places instead
+of sharing one source. Added `BV_SNAPSHOT_KEY`, `BV_CANNED_RESPONSE_GLOBAL_KEY`,
+`BV_CANNED_RESPONSE_LOCK_ATTR` to the module-scope prelude (same place as `isCMSHost`/`waitFor`)
+and pointed all 6 local declarations at them - kept each module's own local const NAME unchanged
+so no call sites needed touching, only what they're initialized from. Verified with grep that
+zero bare occurrences of the raw strings remain outside the 3 new prelude declarations.
+
 ## Two more cleanups, one deliberate non-change (retryCapture)
 
 Found via a second grep sweep (`.forEach` wrapping `setTimeout`, and remaining `setInterval`
