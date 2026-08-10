@@ -117,6 +117,38 @@ naming isn't fully consistent (`-upload` vs `-final`).
 - No CLAUDE.md exists in this repo; this `memory.md` is the closest thing to project docs beyond
   the README.
 
+## Unified visible-notification system: bvNotify (2026-08-10)
+
+Structural fix for a pattern that showed up repeatedly today: real problems (CMS session dying,
+an email lookup silently falling back to a worse method) only ever logged to `console.*`, which
+nobody looks at during normal work. Added `bvNotify(message, {level, ttl})` to the shared
+prelude (alongside `isCMSHost`/`waitFor`/`onRouteChange`) - a small stacked toast in the
+top-right corner (warn=amber, error=red, info=blue), click-to-dismiss, auto-expires. Verified
+live (had to check via DOM query, not screenshot - the browser tool was intermittently
+unresponsive to screenshots all session, `getBoundingClientRect()` checks worked fine as a
+substitute).
+
+Migrated 4 existing scattered warnings to use it, each with a "don't repeat every check" guard
+where relevant:
+- Same-tab CMS keep-alive's "needs OTP/login" (`console.warn` before) - now also `bvNotify`,
+  gated by a `lastNotifiedNeedsLogin` flag so it fires once per state transition, not every 8
+  minutes while still logged out.
+- Cross-tab keep-alive's aggregate status - same transition-gated notify, comparing against the
+  previously stored `GM_getValue` state before overwriting it.
+- `getCustomerEmailFromContactInfo()`'s fallback path (Contact Info panel lookup failed, using a
+  less-reliable ticket-text scan instead) - this is the LEADING candidate for the still-
+  unresolved colleague-reported CMS search bug from earlier today; now it's visible the moment
+  it happens instead of a console.log nobody sees.
+- The same function's total-failure path (no email found anywhere) - was `console.log`, is now
+  a `bvNotify` warn.
+- Consolidated the ad-hoc `showSearchedEmailToast` (added earlier today for the same bug) into a
+  one-line call to `bvNotify` instead of its own bespoke fixed-position div - one less toast
+  implementation to maintain.
+
+Deliberately did NOT migrate the duplicate-refund warning banner (`#refund-duplicate-warning`) -
+it's tied to specific panel state and benefits from staying visible until the case changes,
+which doesn't fit the auto-expiring toast model as well.
+
 ## CMS session status dot + phone-number chips (2026-08-10)
 
 **Visible keep-alive indicator**: the Freshdesk-side cross-tab keep-alive (Feature 1b2) pinged

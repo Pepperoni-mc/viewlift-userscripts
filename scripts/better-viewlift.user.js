@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.22.0
+// @version      3.23.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,7 +31,7 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.22.0');
+  installMarker.setAttribute('data-better-viewlift-installed', '3.23.0');
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -133,6 +133,102 @@
   const BV_CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
   const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
   const BV_CMS_KEEP_ALIVE_STATUS_KEY = 'betterViewliftCmsSessionStatus';
+
+  // Shared visible-notification system. Several real bugs today were
+  // "silent failures" - things that only ever logged to a console.warn
+  // nobody reads (CMS session dying, a lookup silently falling back to a
+  // worse method). Anything worth an agent actually knowing about should
+  // go through here instead of console.* alone, so it shows up on-screen
+  // wherever they are (Freshdesk or CMS) instead of requiring someone to
+  // dig through DevTools after the fact.
+  const BV_NOTIFY_CONTAINER_ID = 'better-viewlift-notify-stack';
+  const BV_NOTIFY_STYLE_ID = 'better-viewlift-notify-style';
+
+  function bvEnsureNotifyStyles() {
+    if (document.getElementById(BV_NOTIFY_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = BV_NOTIFY_STYLE_ID;
+    style.textContent = `
+      #${BV_NOTIFY_CONTAINER_ID} {
+        position: fixed !important;
+        top: 16px !important;
+        right: 16px !important;
+        z-index: 2147483600 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 8px !important;
+        max-width: 340px !important;
+        pointer-events: none !important;
+      }
+
+      .bv-notify-item {
+        pointer-events: auto !important;
+        padding: 10px 13px !important;
+        border-radius: 10px !important;
+        font: 600 12.5px Arial, sans-serif !important;
+        line-height: 1.4 !important;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, .22) !important;
+        cursor: pointer !important;
+        animation: bv-notify-in 160ms ease !important;
+      }
+
+      .bv-notify-item[data-level="warn"] {
+        background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%) !important;
+        color: #92400e !important;
+        border: 1px solid #fcd34d !important;
+      }
+
+      .bv-notify-item[data-level="error"] {
+        background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%) !important;
+        color: #991b1b !important;
+        border: 1px solid #fca5a5 !important;
+      }
+
+      .bv-notify-item[data-level="info"] {
+        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
+        color: #1e40af !important;
+        border: 1px solid #93c5fd !important;
+      }
+
+      @keyframes bv-notify-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function bvGetNotifyContainer() {
+    let container = document.getElementById(BV_NOTIFY_CONTAINER_ID);
+    if (!container) {
+      container = document.createElement('div');
+      container.id = BV_NOTIFY_CONTAINER_ID;
+      (document.body || document.documentElement).appendChild(container);
+    }
+    return container;
+  }
+
+  function bvNotify(message, options = {}) {
+    if (!document.body && !document.documentElement) return null;
+
+    const level = options.level || 'warn';
+    const ttl = options.ttl || 7000;
+
+    bvEnsureNotifyStyles();
+
+    const item = document.createElement('div');
+    item.className = 'bv-notify-item';
+    item.dataset.level = level;
+    item.textContent = message;
+    item.title = 'Click to dismiss';
+    item.addEventListener('click', () => item.remove());
+
+    bvGetNotifyContainer().appendChild(item);
+    window.setTimeout(() => item.remove(), ttl);
+
+    return item;
+  }
 
   (function () {
 /* ============================================================
@@ -2263,6 +2359,7 @@
     if (!isCMSHost() || /^\/login(?:\/|$)/i.test(location.pathname)) return;
 
     let requestInFlight = false;
+    let lastNotifiedNeedsLogin = false;
 
     async function checkSession() {
         if (requestInFlight || /^\/login(?:\/|$)/i.test(location.pathname)) return;
@@ -2283,6 +2380,12 @@
             })();
             if (response.status === 401 || /^\/login(?:\/|$)/i.test(finalPath)) {
                 console.warn('[Better ViewLift] CMS session requires OTP/login again.');
+                if (!lastNotifiedNeedsLogin) {
+                    lastNotifiedNeedsLogin = true;
+                    bvNotify('CMS session needs login/OTP again on this tab.', { level: 'warn', ttl: 12000 });
+                }
+            } else {
+                lastNotifiedNeedsLogin = false;
             }
         } catch (error) {
             if (error?.name !== 'AbortError') {
@@ -2351,6 +2454,15 @@
             overall = 'needs-login';
         } else if (values.every(status => status === 'error')) {
             overall = 'error';
+        }
+
+        let previous = null;
+        try {
+            previous = GM_getValue(BV_CMS_KEEP_ALIVE_STATUS_KEY, null);
+        } catch (error) { /* storage unavailable */ }
+
+        if (overall === 'needs-login' && previous?.overall !== 'needs-login') {
+            bvNotify('CMS session needs login/OTP - the keep-alive from Freshdesk can\'t fix that for you.', { level: 'warn', ttl: 12000 });
         }
 
         try {
@@ -8658,10 +8770,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const fallbackEmail = findEmailInFreshdeskTicketText();
 
         if (fallbackEmail) {
+            // The official Contact Info panel is the reliable source; this
+            // fallback scans ticket text instead, which can pick up an email
+            // the customer mentioned that isn't their real account email.
+            // Worth flagging visibly, not just in the console, since a wrong
+            // email here means "No Data Available" in CMS with no obvious cause.
+            bvNotify('CMS search: using an email found in the ticket text, not the Contact Info panel - double-check it matches the account.', { level: 'info', ttl: 9000 });
             return fallbackEmail;
         }
 
         console.log('[CMS Search] Contact info email not found. Checked break-all nodes, mailto links, contact roots, shadow DOM, and visible ticket text.');
+        bvNotify('CMS search: could not find a customer email on this ticket at all.', { level: 'warn' });
 
         return '';
     }
@@ -8975,21 +9094,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     // on file than the one mentioned in the ticket), this makes that obvious
     // immediately instead of leaving a blank results table with no clue why.
     function showSearchedEmailToast(email) {
-        const id = 'viewlift-cms-searched-email-toast';
-        document.getElementById(id)?.remove();
-
-        const toast = document.createElement('div');
-        toast.id = id;
-        toast.textContent = 'Searched: ' + email;
-        toast.style.cssText = [
-            'position:fixed', 'top:16px', 'left:50%', 'transform:translateX(-50%)',
-            'z-index:2147483000', 'padding:8px 14px', 'border-radius:8px',
-            'background:#0b5cab', 'color:#fff', 'font:600 12px Arial,sans-serif',
-            'box-shadow:0 6px 18px rgba(11,92,171,.32)'
-        ].join(';');
-
-        document.body.appendChild(toast);
-        window.setTimeout(() => toast.remove(), 6000);
+        bvNotify('Searched: ' + email, { level: 'info', ttl: 6000 });
     }
 
     function runCMSSearch(email) {
