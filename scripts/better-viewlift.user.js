@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.3
+// @version      3.26.4
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8984,6 +8984,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return '';
     }
 
+    // Brands confirmed to exist (from the ViewLift Support Bot's own platform
+    // list - see memory.md) but with no host mapping above, so they fall
+    // through to the "standard" default like a genuinely unknown client.
+    // Unlike that generic case, this one is worth calling out loud: the
+    // search will likely run against the wrong CMS instance entirely for
+    // these tickets, not just show a plausible-but-wrong result.
+    const UNROUTED_KNOWN_BRANDS = [
+        { label: 'FOX One', re: /\bfox\s*one\b/i },
+        { label: 'Knight Time', re: /\bknight\s*time\b/i },
+        { label: 'MOTV', re: /\bmotv\b/i }
+    ];
+
+    function getUnroutedKnownBrandLabel(clientContext) {
+        const text = cleanText([
+            clientContext && clientContext.primary,
+            clientContext && clientContext.fallback
+        ].filter(Boolean).join(' '));
+
+        const match = UNROUTED_KNOWN_BRANDS.find(brand => brand.re.test(text));
+        return match ? match.label : '';
+    }
+
     function getCMSUsersURLForClient(clientContext) {
         const primaryText = clientContext && clientContext.primary
             ? clientContext.primary
@@ -9435,6 +9457,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             const cmsUsersURL = getCMSUsersURLForClient(clientContext);
             const account = getCMSAccountForClient(clientContext);
             const url = new URL(cmsUsersURL);
+
+            const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
+            if (unroutedBrand) {
+                bvNotify(
+                    `CMS search: "${unroutedBrand}" has no CMS host configured yet - opening the standard CMS instead, which likely won't have this customer.`,
+                    { level: 'warn', ttl: 12000 }
+                );
+            }
 
             // GCP's classic CMS has no account selector. Route through the
             // existing v5 selector when the ticket identifies the account.

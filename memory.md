@@ -2,6 +2,58 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Autonomous 1-hour investigation: audit + a real routing gap surfaced (2026-08-12)
+
+User asked a third time "can you use more of CMS's API" then said "investigate and improve it
+yourself, I'll be back in an hour." Used the time for a defensive audit plus one more live
+investigation thread, rather than forcing a low-confidence change. Findings:
+
+**Audit: no other missing-`_valueTracker` bugs.** Grepped every `_valueTracker`/native-value-setter
+in the file (6 independent implementations across the two-IIFE split: `setNativeValue` x2,
+`setControlledValue` x2, `selectNativeROTH`'s inline select-setter, one more) - all 6 already
+reset it correctly. The CMS-search one fixed earlier today was the only one missing it, not part
+of a wider pattern.
+
+**Tried and gave up on: deep-linking straight to a customer's CMS detail page.** Confirmed (via
+`CMS_USER_URL_RE`/`getCMSUserIdFromURL` in the Refund Capture Tool, ~line 412/582) that CMS detail
+pages ARE id-based - `https://<host>/users/<64-hex-or-uuid>` - so a direct deep link is
+theoretically possible if you already have the id. But: (1) clicking a real search-result row in
+the classic UI (tested live on `cms-gcp.viewlift.com` with the `test@example.com` seed account)
+did not navigate anywhere - inconclusive whether that's because this particular seed account has
+no normal detail page (plausible, it's a QOSS/external-style stub, not a real subscriber) or
+because row-click-through needs a different interaction; (2) even if it does work for real
+subscribers, we only ever learn the id AFTER a search already ran and rendered the row, so a
+"deep link" wouldn't skip anything the `keyword`/`filter` fix doesn't already make fast. Not worth
+more time without a real subscriber account to test against - if this comes up again, that's
+where to pick it back up.
+
+**Real gap found, NOT fixed (needs the user to confirm, not a guess): `cms-qcp.viewlift.com` has
+zero brand routing.** `getCMSKeyFromClientText` (~line 8967, used by the Freshdesk CMS button to
+decide which CMS host to search) only recognizes brands for 3 of the 4 known CMS hosts - msn →
+Monumental, gcp → SCHN/LIV Golf/Lightning-Tampa, standard → Altitude/DIRTVision/VGK. `cms-qcp.
+viewlift.com` (present everywhere else - `@match`, `@connect`, the keep-alive host list from
+2026-08-10) has **no key in `CMS_USERS_URLS` and no brand pattern routes to it at all**. Cross-
+referencing the ViewLift Support Bot's confirmed 9-brand platform list (from the 2026-08-10 bot
+integration entry below) against what IS recognized leaves exactly 3 unrouted: **FOX One, Knight
+Time, MOTV**. Strong circumstantial case these three live on the unused `qcp` host, but this is
+inference, not confirmation - guessing wrong would silently send a real customer search to the
+wrong CMS instance, worse than the bug fixed earlier today (that one at least searched the right
+instance). **Did not add a `qcp` entry to `CMS_USERS_URLS` without that confirmation.**
+
+**Shipped instead (safe, doesn't require knowing the real host): made the failure loud.** Added
+`UNROUTED_KNOWN_BRANDS`/`getUnroutedKnownBrandLabel()` right next to `getCMSKeyFromClientText` -
+detects FOX One/Knight Time/MOTV specifically (not "any unrecognized client", which stays a quiet
+`console.warn` as before - that generic case is common and not worth alarming on) and fires a
+`bvNotify` warning in the button's click handler: "has no CMS host configured yet - opening the
+standard CMS instead, which likely won't have this customer." Same instinct as the existing
+bvNotify migration (silent console-only failures nobody sees) applied to a gap discovered today
+instead of a regression. `@version` bumped to 3.26.4.
+
+**Next session, if the user confirms where FOX One/Knight Time/MOTV actually live**: add the
+matching entry to `CMS_USERS_URLS` and the brand regexes to `getCMSKeyFromClientText`, following
+the exact pattern of the existing 3 entries - then this whole notice becomes dead code and can be
+deleted along with it.
+
 ## Cancellation Reason autofill was only using the ticket link on classic /users pages (2026-08-12)
 
 User reported the Cancellation Reason field should always be the Freshdesk ticket link,
