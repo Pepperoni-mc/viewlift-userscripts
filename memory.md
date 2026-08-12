@@ -2,6 +2,57 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Refund Capture speed + Freshdesk toolbar button race (2026-08-12)
+
+User asked for two things: make Refund Capture faster, and fix the Freshdesk toolbar buttons
+(CMS, Set Agent) sometimes appearing misaligned/out of order before settling - asked if they could
+just be made `position: fixed`. Root-caused both instead of guessing.
+
+**Refund Capture: `observeDynamicChanges()` was fully written but never called.** Found via a plain
+grep for its own name - the function (Feature 1, ~line 1539) subscribes to `onRouteChange` with a
+1200ms debounce + `requestIdleCallback` specifically to re-capture as soon as the page settles
+after a DOM mutation (e.g. Freshdesk's Contact Info panel finishing its own async render). Nothing
+in `initRefundCaptureTool()` ever called it. Without it, the panel relied only on the fixed-delay
+`retryCapture()` cascade (1000/2500/5000/9000ms after page load) to catch data that wasn't on the
+page yet on the first pass - both slower (up to 9s) and less reliable (real data could still land
+in the gap between two fixed checkpoints). Wired it into `initRefundCaptureTool()` alongside the
+existing cascade (kept as a backstop, not removed - low risk, cheap no-op once already captured
+thanks to the existing `CAPTURE_COOLDOWN_MS` guard). The actual scrape itself
+(`getPageLinesOutsidePanel`) was already appropriately cached (4s) and not the bottleneck - this
+was purely a "the fast path exists but is disconnected" bug, not a perf-tuning job.
+
+**Freshdesk toolbar jumping: a genuine cross-module insertion race, not a layout/CSS problem.**
+The CMS header button (`installHeaderButton`, one IIFE) and Set Agent button
+(`installSetAgentButton`, a different IIFE) each insert themselves as a sibling next to
+Freshdesk's own reply button inside `.page-actions__left` - the exact same container the Unified
+Toolbar (`installToolbar`, yet a third IIFE) targets and re-parents children into via its own
+`orderedControls` reconciliation. Each of these three modules runs on its OWN independent
+route-change-triggered debounce timer (CMS/Set Agent insert first, thinking they're placing
+themselves in the action bar; the toolbar's own separate schedule only later notices and
+`appendChild`-moves them into the toolbar div in the right slot). The visible "loose, then jumps
+into place, sometimes in the wrong order" symptom is that gap between insertion and the toolbar's
+next reconciliation pass - confirmed by reading all three insertion points, not by reproducing it
+live (hard to force the exact timing window on demand).
+
+Fix: exposed `window.__bvReconcileFreshdeskToolbar = installToolbar` from the toolbar's own IIFE
+(same cross-IIFE bridge pattern already used elsewhere in this file, e.g.
+`window.__bvPingCMSHostsNow`) and had both `installHeaderButton()` and `installSetAgentButton()`
+call it immediately after inserting/moving their own button, collapsing the race window to zero
+for the common case instead of waiting for the toolbar's independent timer to eventually notice.
+`installToolbar()` was already idempotent (existence checks before creating anything, reconciles
+order via `orderedControls` only if actually wrong) so calling it more often from more places is
+safe by construction.
+
+**Did NOT switch the toolbar to `position: fixed`** as literally asked - the toolbar buttons are
+deliberately inline inside Freshdesk's own action bar for contextual placement next to Freshdesk's
+reply/forward controls (unlike the refund/generate panels, which already ARE `position: fixed`,
+anchored bottom-right, by design as floating overlays). Ripping the toolbar out to fixed
+positioning would detach it from that context (screen-position overlap risk, no longer tracking
+where the action bar actually is) and doesn't address the actual root cause found above. Flagged
+this tradeoff to the user rather than silently reinterpreting "fixed" as the race-condition fix.
+`@version` bumped to 3.27.0. Verified: `node --check` + logic trace only, same as other fixes
+today - didn't reproduce the exact jump timing live.
+
 ## Autonomous 1-hour investigation: audit + a real routing gap surfaced (2026-08-12)
 
 User asked a third time "can you use more of CMS's API" then said "investigate and improve it

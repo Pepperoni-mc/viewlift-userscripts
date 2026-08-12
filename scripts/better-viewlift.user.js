@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.5
+// @version      3.27.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2375,8 +2375,15 @@
     installRefundToolRouteWatcher();
     installCrossTabSync();
     installVisibilityCapture();
-    // Startup, route, focus and periodic passes cover asynchronous rendering
-    // without reacting to every DOM mutation on Freshdesk and the CMS.
+    // observeDynamicChanges() was written to re-capture as soon as the page
+    // settles after a DOM mutation (Contact Info panel finishing its own
+    // render, etc.) but was never actually wired up here - the panel was
+    // relying only on the fixed-delay retryCapture() cascade below to catch
+    // data that wasn't there yet on the first pass, which is both slower
+    // (up to 9s) and less reliable (a real render could still land between
+    // two fixed checkpoints). Reactive path first, fixed cascade stays as a
+    // backstop for whatever it doesn't catch.
+    observeDynamicChanges();
     retryCapture();
 
     runRefundToolStartupPasses();
@@ -4463,6 +4470,14 @@ if (isCMSHost()) {
         }
 
         updateSetAgentButton();
+
+        // Sweep into the unified toolbar in the same tick instead of waiting
+        // for that module's own separate scheduled pass - closes the same
+        // race the CMS header button had (button briefly loose, then jumps
+        // into place).
+        if (typeof window.__bvReconcileFreshdeskToolbar === 'function') {
+            window.__bvReconcileFreshdeskToolbar();
+        }
     }
 
     function scheduleSetAgentInstall() {
@@ -7220,6 +7235,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     mountGeneratePanel(toolbar);
   }
 
+  // Other features (CMS header button, Set Agent) live in separate IIFEs and
+  // insert their own button as a sibling near the action bar before this
+  // toolbar's own scheduled pass gets a chance to sweep it into place - that
+  // gap is what shows up as a button briefly appearing loose/out of order
+  // before visibly jumping into the toolbar. Exposing a direct reconciliation
+  // hook lets them close that gap themselves instead of waiting for it.
+  window.__bvReconcileFreshdeskToolbar = installToolbar;
+
   function init() {
     if (!document.body) {
       window.setTimeout(init, 250);
@@ -9495,6 +9518,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);
+
+        // Sweep into the unified toolbar in the same tick instead of waiting
+        // for that module's own separate scheduled pass to notice this
+        // button and move it - that gap is what shows up as the CMS button
+        // briefly sitting loose next to the reply bar before jumping into
+        // place.
+        if (typeof window.__bvReconcileFreshdeskToolbar === 'function') {
+            window.__bvReconcileFreshdeskToolbar();
+        }
 
         console.log('[CMS Search] Header CMS button added.');
     }
