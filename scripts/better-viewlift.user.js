@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.0
+// @version      3.26.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9485,10 +9485,20 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             ? Object.getOwnPropertyDescriptor(prototype, 'value')
             : null;
 
+        const previousValue = element.value;
+
         if (descriptor && descriptor.set) {
             descriptor.set.call(element, value);
         } else {
             element.value = value;
+        }
+
+        // Without resetting React's internal value tracker, React sees the
+        // native setter's write as a no-op change and never fires its own
+        // onChange, so the component's controlled state stays empty and the
+        // next render reverts the input right back to blank.
+        if (element._valueTracker) {
+            element._valueTracker.setValue(previousValue);
         }
 
         element.dispatchEvent(new Event('input', { bubbles: true }));
