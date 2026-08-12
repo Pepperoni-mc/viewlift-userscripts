@@ -54,6 +54,14 @@ matching entry to `CMS_USERS_URLS` and the brand regexes to `getCMSKeyFromClient
 the exact pattern of the existing 3 entries - then this whole notice becomes dead code and can be
 deleted along with it.
 
+**Resolved same day**: user confirmed Knight Time = Vegas Golden Knights, on the standard host
+(`cms.viewlift.com`) - added `\bknight\s*time\b` to the existing `vegas golden knights|vgk` rule
+in `getCMSKeyFromClientText` (same brand, same host, just another name for it) and removed it from
+`UNROUTED_KNOWN_BRANDS`. **MOTV and FOX One: user explicitly said not to bother** ("no me importa")
+- left unmapped on purpose, kept in `UNROUTED_KNOWN_BRANDS` so a ticket for either still gets the
+loud `bvNotify` instead of silently searching the wrong CMS, but no host guess was made and none
+should be without the user asking. `@version` bumped to 3.26.5.
+
 ## Cancellation Reason autofill was only using the ticket link on classic /users pages (2026-08-12)
 
 User reported the Cancellation Reason field should always be the Freshdesk ticket link,

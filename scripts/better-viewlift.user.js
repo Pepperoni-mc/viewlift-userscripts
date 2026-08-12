@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.4
+// @version      3.26.5
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8977,7 +8977,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return 'gcp';
         }
 
-        if (/\baltitude\b|\bdirt\s*vision\b|\bdirtvision\b|\bvegas\s+golden\s+knights\b|\bvgk\b/i.test(normalized)) {
+        if (/\baltitude\b|\bdirt\s*vision\b|\bdirtvision\b|\bvegas\s+golden\s+knights\b|\bvgk\b|\bknight\s*time\b/i.test(normalized)) {
             return 'standard';
         }
 
@@ -8990,9 +8990,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     // Unlike that generic case, this one is worth calling out loud: the
     // search will likely run against the wrong CMS instance entirely for
     // these tickets, not just show a plausible-but-wrong result.
+    // User confirmed (2026-08-12) MOTV and FOX One aren't worth routing -
+    // left unmapped deliberately, not an oversight. Knight Time is Vegas
+    // Golden Knights on the standard host, now routed above.
     const UNROUTED_KNOWN_BRANDS = [
         { label: 'FOX One', re: /\bfox\s*one\b/i },
-        { label: 'Knight Time', re: /\bknight\s*time\b/i },
         { label: 'MOTV', re: /\bmotv\b/i }
     ];
 
