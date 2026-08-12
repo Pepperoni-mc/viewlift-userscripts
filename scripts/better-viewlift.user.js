@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.27.0
+// @version      3.27.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -4990,17 +4990,23 @@ if (isCMSHost()) {
 
     function getReasonTrigger(dialog) {
         return Array.from(dialog?.querySelectorAll(
-            'button[data-slot="select-trigger"], button[role="combobox"], [role="combobox"]'
+            'button[data-slot="select-trigger"], button[role="combobox"], [role="combobox"], ' +
+            'button[data-slot="dropdown-menu-trigger"], button[aria-haspopup="menu"]'
         ) || []).filter(isVisible).find(element => {
             const text = getText(element).toLowerCase();
             const context = cleanText(element.parentElement?.innerText).toLowerCase();
-            return text.includes('select a reason') || context.includes('reason');
+            return text.includes('reason') || context.includes('reason');
         }) || null;
     }
 
     function getReasonOption() {
+        // Matches the same selector list getPercentageRefundOption() already
+        // uses successfully - the reason picker may render as the same kind
+        // of Radix dropdown item rather than a distinct "select" component,
+        // and narrowing to data-slot="select-item" only was likely why this
+        // never found anything to click.
         const options = Array.from(document.querySelectorAll(
-            '[data-slot="select-item"], [role="option"], [data-radix-collection-item]'
+            '[data-slot="select-item"], [data-slot="dropdown-menu-item"], [role="option"], [role="menuitem"], [data-radix-collection-item]'
         )).filter(isVisible);
 
         return options.find(option => {
@@ -5142,16 +5148,20 @@ if (isCMSHost()) {
                 if (option) {
                     reasonSelected = realClick(option, '[Better CMS Refund] Reason selected: ROTH.');
                 } else {
-                const trigger = getReasonTrigger(dialog);
-                const triggerText = getText(trigger).toLowerCase();
-
-                if (trigger && !triggerText.includes('select a reason')) {
-                    reasonSelected = true;
-                } else if (trigger && trigger.getAttribute('aria-expanded') !== 'true' &&
-                    Date.now() - lastReasonTriggerClickAt > 500) {
-                    lastReasonTriggerClickAt = Date.now();
-                    realClick(trigger, '[Better CMS Refund] Reason menu opened.');
-                }
+                    // Previously assumed "already selected" whenever the
+                    // trigger's visible text didn't literally match "select a
+                    // reason" - a live CMS wording mismatch made this true
+                    // immediately without ever actually picking ROTH, so the
+                    // form could submit with the wrong (or no) reason instead
+                    // of just failing to select one. Always try to open the
+                    // menu and pick ROTH explicitly; the 20s workflowStartedAt
+                    // timeout above is the only bailout now.
+                    const trigger = getReasonTrigger(dialog);
+                    if (trigger && trigger.getAttribute('aria-expanded') !== 'true' &&
+                        Date.now() - lastReasonTriggerClickAt > 500) {
+                        lastReasonTriggerClickAt = Date.now();
+                        realClick(trigger, '[Better CMS Refund] Reason menu opened.');
+                    }
                 }
             }
         }

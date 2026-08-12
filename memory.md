@@ -2,6 +2,44 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Fixed reason-selection in the CMS Percentage Refund Workflow - this one DOES auto-submit (2026-08-12)
+
+**Important, load-bearing fact discovered this session**: unlike the Refund Capture Tool (the
+Google-Sheets/Freshdesk-side panel, which deliberately never auto-clicks a final confirm - see
+many entries below), there is a SEPARATE, pre-existing feature - "Feature 3: CMS Percentage
+Refund Workflow" (~line 4830) - whose own header comment already says "Completes the Issue Refund
+form and submits it automatically." Clicking the refund "eye" icon, the "Refund" dropdown trigger,
+or the "Percentage" menu item on a CMS account starts a state machine (`runWorkflow`,
+20s-timeout `WORKFLOW_TIMEOUT_MS`) that: opens Refund > Percentage, fills percentage=`100`, fills
+the comments box with the Freshdesk ticket link, selects reason `ROTH`, and **once all three are
+filled, auto-clicks "Issue Refund"/"Confirm Refund" with no further human click**. This was
+already the shipped design before this session - not something introduced today.
+
+User reported (2026-08-12) two things together: "make the refund happen right away when I click
+the eye" and "it's not selecting the refund reason" - i.e. the auto-submit chain was stalling
+because `reasonSelected` never became `true`, so the modal sat there filled out but unsubmitted.
+Root cause, found by re-reading (not live-reproduced - too risky to trigger a real Issue Refund
+click while debugging): `getReasonOption()`'s selector only looked for
+`[data-slot="select-item"], [role="option"], [data-radix-collection-item]`, missing
+`[data-slot="dropdown-menu-item"]`/`[role="menuitem"]` that `getPercentageRefundOption()` (which
+works) already includes - broadened it to match. Separately, and probably the bigger bug: the
+fallback branch assumed the reason was "already selected" whenever the trigger's text didn't
+literally contain "select a reason" - if CMS's real placeholder wording differs at all, this made
+`reasonSelected = true` immediately without ever opening the menu or picking ROTH, which could
+have submitted refunds with the wrong (or blank) reason silently. Removed that guess entirely -
+now it always opens the trigger and waits for a real ROTH match; the existing 20s timeout is the
+only bailout, and it now fails loud (`console.warn`, dialog stays open unsubmitted) instead of
+possibly submitting wrong. `@version` bumped to 3.27.1.
+
+**Verified: `node --check` only.** Did NOT trigger the real Issue Refund flow on any account
+(test or real) to avoid actually submitting a refund while testing. **User should test this on a
+low-stakes case first** (not a real customer they don't intend to actually refund 100% for) since
+once reason-selection completes, the workflow immediately auto-submits with no confirmation step -
+that behavior already existed before today, this fix just makes it more likely to actually
+complete the chain instead of stalling. If it still doesn't select the reason, the next step is
+live inspection of the actual reason dropdown's DOM (open Issue Refund on a real case, read the
+rendered markup, do NOT click Issue Refund) rather than guessing selectors again.
+
 ## Refund Capture speed + Freshdesk toolbar button race (2026-08-12)
 
 User asked for two things: make Refund Capture faster, and fix the Freshdesk toolbar buttons
