@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.1
+// @version      3.26.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2739,8 +2739,12 @@
             const key = clean(params.get('betterSwitch')).toLowerCase();
             if (!ORGANIZATIONS.some(item => item.key === key)) return;
 
-            const email = clean(params.get('openCmsEmail'));
-            const returnUrl = `${location.origin}/users/search${email ? `?openCmsEmail=${encodeURIComponent(email)}` : ''}`;
+            // CMS's own /users/search page reads "keyword"/"filter" itself and
+            // runs the real search on load - carrying the email through as
+            // these native params means no DOM fill/click simulation is
+            // needed once we land back there after the account switch.
+            const email = clean(params.get('keyword'));
+            const returnUrl = `${location.origin}/users/search${email ? `?keyword=${encodeURIComponent(email)}&filter=all` : ''}`;
             safeSetPending({ key, returnUrl, startedAt: Date.now() });
         } catch (error) {
             console.warn('[CMS Account Switcher] Could not read the requested account.', error);
@@ -9444,20 +9448,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 try {
                     GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
                         key: account,
-                        returnUrl: `${url.origin}/users/search?openCmsEmail=${encodeURIComponent(email)}`,
+                        returnUrl: `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`,
                         startedAt: Date.now()
                     }));
                 } catch (error) {
                     console.warn('[CMS Search] Could not save the pending account switch.', error);
                 }
             }
-            url.searchParams.set(CMS_EMAIL_PARAM, email);
-
-            try {
-                GM_setValue(CMS_PENDING_EMAIL_KEY, email);
-            } catch (error) {
-                console.warn('[CMS Search] Could not save the shared pending email.', error);
-            }
+            // CMS's own /users/search page reads "keyword"/"filter" on load and
+            // runs the real search itself - no DOM fill/click simulation needed.
+            url.searchParams.set('keyword', email);
+            url.searchParams.set('filter', 'all');
 
             console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
 

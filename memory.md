@@ -2,6 +2,48 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## CMS search now goes through CMS's own native URL params, not DOM simulation (2026-08-12)
+
+User reported the CMS button found the right customer but the search field wasn't actually
+getting filled/submitted, even after a first-attempt fix (adding the missing React
+`_valueTracker` reset to `setNativeValue()` at line ~9473 — real bug, but not the whole story;
+that fix landed in `1ea7e60` and is still correct/kept). User then asked directly: "can you use
+CMS's API to do it instead?"
+
+**Investigated live** (logged into `cms.viewlift.com` in a real browser tab, `read_network_requests`
+during a manual search): CMS's own `/users/search` page reads `keyword` and `filter` straight off
+the URL query string on load and **runs the real search itself** — confirmed by navigating cold
+to `https://cms.viewlift.com/users/search?keyword=<email>&filter=all` with no click/DOM
+interaction at all: the input was pre-filled, the Search button showed its active state, and a
+real request went to `cms.api.viewlift.com/v3.0/invoke` returning an actual (empty, for the test
+email used) result. Repeated identically on a second cold load - not a fluke.
+
+This means the entire DOM-simulation flow the script had (`runCMSFlow`/`runCMSSearch`/
+`getSearchUserInput`/`getSearchButton`, keyed off the script's own invented `openCmsEmail` URL
+param) was solving a problem CMS's own frontend already solves better, natively, if you just link
+to it correctly. **Fix**: repointed every place that builds a CMS destination URL for the
+Freshdesk "CMS" button (the header button's direct destination, its GCP-account-switch pending
+return URL, and the classic CMS account switcher's `captureQuerySwitchRequest()` return URL) to
+use CMS's real `keyword=<email>&filter=all` params instead of the custom `openCmsEmail` — landing
+on that URL now makes CMS run the search itself, whether via `window.open` (standard/MSN hosts)
+or via `location.replace` after an account switch (GCP host).
+
+**Left the old DOM-simulation module (`runCMSFlow`, `runCMSSearch`, `getSearchUserInput`,
+`getSearchButton`, `openCustomerSupportPage`, `getPendingCMSEmail`, `CMS_EMAIL_PARAM =
+'openCmsEmail'`, `CMS_PENDING_EMAIL_KEY`) in place, untouched, deliberately** rather than deleting
+it in the same pass: nothing sets `openCmsEmail` anymore so it's now dead code, but ripping it out
+needed its own careful pass (it's ~150 lines with several cross-references) and the priority was
+landing a verified fix, not a cleanup. **Next session: safe to delete**, following the same
+grep-every-caller pattern as the other orphaned-function sweeps in this file - confirm
+`CMS_EMAIL_PARAM`/`CMS_PENDING_EMAIL_KEY`/`openCmsEmail` have zero remaining producers before
+removing the consumers.
+
+**Verified**: `node --check` (syntax) + 2x live cold-navigation confirmation of the exact
+`keyword`/`filter` URL contract on `cms.viewlift.com`. **Not verified live**: the GCP
+account-switch path specifically (`captureQuerySwitchRequest`'s new returnUrl) - that one is
+code-reviewed only, since exercising it requires actually being on a different CMS account first.
+If a GCP-hosted brand's CMS search still misbehaves after this, check that path first.
+
 ## What this is
 
 "Better Viewlift" (formerly "Better CMS") is a Tampermonkey userscript toolkit that adds
