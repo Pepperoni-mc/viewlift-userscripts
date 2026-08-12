@@ -2,6 +2,30 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Cancellation Reason autofill was only using the ticket link on classic /users pages (2026-08-12)
+
+User reported the Cancellation Reason field should always be the Freshdesk ticket link,
+pre-filled the moment Cancel is clicked. `getCancellationReasonValue()` (Feature 2, ~line 3082)
+had a path check - `getFreshdeskTicketURL()` only got used on pages matching `/^\/users(?:\/|$)/i`
+(classic CMS); anywhere else (e.g. v5 cancellation flows) it went straight to the generic
+`LEGACY_CANCELLATION_REASON` string instead, regardless of whether a real ticket URL was
+available. No comment explained the restriction and nothing else in the file depends on it -
+removed it, so the ticket link is now tried everywhere.
+
+Also fixed a race this surfaced: the retry loop (`fillReasonField`, up to `maxFillAttempts=20` /
+~1s) used to treat "ticket URL not ready yet" and "give up, no ticket URL ever" identically -
+whichever value `getCancellationReasonValue()` returned on the very next branch became the
+`LEGACY_CANCELLATION_REASON` fallback text immediately if the ticket URL (propagated cross-tab via
+`GM_getValue('Freshdesk ID', ...)`) hadn't landed on attempt 1. Split it: keep retrying on empty
+until `maxFillAttempts` is actually exhausted, only fall back to the generic text once the real
+window has passed. `@version` bumped to 3.26.3.
+
+Verified: `node --check` + logic trace only - didn't click a real "Initiate Cancellation"/"Cancel"
+button live to avoid touching an actual cancellation flow on a real account. If the field still
+shows the generic text instead of the ticket link, check whether `refund-freshdesk`/`Freshdesk ID`
+actually had a value captured from the Freshdesk tab before Cancel was clicked - this fix can't
+produce a ticket link that was never captured in the first place.
+
 ## CMS search now goes through CMS's own native URL params, not DOM simulation (2026-08-12)
 
 User reported the CMS button found the right customer but the search field wasn't actually

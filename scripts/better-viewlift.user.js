@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.26.2
+// @version      3.26.3
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -3080,11 +3080,7 @@ if (isCMSHost()) {
     }
 
     function getCancellationReasonValue() {
-        if (/^\/users(?:\/|$)/i.test(location.pathname)) {
-            return getFreshdeskTicketURL();
-        }
-
-        return LEGACY_CANCELLATION_REASON;
+        return getFreshdeskTicketURL();
     }
 
     function setNativeValue(element, value) {
@@ -3200,16 +3196,16 @@ if (isCMSHost()) {
 
         fillAttempts += 1;
 
-        const reasonValue = getCancellationReasonValue();
+        let reasonValue = getCancellationReasonValue();
 
         if (!reasonValue) {
-            if (fillAttempts >= maxFillAttempts) {
-                shouldFillReason = false;
-                fillAttempts = 0;
-                console.warn('[ViewLift Cancel Reason] Freshdesk ticket was not available.');
-            }
+            if (fillAttempts < maxFillAttempts) return false;
 
-            return false;
+            // Waited the full window for the real ticket link (cross-tab GM
+            // value may still be propagating) and it never showed up - fall
+            // back to the generic reason instead of leaving the field blank.
+            reasonValue = LEGACY_CANCELLATION_REASON;
+            console.warn('[ViewLift Cancel Reason] Freshdesk ticket was not available, used the generic reason instead.');
         }
 
         const field = getBestReasonField();
