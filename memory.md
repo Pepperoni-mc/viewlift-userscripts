@@ -44,6 +44,31 @@ account-switch path specifically (`captureQuerySwitchRequest`'s new returnUrl) -
 code-reviewed only, since exercising it requires actually being on a different CMS account first.
 If a GCP-hosted brand's CMS search still misbehaves after this, check that path first.
 
+**Follow-up same day**: user asked "can you improve more functions using CMS's API?". Checked two
+more candidates live:
+- **`/users/search?keyword=&filter=all` on the GCP host too** - confirmed it's the same contract
+  (`cms-gcp.viewlift.com/users/search`, NOT the bare `/users` the v5 org-switcher lands on, which
+  does NOT read the query params) and, this time with a real seeded QA account
+  (`test@example.com`, Lightning org), watched an **actual result row render** ("Active", IN,
+  "No Plan") - not just an empty table like the earlier tests. Strong end-to-end confirmation the
+  fix produces real rows, not just a plausible-looking empty state.
+- **Account switching itself** - already optimal, don't touch: the classic switcher's
+  `runV5Switch()` (~line 2966) already short-circuits to a direct `location.replace(returnUrl)`
+  when the currently-active org already matches the target, only doing the actual v5
+  dropdown-click-through when an org change is genuinely needed. Also newly confirmed live: org
+  selection is persisted server-side (survives a hard navigation with no dropdown interaction at
+  all, confirmed by nav-ing cold to a different URL on the same host and seeing the previously-
+  selected org's logo still active) - so this isn't a client-state guess, it's a real session fact.
+
+**Deliberately did NOT extend the "use CMS's API directly" pattern to**: Cancellation Reason
+autofill (Feature 2, ~line 3014) or the refund-capture/refund-percentage flows. Those fill a real
+form field for the AGENT to review and submit by hand - the entire point is a human checks it
+before anything mutates. Replacing that with a direct API call would mean this script submitting
+a real cancellation/refund action itself, which is exactly the automation this project has
+deliberately avoided everywhere else (see the refund tool never auto-clicking "Issue Refund",
+above). The `keyword`/`filter` trick is safe specifically because it's a **read-only lookup** -
+that distinction is why it was fair game and those aren't.
+
 ## What this is
 
 "Better Viewlift" (formerly "Better CMS") is a Tampermonkey userscript toolkit that adds
