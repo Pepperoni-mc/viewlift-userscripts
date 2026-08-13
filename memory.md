@@ -2,6 +2,60 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Freshdesk API key feature + full ViewLift Bot integration removal (2026-08-12)
+
+**Context**: user reported Support Plan/Platform custom fields sometimes come back `"None"`
+(set by an external triage system called "Fan Assist" when it can't determine them), which
+blocks their workflow (couldn't submit "Waiting on End User"). Tried hard to fix this via DOM
+automation first - confirmed live (via `/api/_/tickets/:id`, Freshdesk's internal Ember API) the
+real field names are `cf_support_plan`/`cf_platform`, both sharing the exact same picklist
+(`--/Enterprise/Business/Standard/Basic/Starter/None`) - but could NOT get automated clicking to
+select an Ember Power Select option no matter what: real coordinate clicks, ref-based clicks,
+keyboard nav, and even the exact working pattern copied from the Set Agent feature
+(`clickAgentElement`: mouseover/mousedown/mouseup + native `.click()`) all silently did nothing.
+Root cause never fully identified - possibly this Ember/Power-Select version specifically
+distinguishes trusted vs script-dispatched events for this control, unlike the CMS-side Radix
+components which tolerate synthetic events fine elsewhere in this codebase.
+
+**Fix shipped instead: call Freshdesk's real API directly, bypass the fragile dropdown entirely.**
+Added a per-user Freshdesk API key (Tampermonkey menu: "Freshdesk: Set API Key", `GM_setValue`
+under `betterFreshdeskApiKey` - same never-read-by-anything-else-in-the-script pattern as the
+former bot token). `freshdeskApiRequest()` (prelude, same scope as `bvNotify`) does Basic Auth
+(`apiKey:X`, Freshdesk's documented convention) via `GM_xmlhttpRequest` against
+`https://viewlift.freshdesk.com` (same-origin - added `@connect viewlift.freshdesk.com`). New
+Feature (very end of file, inside the Freshdesk-host guard, right after Status Placement): reads
+Support Plan/Platform's current DISPLAYED text only (read-only DOM, which works fine - only
+*clicking to change* the value was the automation-resistant part), and if either shows `"None"`,
+`PUT /api/v2/tickets/{id}` with `custom_fields: {cf_support_plan/cf_platform: "Standard"}` -
+Freshdesk's real, documented v2 REST API, not the internal one (which 401'd on write with plain
+cookie auth - it wants its own token/CSRF scheme this API key sidesteps entirely). User said "any
+real value is fine, don't care which" - hardcoded `"Standard"` for both. No page refresh is
+triggered after a successful PUT (would be disruptive mid-reply) - the fix lands server-side
+immediately, `bvNotify` tells the agent to refresh to see it reflected in the form. No-ops
+silently if no API key is saved yet, exactly like the removed bot integration used to.
+
+**Verified**: `node --check` only for the new feature - did not click-test end-to-end (would need
+a saved API key + a ticket with a real "None" field, and this session had already made enough
+live-ticket changes on #350785 today). If it doesn't fire, check the key was actually saved
+(Tampermonkey menu) and that the PUT isn't 401ing (would mean the key itself is wrong, not the
+approach - the internal-API 401 encountered during investigation was a different, unrelated
+endpoint).
+
+**Full removal of the ViewLift Bot integration**, per explicit user request the same day. This
+was the `http://135.181.37.72:3001` "ViewLift Support Assistant" integration added 2026-08-10 (see
+below) - `BV_BOT_BASE_URL`/`BV_BOT_TOKEN_KEY`/`BV_BOT_BRAND_MAP`, `getBotToken`/`promptForBotToken`
++ its menu command, `botApiRequest()`, `BOT_SITE_RULES`/`getBotSiteSlugForClient`,
+`checkCmsAccountViaBot()` (the CMS-lookup pre-check fired after opening the CMS tab) and its call
+site, and all of Feature 8's "Generate Reply" UI (`GENERATE_TOGGLE_ID`/`GENERATE_PANEL_ID`, their
+CSS, `runGenerate`/`toggleGeneratePanel`/`copyGeneratedText`/`mountGeneratePanel`/
+`getTicketThreadText`, the 🤖 toggle button and its `orderedControls` slot). Removed `@connect
+135.181.37.72` from the header. Added cleanup for the old toggle/panel DOM ids to the toolbar's
+existing legacy-control removal block (same pattern as `better-freshdesk-next-case`/
+`better-freshdesk-refund-launcher`) so stale copies disappear for anyone with an old page open.
+Note: this is unrelated to "Fan Assist" (whatever sets Platform/Support Plan to "None") and to the
+`schn-reply-with-bot` third-party script/"🤖 Reply with Bot" button seen live in Freshdesk's own
+toolbar - those are separate systems this repo doesn't control. `@version` bumped to 3.28.0.
+
 ## Fixed reason-selection in the CMS Percentage Refund Workflow - this one DOES auto-submit (2026-08-12)
 
 **Important, load-bearing fact discovered this session**: unlike the Refund Capture Tool (the

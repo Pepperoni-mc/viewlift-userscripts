@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.27.1
+// @version      3.28.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -25,7 +25,7 @@
 // @connect      cms-gcp.viewlift.com
 // @connect      cms-qcp.viewlift.com
 // @connect      cms.monumentalsportsnetwork.com
-// @connect      135.181.37.72
+// @connect      viewlift.freshdesk.com
 // ==/UserScript==
 
 (function () {
@@ -232,46 +232,27 @@
     return item;
   }
 
-  // ViewLift Support Bot integration (http://135.181.37.72:3001). Shared by
-  // Feature 3's CMS-lookup pre-check and Feature 8's "Generate Reply"
-  // button. The bot has its own login, separate from Freshdesk/CMS - its
-  // token is only ever entered by the user themselves via the menu command
-  // below (GM storage), never read, logged, or transmitted by anything
-  // else in this script.
-  const BV_BOT_BASE_URL = 'http://135.181.37.72:3001';
-  const BV_BOT_TOKEN_KEY = 'betterViewliftBotToken';
+  // Freshdesk API key - entered by each user themselves via the menu command
+  // below (GM storage, per-install), never read, logged, or transmitted by
+  // anything else in this script. Used only for the same-origin Freshdesk
+  // v2 REST API (Basic Auth: apiKey as username, "X" as password, per
+  // Freshdesk's documented convention).
+  const BV_FRESHDESK_API_KEY_KEY = 'betterFreshdeskApiKey';
 
-  // Brand label (matches BRAND_RULES/detectBrand in Feature 8) -> the bot's
-  // "site" slug (for /api/cms/lookup) and numeric platform_id (for
-  // /api/generate). "schn" + platformId 1 were confirmed live against a
-  // real ticket; the rest follow the same order as the bot's own platform
-  // switcher dropdown and are an educated guess, NOT independently
-  // confirmed. A wrong platform_id only degrades the generated draft's
-  // quality - that draft is always reviewed and copied by hand, never sent
-  // automatically - so an unconfirmed guess here is an acceptable risk.
-  const BV_BOT_BRAND_MAP = {
-    SCHN: { site: 'schn', platformId: 1 },
-    LIV: { site: 'liv', platformId: 2 },
-    ALTITUDE: { site: 'altitude', platformId: 3 },
-    MSN: { site: 'msn', platformId: 4 },
-    FOX: { site: 'fox', platformId: 6 },
-    DIRT: { site: 'dirt', platformId: 9 }
-  };
-
-  function getBotToken() {
+  function getFreshdeskApiKey() {
     try {
-      return String(GM_getValue(BV_BOT_TOKEN_KEY, '') || '').trim();
+      return String(GM_getValue(BV_FRESHDESK_API_KEY_KEY, '') || '').trim();
     } catch (error) {
       return '';
     }
   }
 
-  function promptForBotToken() {
-    const hasToken = !!getBotToken();
+  function promptForFreshdeskApiKey() {
+    const hasKey = !!getFreshdeskApiKey();
     const input = window.prompt(
-      'ViewLift Bot API token.\n\nLog into ' + BV_BOT_BASE_URL +
-      ', then in DevTools > Application > Local Storage copy the "token" value and paste it below.\n\n' +
-      (hasToken ? 'A token is already saved - leave this blank and press OK to clear it.' : ''),
+      'Freshdesk API Key.\n\nProfile picture (top right) > Profile settings > "View API Key" ' +
+      '(confirms with your password) > copy the key and paste it below.\n\n' +
+      (hasKey ? 'A key is already saved - leave this blank and press OK to clear it.' : ''),
       ''
     );
     if (input === null) return;
@@ -279,51 +260,41 @@
     const trimmed = input.trim();
     try {
       if (!trimmed) {
-        GM_deleteValue(BV_BOT_TOKEN_KEY);
-        bvNotify('ViewLift Bot token cleared.', { level: 'info', ttl: 4000 });
+        GM_deleteValue(BV_FRESHDESK_API_KEY_KEY);
+        bvNotify('Freshdesk API key cleared.', { level: 'info', ttl: 4000 });
       } else {
-        GM_setValue(BV_BOT_TOKEN_KEY, trimmed);
-        bvNotify('ViewLift Bot token saved.', { level: 'info', ttl: 4000 });
+        GM_setValue(BV_FRESHDESK_API_KEY_KEY, trimmed);
+        bvNotify('Freshdesk API key saved.', { level: 'info', ttl: 4000 });
       }
     } catch (error) {
-      console.warn('[ViewLift Bot] Could not save the token.', error);
+      console.warn('[Freshdesk API] Could not save the API key.', error);
     }
   }
 
   try {
     if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('ViewLift Bot: Set API Token', promptForBotToken);
+      GM_registerMenuCommand('Freshdesk: Set API Key', promptForFreshdeskApiKey);
     }
   } catch (error) {
-    console.warn('[ViewLift Bot] Could not register the menu command.', error);
+    console.warn('[Freshdesk API] Could not register the menu command.', error);
   }
 
-  function botApiRequest({ method = 'GET', path, params, body, onDone }) {
-    const token = getBotToken();
-    if (!token) {
-      onDone(new Error('no-token'), null);
+  function freshdeskApiRequest({ method = 'GET', path, body, onDone }) {
+    const apiKey = getFreshdeskApiKey();
+    if (!apiKey) {
+      onDone(new Error('no-api-key'), null);
       return;
-    }
-
-    const url = new URL(BV_BOT_BASE_URL + path);
-    if (params) {
-      Object.keys(params).forEach(key => {
-        const value = params[key];
-        if (value !== undefined && value !== null && value !== '') {
-          url.searchParams.set(key, value);
-        }
-      });
     }
 
     GM_xmlhttpRequest({
       method,
-      url: url.href,
+      url: `https://${location.hostname}${path}`,
       headers: Object.assign(
-        { Authorization: `Bearer ${token}` },
+        { Authorization: 'Basic ' + btoa(apiKey + ':X') },
         body ? { 'Content-Type': 'application/json' } : {}
       ),
       data: body ? JSON.stringify(body) : undefined,
-      timeout: 25000,
+      timeout: 15000,
       onload: function (response) {
         if (response.status === 401 || response.status === 403) {
           onDone(new Error('unauthorized'), null);
@@ -334,7 +305,7 @@
           return;
         }
         try {
-          onDone(null, JSON.parse(response.responseText));
+          onDone(null, response.responseText ? JSON.parse(response.responseText) : {});
         } catch (error) {
           onDone(error, null);
         }
@@ -6512,8 +6483,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const EMAIL_ID = 'better-freshdesk-action-email';
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
   const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
-  const GENERATE_TOGGLE_ID = 'better-freshdesk-generate-toggle';
-  const GENERATE_PANEL_ID = 'better-freshdesk-generate-panel';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
   let cachedTicketPath = '';
   let cachedEmail = '';
@@ -6632,111 +6601,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       #${REFUND_TOGGLE_ID}:active {
         transform: translateY(0) !important;
         box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
-      }
-
-      #${GENERATE_TOGGLE_ID} {
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        width: 32px !important;
-        height: 32px !important;
-        margin-right: 6px !important;
-        padding: 0 !important;
-        border: 1px solid #6d28d9 !important;
-        border-radius: 999px !important;
-        background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%) !important;
-        color: #ffffff !important;
-        font-size: 15px !important;
-        cursor: pointer !important;
-        box-shadow: 0 4px 12px rgba(109, 40, 217, .32), inset 0 1px 0 rgba(255, 255, 255, .2) !important;
-        transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
-      }
-
-      #${GENERATE_TOGGLE_ID}:hover {
-        background: linear-gradient(180deg, #b394fb 0%, #8b3ff0 100%) !important;
-        box-shadow: 0 6px 16px rgba(109, 40, 217, .4), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
-        transform: translateY(-1px) !important;
-      }
-
-      #${GENERATE_TOGGLE_ID}:active {
-        transform: translateY(0) !important;
-        box-shadow: 0 2px 6px rgba(109, 40, 217, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
-      }
-
-      #${GENERATE_TOGGLE_ID}[data-busy="yes"] { opacity: .65 !important; cursor: wait !important; }
-
-      #${TOOLBAR_ID} #${GENERATE_PANEL_ID} {
-        position: absolute !important;
-        top: calc(100% + 8px) !important;
-        left: 0 !important;
-        right: auto !important;
-        bottom: auto !important;
-        width: 420px !important;
-        max-width: min(420px, calc(100vw - 24px)) !important;
-        z-index: 1000000 !important;
-        background: #ffffff !important;
-        border: 1px solid #e2e8f0 !important;
-        border-radius: 12px !important;
-        box-shadow: 0 12px 32px rgba(15, 23, 42, .22) !important;
-        padding: 12px !important;
-        font: 13px Arial, sans-serif !important;
-        transform-origin: top left !important;
-      }
-
-      #${TOOLBAR_ID} #${GENERATE_PANEL_ID}[data-better-open="no"] { display: none !important; }
-      #${TOOLBAR_ID} #${GENERATE_PANEL_ID}[data-better-open="yes"] { display: block !important; }
-
-      #${GENERATE_PANEL_ID} .bv-gen-header {
-        display: flex !important;
-        justify-content: space-between !important;
-        align-items: center !important;
-        font-weight: 700 !important;
-        margin-bottom: 8px !important;
-        color: #334155 !important;
-      }
-
-      #${GENERATE_PANEL_ID} .bv-gen-close {
-        background: none !important;
-        border: none !important;
-        cursor: pointer !important;
-        font-size: 16px !important;
-        line-height: 1 !important;
-        color: #64748b !important;
-      }
-
-      #${GENERATE_PANEL_ID} textarea {
-        width: 100% !important;
-        min-height: 160px !important;
-        box-sizing: border-box !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 8px !important;
-        padding: 8px !important;
-        font: 12.5px Arial, sans-serif !important;
-        resize: vertical !important;
-      }
-
-      #${GENERATE_PANEL_ID} .bv-gen-status {
-        color: #64748b !important;
-        font-size: 12px !important;
-        margin: 6px 0 !important;
-        min-height: 16px !important;
-      }
-
-      #${GENERATE_PANEL_ID} .bv-gen-actions {
-        display: flex !important;
-        gap: 8px !important;
-        margin-top: 8px !important;
-      }
-
-      #${GENERATE_PANEL_ID} .bv-gen-actions button {
-        flex: 1 1 auto !important;
-        height: 30px !important;
-        border-radius: 8px !important;
-        cursor: pointer !important;
-        border: 1px solid #cbd5e1 !important;
-        background: #f8fafc !important;
-        color: #334155 !important;
-        font-weight: 600 !important;
       }
 
       #${BRAND_ID}, #${EMAIL_ID} {
@@ -7007,141 +6871,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
   }
 
-  function getTicketThreadText() {
-    const notes = Array.from(document.querySelectorAll('.ticket_note'))
-      .map(note => (note.textContent || '').replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
-    const subject = cleanText(document.title || '');
-    const combined = [subject, ...notes].join('\n\n');
-    // The bot's own paste-in-a-textarea flow expects a reasonable amount of
-    // text, not an entire multi-year thread - cap it so a very long ticket
-    // still sends promptly, keeping the most recent (most relevant) part.
-    return combined.length > 12000 ? combined.slice(-12000) : combined;
-  }
-
-  function setGenerateStatus(text) {
-    const status = document.querySelector(`#${GENERATE_PANEL_ID} .bv-gen-status`);
-    if (status) status.textContent = text;
-  }
-
-  function runGenerate() {
-    const toggle = document.getElementById(GENERATE_TOGGLE_ID);
-    const panel = document.getElementById(GENERATE_PANEL_ID);
-    const output = panel && panel.querySelector('textarea');
-    if (!output) return;
-
-    if (!getBotToken()) {
-      setGenerateStatus('Bot token not set. Tampermonkey menu > "ViewLift Bot: Set API Token".');
-      return;
-    }
-
-    const detectedBrand = detectBrand();
-    const brandInfo = detectedBrand && BV_BOT_BRAND_MAP[detectedBrand.label];
-    if (!brandInfo) {
-      setGenerateStatus('Case client not recognized - cannot pick a platform for the bot.');
-      return;
-    }
-
-    const message = getTicketThreadText();
-    if (!message) {
-      setGenerateStatus('No ticket text found to send.');
-      return;
-    }
-
-    if (toggle) toggle.dataset.busy = 'yes';
-    output.value = '';
-    setGenerateStatus('Generating...');
-
-    botApiRequest({
-      method: 'POST',
-      path: '/api/generate',
-      body: {
-        message,
-        platform_id: brandInfo.platformId,
-        images: null,
-        agent_notes: null,
-        cms_account: null,
-        cms_not_found: false,
-        cms_no_subscription: false
-      },
-      onDone: (error, data) => {
-        if (toggle) delete toggle.dataset.busy;
-
-        if (error) {
-          setGenerateStatus(
-            error.message === 'no-token' ? 'Bot token not set.' :
-            error.message === 'unauthorized' ? 'Bot rejected the token - set it again from the Tampermonkey menu.' :
-            'Could not reach the bot (' + error.message + ').'
-          );
-          return;
-        }
-
-        output.value = (data && data.response) || '(empty response)';
-        setGenerateStatus(data && data.is_spam ? 'Bot flagged this ticket as spam.' : 'Draft ready - review before sending.');
-      }
-    });
-  }
-
-  function toggleGeneratePanel() {
-    const panel = document.getElementById(GENERATE_PANEL_ID);
-    if (!panel) return;
-
-    const open = panel.dataset.betterOpen === 'yes';
-    panel.dataset.betterOpen = open ? 'no' : 'yes';
-    if (!open) runGenerate();
-  }
-
-  function copyGeneratedText(button, text) {
-    if (!text) return;
-
-    const done = () => {
-      const original = button.textContent;
-      button.textContent = 'Copied!';
-      window.setTimeout(() => { button.textContent = original; }, 1200);
-    };
-
-    try {
-      if (typeof GM_setClipboard === 'function') {
-        GM_setClipboard(text, 'text');
-        done();
-        return;
-      }
-    } catch (error) { /* use browser fallback */ }
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => {});
-    }
-  }
-
-  function mountGeneratePanel(toolbar) {
-    if (document.getElementById(GENERATE_PANEL_ID)) return;
-
-    const panel = document.createElement('div');
-    panel.id = GENERATE_PANEL_ID;
-    panel.dataset.betterOpen = 'no';
-    panel.innerHTML = `
-      <div class="bv-gen-header">
-        <span>Bot reply draft</span>
-        <button type="button" class="bv-gen-close">&times;</button>
-      </div>
-      <div class="bv-gen-status"></div>
-      <textarea readonly placeholder="Generated draft will appear here."></textarea>
-      <div class="bv-gen-actions">
-        <button type="button" class="bv-gen-copy">Copy</button>
-        <button type="button" class="bv-gen-regenerate">Regenerate</button>
-      </div>
-    `;
-    panel.querySelector('.bv-gen-close').addEventListener('click', () => {
-      panel.dataset.betterOpen = 'no';
-    });
-    panel.querySelector('.bv-gen-regenerate').addEventListener('click', runGenerate);
-    panel.querySelector('.bv-gen-copy').addEventListener('click', event => {
-      const copyButton = event.currentTarget;
-      copyGeneratedText(copyButton, panel.querySelector('textarea').value);
-    });
-    toolbar.appendChild(panel);
-  }
-
   function installToolbar() {
     addStyles();
     const actionBar = getActionBarWithFallback();
@@ -7217,22 +6946,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
     updateCmsSessionDot(cmsSessionDot);
 
-    let generateToggle = document.getElementById(GENERATE_TOGGLE_ID);
-    if (!generateToggle) {
-      generateToggle = makeButton(GENERATE_TOGGLE_ID, '\u{1F916}', 'Generate a reply draft with the ViewLift bot');
-      generateToggle.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleGeneratePanel();
-      });
-    }
-
     // These legacy toolbar controls are intentionally removed. Delete any
     // copies left behind by an older Better ViewLift version as well.
     document.getElementById('better-freshdesk-next-case')?.remove();
     document.getElementById('better-freshdesk-refund-launcher')?.remove();
+    document.getElementById('better-freshdesk-generate-toggle')?.remove();
+    document.getElementById('better-freshdesk-generate-panel')?.remove();
 
-    const orderedControls = [brand, cms, cmsSessionDot, email, agent, refundToggle, generateToggle].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, email, agent, refundToggle].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -7242,7 +6963,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     mountRefundPanel(toolbar);
-    mountGeneratePanel(toolbar);
   }
 
   // Other features (CMS header button, Set Agent) live in separate IIFEs and
@@ -9072,24 +8792,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return '';
     }
 
-    const BOT_SITE_RULES = [
-        { site: 'schn', patterns: [/\bschn\b/i, /space\s*city/i, /spacecityhn/i] },
-        { site: 'liv', patterns: [/\bliv\b/i, /liv\s*golf/i, /livgolfplus/i] },
-        { site: 'dirt', patterns: [/dirtvision/i, /dirt\s*vision/i] },
-        { site: 'altitude', patterns: [/altitude/i, /altitudeplus/i] },
-        { site: 'msn', patterns: [/monumental\s*sports/i, /\bmsn\b/i, /monumentalsportsnetwork/i] },
-        { site: 'fox', patterns: [/fox\s*sports/i, /foxsports/i] }
-    ];
-
-    function getBotSiteSlugForClient(clientContext) {
-        const text = cleanText([
-            clientContext && clientContext.primary,
-            clientContext && clientContext.fallback
-        ].filter(Boolean).join(' '));
-        const rule = BOT_SITE_RULES.find(candidate => candidate.patterns.some(pattern => pattern.test(text)));
-        return rule ? rule.site : '';
-    }
-
     function extractEmailFromText(text) {
         const match = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
 
@@ -9313,81 +9015,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return '';
     }
 
-    function collectTicketEmailCandidates(primaryEmail) {
-        const chunks = [];
-        collectTextFromRoot(document, chunks, 0);
-        const matches = chunks.join('\n').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
-        const seen = new Set();
-        const candidates = [];
-
-        if (primaryEmail) {
-            seen.add(primaryEmail.toLowerCase());
-            candidates.push(primaryEmail);
-        }
-
-        matches.forEach(match => {
-            const email = cleanText(match).toLowerCase();
-            if (!email || seen.has(email) || isBlockedCmsSearchEmail(email)) return;
-            seen.add(email);
-            candidates.push(email);
-        });
-
-        return candidates;
-    }
-
-    // Fire-and-forget: the bot's own /api/cms/lookup is a much cheaper way
-    // to tell "customer really has no account" apart from "we searched CMS
-    // with the wrong email" than digging through CMS by hand. Always runs
-    // AFTER the CMS tab already opened, so a slow or failed bot check never
-    // blocks or delays the actual CMS search - at most it adds a follow-up
-    // toast a moment later. No-ops entirely if no bot token is configured.
-    function checkCmsAccountViaBot(primaryEmail, clientContext) {
-        if (!getBotToken()) return;
-
-        const site = getBotSiteSlugForClient(clientContext);
-        if (!site) return;
-
-        const candidates = collectTicketEmailCandidates(primaryEmail);
-        if (!candidates.length) return;
-
-        let index = 0;
-
-        function tryNext() {
-            if (index >= candidates.length) {
-                bvNotify(
-                    `ViewLift Bot: no CMS account found for ${primaryEmail}` +
-                    (candidates.length > 1 ? ` or the ${candidates.length - 1} other email(s) mentioned in this ticket` : '') +
-                    '.',
-                    { level: 'warn', ttl: 9000 }
-                );
-                return;
-            }
-
-            const email = candidates[index];
-            index += 1;
-
-            botApiRequest({
-                path: '/api/cms/lookup',
-                params: { email, site },
-                onDone: (error, data) => {
-                    if (error) return; // bot unreachable/unauthorized - stay silent, this is a bonus check only
-                    if (data && data.found) {
-                        if (email.toLowerCase() !== primaryEmail.toLowerCase()) {
-                            bvNotify(
-                                `ViewLift Bot: found the CMS account under a different email - try "${email}" instead of "${primaryEmail}".`,
-                                { level: 'info', ttl: 12000 }
-                            );
-                        }
-                        return;
-                    }
-                    tryNext();
-                }
-            });
-        }
-
-        tryNext();
-    }
-
     function findHeaderInsertionPoint() {
         const mainActionBar = document.querySelector('section#mainactionbar');
 
@@ -9524,7 +9151,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
 
             window.open(url.href, '_blank');
-            checkCmsAccountViaBot(email, clientContext);
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);
@@ -10120,6 +9746,98 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   init();
+})();
+
+/* ============================================================
+ * Feature: Auto-fill empty Support Plan/Platform via Freshdesk API
+ * Support Plan and Platform sometimes come back "None" (set by an
+ * external triage bot when it can't determine them), which the user
+ * reported causes problems downstream. Both are Ember Power Select
+ * fields that would not respond to click-simulation despite trying
+ * the exact same technique the working Set Agent feature uses - so
+ * instead of fighting that UI, this calls Freshdesk's own v2 REST
+ * API directly. Requires the user's own Freshdesk API key (entered
+ * via the "Freshdesk: Set API Key" Tampermonkey menu command); a
+ * request to swap either field to a specific value was not made -
+ * per the user, any real (non-"None") value is fine.
+ * ============================================================ */
+
+(function () {
+    'use strict';
+
+    const DEFAULT_VALUE = 'Standard';
+    let lastFixedTicketId = '';
+
+    function cleanText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function isTicketPage() {
+        return /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
+    }
+
+    function getTicketIdFromURL() {
+        const match = location.pathname.match(/\/a\/tickets\/(\d+)/i);
+        return match ? match[1] : '';
+    }
+
+    function getPropertyFieldValue(labelText) {
+        const labels = Array.from(document.querySelectorAll('label, [class*="label" i]'));
+        const label = labels.find(candidate =>
+            cleanText(candidate.textContent).replace(/\s*\*+\s*$/, '').toLowerCase() === labelText.toLowerCase()
+        );
+        if (!label) return null;
+
+        let container = label.parentElement;
+        for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
+            const valueElement = container.querySelector(
+                '.ember-power-select-trigger, .ember-power-select-selected-item, [role="combobox"], select, input'
+            );
+            if (valueElement) return cleanText(valueElement.textContent || valueElement.value);
+        }
+        return null;
+    }
+
+    function fixEmptyFieldsIfNeeded() {
+        if (!isTicketPage()) return;
+
+        const ticketId = getTicketIdFromURL();
+        if (!ticketId || ticketId === lastFixedTicketId) return;
+        if (!getFreshdeskApiKey()) return;
+
+        const fields = {};
+        if (getPropertyFieldValue('Support Plan') === 'None') fields.cf_support_plan = DEFAULT_VALUE;
+        if (getPropertyFieldValue('Platform') === 'None') fields.cf_platform = DEFAULT_VALUE;
+
+        if (!Object.keys(fields).length) return;
+
+        lastFixedTicketId = ticketId;
+
+        freshdeskApiRequest({
+            method: 'PUT',
+            path: `/api/v2/tickets/${ticketId}`,
+            body: { custom_fields: fields },
+            onDone: function (error) {
+                if (error) {
+                    if (error.message === 'no-api-key') return;
+                    bvNotify(
+                        'Could not auto-fill Support Plan/Platform (' + error.message + '). ' +
+                        'Check your key via the "Freshdesk: Set API Key" Tampermonkey menu.',
+                        { level: 'warn', ttl: 9000 }
+                    );
+                    return;
+                }
+                bvNotify(
+                    `Support Plan/Platform were "None" - set to "${DEFAULT_VALUE}" via the Freshdesk API. Refresh to see it reflected in the form.`,
+                    { level: 'info', ttl: 9000 }
+                );
+            }
+        });
+    }
+
+    onRouteChange(function () {
+        setTimeout(fixEmptyFieldsIfNeeded, 1200);
+    });
 })();
   })();
 })();
