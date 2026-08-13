@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.29.1
+// @version      3.30.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6490,19 +6490,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
   const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
-  let cachedTicketPath = '';
-  let cachedEmail = '';
-  let directEmailAttempts = 0;
-  let lastDirectEmailAttemptAt = 0;
-  const CUSTOMER_EMAIL_BLOCKLIST = new Set([
-    'support@livgolfplus.com',
-    'sc-appsupport@spacecityhn.com',
-    'customersupport@altitudeplus.com',
-    'customer.support@altitudeplus.com',
-    'support@altitudeplus.com',
-    'noreply@viewlift.com',
-    'no-reply@viewlift.com'
-  ]);
 
   const BRAND_RULES = [
     { label: 'LIV', patterns: [/liv\s*golf/i, /livgolf/i, /livgolfplus\.com/i] },
@@ -6609,7 +6596,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
       }
 
-      #${BRAND_ID}, #${EMAIL_ID} {
+      #${BRAND_ID} {
         display: inline-flex !important;
         align-items: center !important;
         height: 32px !important;
@@ -6636,29 +6623,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; background: linear-gradient(180deg, #faf5ff 0%, #f3e8ff 100%) !important; border-color: #d8b4fe !important; box-shadow: 0 1px 3px rgba(88, 28, 135, .16) !important; }
       #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important; border-color: #fda4af !important; box-shadow: 0 1px 3px rgba(159, 18, 57, .16) !important; }
       #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%) !important; border-color: #fdba74 !important; box-shadow: 0 1px 3px rgba(154, 52, 18, .16) !important; }
-
-      #${EMAIL_ID} {
-        max-width: 260px !important;
-        padding: 0 13px !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-        cursor: copy !important;
-        user-select: text !important;
-        color: #475569 !important;
-        font-weight: 600 !important;
-      }
-
-      #${EMAIL_ID}:hover {
-        border-color: #94a3b8 !important;
-        box-shadow: 0 2px 5px rgba(15, 23, 42, .1) !important;
-        transform: translateY(-1px) !important;
-      }
-
-      #${EMAIL_ID}[data-copied="yes"] {
-        color: #15803d !important;
-        background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
-        border-color: #86efac !important;
-      }
 
       #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
         position: absolute !important;
@@ -6733,17 +6697,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (!match) return '';
 
     const email = match[0].toLowerCase();
-    if (CUSTOMER_EMAIL_BLOCKLIST.has(email)) return '';
     if (/^(?:no-?reply|do-?not-?reply)@/i.test(email)) return '';
     return email;
   }
 
+  let cachedTicketPath = '';
+  let cachedEmail = '';
+
+  // No longer shown as a visible toolbar pill (removed per request), but
+  // Feature 5 (quick-copy emails mentioned in ticket messages) still reads
+  // this element's dataset.email to know which email is already "known" so
+  // it doesn't offer a redundant copy-chip for it - kept as a hidden,
+  // off-toolbar data holder rather than deleting the cross-feature link.
   function getEmail() {
     if (cachedTicketPath !== location.pathname) {
       cachedTicketPath = location.pathname;
       cachedEmail = '';
-      directEmailAttempts = 0;
-      lastDirectEmailAttemptAt = 0;
     }
 
     if (cachedEmail) return cachedEmail;
@@ -6760,50 +6729,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const candidate = (getContextText().match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])
       .map(normalizeCustomerEmail)
       .find(Boolean);
-    if (candidate) {
-      cachedEmail = candidate;
-      return cachedEmail;
-    }
-
-    const now = Date.now();
-    if (
-      typeof window.__betterFreshdeskGetCustomerEmail === 'function' &&
-      directEmailAttempts < 3 &&
-      now - lastDirectEmailAttemptAt >= 2000
-    ) {
-      directEmailAttempts += 1;
-      lastDirectEmailAttemptAt = now;
-      const direct = normalizeCustomerEmail(window.__betterFreshdeskGetCustomerEmail());
-      if (direct) cachedEmail = direct;
-    }
+    if (candidate) cachedEmail = candidate;
 
     return cachedEmail;
   }
 
-  function copyText(text, element) {
-    if (!text) return;
-    const done = () => {
-      element.dataset.copied = 'yes';
-      element.title = 'Copied to clipboard';
-      window.setTimeout(() => {
-        if (element.isConnected) {
-          delete element.dataset.copied;
-          element.title = 'Click to copy customer email';
-        }
-      }, 1200);
-    };
-
-    try {
-      if (typeof GM_setClipboard === 'function') {
-        GM_setClipboard(text, 'text');
-        done();
-        return;
-      }
-    } catch (error) { /* use browser fallback */ }
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => {});
+  function updateHiddenEmailHolder() {
+    let holder = document.getElementById(EMAIL_ID);
+    if (!holder) {
+      holder = document.createElement('span');
+      holder.id = EMAIL_ID;
+      holder.style.display = 'none';
+      document.body.appendChild(holder);
     }
+    const customerEmail = getEmail();
+    if (holder.dataset.email !== customerEmail) holder.dataset.email = customerEmail;
   }
 
   function makeButton(id, text, title) {
@@ -6905,23 +6845,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const brandTitle = detectedBrand ? `Case client: ${detectedBrand.label}` : 'Case client not detected';
     if (brand.title !== brandTitle) brand.title = brandTitle;
 
-    let email = document.getElementById(EMAIL_ID);
-    if (!email) {
-      email = document.createElement('button');
-      email.id = EMAIL_ID;
-      email.type = 'button';
-      email.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        copyText(email.dataset.email || email.textContent, email);
-      });
-    }
-    const customerEmail = getEmail();
-    const emailLabel = customerEmail || 'No email';
-    if (email.textContent !== emailLabel) email.textContent = emailLabel;
-    if (email.dataset.email !== customerEmail) email.dataset.email = customerEmail;
-    const emailTitle = customerEmail ? 'Click to copy customer email' : 'Customer email not found';
-    if (email.title !== emailTitle) email.title = emailTitle;
+    updateHiddenEmailHolder();
 
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
@@ -6959,7 +6883,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.getElementById('better-freshdesk-generate-toggle')?.remove();
     document.getElementById('better-freshdesk-generate-panel')?.remove();
 
-    const orderedControls = [brand, cms, cmsSessionDot, email, agent, refundToggle].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -6998,9 +6922,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       if (
         toolbar &&
         toolbar.parentElement === getActionBar() &&
-        cachedTicketPath === location.pathname &&
-        document.getElementById(BRAND_ID) &&
-        document.getElementById(EMAIL_ID)
+        document.getElementById(BRAND_ID)
       ) return;
       window.clearTimeout(timer);
       timer = window.setTimeout(installToolbar, 80);

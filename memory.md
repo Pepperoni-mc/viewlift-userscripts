@@ -2,6 +2,32 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Removed the toolbar's visible customer-email pill (2026-08-12)
+
+User asked to remove "the email that shows up at the top" from the Unified Toolbar - the
+click-to-copy email pill (`EMAIL_ID = 'better-freshdesk-action-email'`) that sat between the CMS
+button and Set Agent. Removed the visible button, its CSS, and its slot in `orderedControls`.
+
+**Found and fixed a real cross-feature dependency while removing it**: Feature 5 (quick-copy
+emails mentioned in ticket messages, `getKnownTicketEmail()`) reads
+`document.getElementById('better-freshdesk-action-email')?.dataset.email` to know which email is
+already "known" so it doesn't offer a redundant copy-chip for it. Deleting the element outright
+would have silently broken that exclusion (every mention of the customer's own known email would
+start showing a copy-chip too). Kept a **hidden, off-toolbar** version instead
+(`updateHiddenEmailHolder()` - a `display:none` span appended to `document.body`, not the
+toolbar), so Feature 5's cross-read still works but nothing renders in the header. Simplified
+`getEmail()` slightly while restoring it (dropped the rate-limited
+`window.__betterFreshdeskGetCustomerEmail` cross-tab fallback and the
+`CUSTOMER_EMAIL_BLOCKLIST` check) - acceptable here since this holder only feeds an exclusion
+filter, not the CMS search itself (which has its own, already-generic, `isBlockedCmsSearchEmail`).
+`@version` bumped to 3.30.0.
+
+**Open thread, not yet done**: user also said "quítame el botón de reply también" (remove the
+reply button too) in the same message - genuinely ambiguous whether they mean Freshdesk's own
+native Reply button (would be a major, probably-unwanted behavior change) or something else this
+script added. Asked for clarification before touching anything reply-related - do not assume and
+remove Freshdesk's native reply capability.
+
 ## CMS button: multi-email dropdown when a ticket mentions more than one email (2026-08-12)
 
 User asked two things together: (1) "the CMS button still 'searches' instead of directly opening
