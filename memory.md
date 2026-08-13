@@ -47,6 +47,18 @@ option in both fields' shared picklist), is the real blocking state and should t
 auto-fill. Changed both `getPropertyFieldValue(...) === 'None'` checks to `=== '--'`. `@version`
 bumped to 3.28.1.
 
+**User hit `http-400` live** the same day. Since a 401/403 would mean the API key itself is wrong
+(different error message), a 400 means the key works but Freshdesk's v2 API rejected the request
+body/ticket state - the generic `'http-' + status` error swallowed Freshdesk's own JSON validation
+reason, which is exactly the info needed to fix this for real instead of guessing. Fixed
+`freshdeskApiRequest()` to attach the raw response body to the error object
+(`error.responseBody`), and the feature's `onDone` now `console.warn`s it. `@version` bumped to
+3.28.2. **Next session: if this recurs, read the actual `[Freshdesk API] Support Plan/Platform
+update rejected:` console line** - leading guesses (unconfirmed) are the ticket being
+closed/resolved (v2 API commonly blocks updates in that state) or some other required-field
+validation Freshdesk enforces tenant-wide on ticket updates, not a problem with the "Standard"
+value itself (confirmed to be a real, exact-match choice in the field's own picklist).
+
 **Full removal of the ViewLift Bot integration**, per explicit user request the same day. This
 was the `http://135.181.37.72:3001` "ViewLift Support Assistant" integration added 2026-08-10 (see
 below) - `BV_BOT_BASE_URL`/`BV_BOT_TOKEN_KEY`/`BV_BOT_BRAND_MAP`, `getBotToken`/`promptForBotToken`

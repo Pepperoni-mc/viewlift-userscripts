@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.28.1
+// @version      3.28.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -301,7 +301,13 @@
           return;
         }
         if (response.status < 200 || response.status >= 300) {
-          onDone(new Error('http-' + response.status), null);
+          const httpError = new Error('http-' + response.status);
+          // Freshdesk's v2 API returns a JSON body describing exactly which
+          // field/value it rejected (e.g. a custom field validation error) -
+          // surfacing it is the difference between "http-400" (useless) and
+          // an actionable reason.
+          httpError.responseBody = response.responseText || '';
+          onDone(httpError, null);
           return;
         }
         try {
@@ -9822,9 +9828,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             onDone: function (error) {
                 if (error) {
                     if (error.message === 'no-api-key') return;
+                    if (error.responseBody) {
+                        console.warn('[Freshdesk API] Support Plan/Platform update rejected:', error.responseBody);
+                    }
                     bvNotify(
                         'Could not auto-fill Support Plan/Platform (' + error.message + '). ' +
-                        'Check your key via the "Freshdesk: Set API Key" Tampermonkey menu.',
+                        'Check your key via the "Freshdesk: Set API Key" Tampermonkey menu, or the browser console for details.',
                         { level: 'warn', ttl: 9000 }
                     );
                     return;
