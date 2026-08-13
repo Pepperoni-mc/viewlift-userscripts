@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.30.0
+// @version      3.30.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7390,6 +7390,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
           element.closest('.conversation-app-icon') ||
           element;
       }
+    },
+    {
+      // The top action bar's own "Reply" shortcut - removed per request.
+      // The actual Reply/Note/Forward compose tabs at the bottom of the
+      // conversation are a separate part of the page and are untouched.
+      selector: 'section#mainactionbar button[data-test-email-action="reply"]',
+      getTarget: function (element) {
+        return element;
+      }
     }
   ];
 
@@ -7405,7 +7414,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       .header-primary__user div.global-notification,
       [data-test-id="trial-plan-button"],
       .trigger-button-container:has([data-testid="omnibar-trigger-button"]),
-      .trigger-button-container:has(#omnibar-trigger-button) {
+      .trigger-button-container:has(#omnibar-trigger-button),
+      section#mainactionbar button[data-test-email-action="reply"] {
         display: none !important;
       }
     `;

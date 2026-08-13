@@ -22,11 +22,16 @@ toolbar), so Feature 5's cross-read still works but nothing renders in the heade
 filter, not the CMS search itself (which has its own, already-generic, `isBlockedCmsSearchEmail`).
 `@version` bumped to 3.30.0.
 
-**Open thread, not yet done**: user also said "quítame el botón de reply también" (remove the
-reply button too) in the same message - genuinely ambiguous whether they mean Freshdesk's own
-native Reply button (would be a major, probably-unwanted behavior change) or something else this
-script added. Asked for clarification before touching anything reply-related - do not assume and
-remove Freshdesk's native reply capability.
+**Resolved**: user confirmed it's Freshdesk's own native top-action-bar "Reply" shortcut button
+(`button[data-test-email-action="reply"]` inside `section#mainactionbar`) - NOT the actual
+Reply/Note/Forward compose tabs at the bottom of the conversation, which are untouched and fully
+functional. Added it to Feature 6 (Header Clutter Removal)'s existing `removalRules` +
+CSS-hide list, same pattern as the other decluttered elements there (Freddy copilot trigger,
+marketplace viewer, etc.) - actually removed from the DOM (not just hidden), matching how every
+other rule in that list already behaves. This selector is also used elsewhere in the file as an
+insertion-point reference (unified toolbar, CMS header button) - both already have a working
+fallback (`leftActions.firstElementChild || leftActions`) for when it's absent, so removing it
+doesn't break their positioning. `@version` bumped to 3.30.1.
 
 ## CMS button: multi-email dropdown when a ticket mentions more than one email (2026-08-12)
 
