@@ -2,6 +2,47 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## CMS button: multi-email dropdown when a ticket mentions more than one email (2026-08-12)
+
+User asked two things together: (1) "the CMS button still 'searches' instead of directly opening
+the account via the API" and (2) since we already detect multiple emails mentioned in a ticket
+(Feature 5's quick-copy chips), give the CMS button a mini dropdown to pick which email to search
+when there's more than one candidate.
+
+**On (1): explained, didn't change anything.** The `keyword`/`filter` fix from earlier today
+already IS "use CMS's own mechanism instead of DOM simulation" - CMS's `/users/search` page reads
+those params and runs the real search itself, no typing/clicking simulated. What's left (landing
+on a results list rather than jumping straight to the account) is CMS's own UI behavior, not
+something this script is simulating - and jumping straight to a profile would need the account's
+CMS id up front, which is only ever learned FROM a search result (the id-based `/users/<id>` URL
+format was confirmed to exist, from `CMS_USER_URL_RE`/`getCMSUserIdFromURL`, ~line 412, but
+there's no known way to get that id without searching first). Not pursued further - diminishing
+returns already noted earlier today when investigating this same question.
+
+**On (2): built.** Added to Feature 3 (Freshdesk Header CMS User Search):
+- `collectAllTicketEmailCandidates(primaryEmail)` - scans the whole page via the existing
+  `collectTextFromRoot` (already used by the Contact Info email lookup), regex-matches every
+  email, dedupes, filters through the existing `isBlockedCmsSearchEmail` denylist, with the
+  Contact-Info-sourced primary email always first. Effectively the same logic the (now-removed)
+  bot integration's `collectTicketEmailCandidates` used, minus anything bot-specific - restoring
+  that shape turned out useful again for an unrelated feature.
+- `openCMSForEmail(email, clientContext)` - the CMS-opening logic (brand routing, GCP account
+  switch, `keyword`/`filter` URL) extracted unchanged from the click handler into its own function
+  so both the single-email direct-open path and the new dropdown's per-item click can call it.
+- `showCmsEmailMenu(button, emails, clientContext)` / `closeCmsEmailMenu()` - a small floating
+  menu (own id/style block, closes on outside click), positioned under the CMS button, listing
+  every candidate email with the Contact-Info one tagged. Only shown when there's more than one
+  candidate - a ticket with just one email keeps the exact same one-click behavior as before, no
+  added friction.
+
+Click handler now: get the primary email (unchanged) -> collect all candidates -> if >1, show the
+menu and stop; if exactly 1, open CMS directly like before. `@version` bumped to 3.29.0.
+
+**Verified**: `node --check` only - couldn't live-test the dropdown itself (needs Tampermonkey to
+pick up the update first, and a ticket with genuinely multiple distinct emails mentioned). Ask the
+user to confirm the menu appears/positions correctly and each item opens the right email next time
+they're on a multi-email ticket.
+
 ## Freshdesk API key feature + full ViewLift Bot integration removal (2026-08-12)
 
 **Context**: user reported Support Plan/Platform custom fields sometimes come back `"None"`

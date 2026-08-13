@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.28.2
+// @version      3.29.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9082,6 +9082,172 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         ensureHeaderButtonStyle();
     }
 
+    const EMAIL_MENU_ID = 'viewlift-cms-email-menu';
+    const EMAIL_MENU_STYLE_ID = 'viewlift-cms-email-menu-style';
+
+    function collectAllTicketEmailCandidates(primaryEmail) {
+        const chunks = [];
+        collectTextFromRoot(document, chunks, 0);
+        const matches = chunks.join('\n').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
+        const seen = new Set();
+        const candidates = [];
+
+        if (primaryEmail) {
+            seen.add(primaryEmail.toLowerCase());
+            candidates.push(primaryEmail);
+        }
+
+        matches.forEach(match => {
+            const email = cleanText(match).toLowerCase();
+            if (!email || seen.has(email) || isBlockedCmsSearchEmail(email)) return;
+            seen.add(email);
+            candidates.push(email);
+        });
+
+        return candidates;
+    }
+
+    function addEmailMenuStyles() {
+        if (document.getElementById(EMAIL_MENU_STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = EMAIL_MENU_STYLE_ID;
+        style.textContent = `
+            #${EMAIL_MENU_ID} {
+                position: fixed !important;
+                z-index: 2147483000 !important;
+                min-width: 220px !important;
+                max-width: 340px !important;
+                padding: 6px !important;
+                border: 1px solid #c7d2e0 !important;
+                border-radius: 10px !important;
+                background: #ffffff !important;
+                box-shadow: 0 12px 28px rgba(15, 23, 42, .2) !important;
+                font: 12.5px Arial, sans-serif !important;
+            }
+            #${EMAIL_MENU_ID} .viewlift-cms-email-hint {
+                padding: 4px 8px 6px !important;
+                color: #64748b !important;
+                font-size: 11px !important;
+            }
+            #${EMAIL_MENU_ID} button {
+                display: block !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                text-align: left !important;
+                padding: 7px 8px !important;
+                border: none !important;
+                border-radius: 6px !important;
+                background: none !important;
+                color: #1e293b !important;
+                font: inherit !important;
+                cursor: pointer !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            #${EMAIL_MENU_ID} button:hover { background: #eff6ff !important; }
+            #${EMAIL_MENU_ID} button .viewlift-cms-email-tag {
+                margin-left: 6px !important;
+                color: #2563eb !important;
+                font-weight: 700 !important;
+                font-size: 10.5px !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function closeCmsEmailMenu() {
+        document.getElementById(EMAIL_MENU_ID)?.remove();
+    }
+
+    function showCmsEmailMenu(button, emails, clientContext) {
+        addEmailMenuStyles();
+        closeCmsEmailMenu();
+
+        const menu = document.createElement('div');
+        menu.id = EMAIL_MENU_ID;
+        menu.setAttribute('role', 'menu');
+
+        const hint = document.createElement('div');
+        hint.className = 'viewlift-cms-email-hint';
+        hint.textContent = 'Multiple emails found in this ticket - pick one to search:';
+        menu.appendChild(hint);
+
+        emails.forEach((email, index) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.textContent = email;
+
+            if (index === 0) {
+                const tag = document.createElement('span');
+                tag.className = 'viewlift-cms-email-tag';
+                tag.textContent = 'Contact Info';
+                item.appendChild(tag);
+            }
+
+            item.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                closeCmsEmailMenu();
+                openCMSForEmail(email, clientContext);
+            });
+            menu.appendChild(item);
+        });
+
+        document.body.appendChild(menu);
+
+        const rect = button.getBoundingClientRect();
+        menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+        menu.style.left = `${Math.round(rect.left)}px`;
+
+        window.setTimeout(function () {
+            document.addEventListener('click', function onOutsideClick(event) {
+                if (menu.contains(event.target)) return;
+                closeCmsEmailMenu();
+                document.removeEventListener('click', onOutsideClick);
+            });
+        }, 0);
+    }
+
+    function openCMSForEmail(email, clientContext) {
+        const cmsUsersURL = getCMSUsersURLForClient(clientContext);
+        const account = getCMSAccountForClient(clientContext);
+        const url = new URL(cmsUsersURL);
+
+        const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
+        if (unroutedBrand) {
+            bvNotify(
+                `CMS search: "${unroutedBrand}" has no CMS host configured yet - opening the standard CMS instead, which likely won't have this customer.`,
+                { level: 'warn', ttl: 12000 }
+            );
+        }
+
+        // GCP's classic CMS has no account selector. Route through the
+        // existing v5 selector when the ticket identifies the account.
+        if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
+            url.pathname = '/v5/overview';
+            url.searchParams.set('betterSwitch', account);
+            try {
+                GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
+                    key: account,
+                    returnUrl: `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`,
+                    startedAt: Date.now()
+                }));
+            } catch (error) {
+                console.warn('[CMS Search] Could not save the pending account switch.', error);
+            }
+        }
+        // CMS's own /users/search page reads "keyword"/"filter" on load and
+        // runs the real search itself - no DOM fill/click simulation needed.
+        url.searchParams.set('keyword', email);
+        url.searchParams.set('filter', 'all');
+
+        console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
+
+        window.open(url.href, '_blank');
+    }
+
     function installHeaderButton() {
         if (!isFreshdeskPage()) return;
 
@@ -9122,41 +9288,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             }
 
             const clientContext = getFreshdeskClientContext();
-            const cmsUsersURL = getCMSUsersURLForClient(clientContext);
-            const account = getCMSAccountForClient(clientContext);
-            const url = new URL(cmsUsersURL);
+            const candidates = collectAllTicketEmailCandidates(email);
 
-            const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
-            if (unroutedBrand) {
-                bvNotify(
-                    `CMS search: "${unroutedBrand}" has no CMS host configured yet - opening the standard CMS instead, which likely won't have this customer.`,
-                    { level: 'warn', ttl: 12000 }
-                );
+            if (candidates.length > 1) {
+                showCmsEmailMenu(button, candidates, clientContext);
+                return;
             }
 
-            // GCP's classic CMS has no account selector. Route through the
-            // existing v5 selector when the ticket identifies the account.
-            if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
-                url.pathname = '/v5/overview';
-                url.searchParams.set('betterSwitch', account);
-                try {
-                    GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
-                        key: account,
-                        returnUrl: `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`,
-                        startedAt: Date.now()
-                    }));
-                } catch (error) {
-                    console.warn('[CMS Search] Could not save the pending account switch.', error);
-                }
-            }
-            // CMS's own /users/search page reads "keyword"/"filter" on load and
-            // runs the real search itself - no DOM fill/click simulation needed.
-            url.searchParams.set('keyword', email);
-            url.searchParams.set('filter', 'all');
-
-            console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
-
-            window.open(url.href, '_blank');
+            openCMSForEmail(email, clientContext);
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);
