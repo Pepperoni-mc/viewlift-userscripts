@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.30.1
+// @version      3.30.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2960,6 +2960,15 @@
         }
 
         switchRunning = true;
+        // A real account switch is genuinely slower than a same-org search
+        // (this v5 dashboard has to load, then the org dropdown, before the
+        // actual search can even start) - visible so the delay reads as
+        // expected instead of a mystery slowdown, unlike hosts that never
+        // need this step (MSN, standard) and go straight to the search.
+        bvNotify(
+            `Switching CMS account to ${pending.key.toUpperCase()} before searching - this takes a bit longer than brands that don't need an account switch.`,
+            { level: 'info', ttl: 8000 }
+        );
         const existingOption = getOrganizationOption(pending.key);
         if (!existingOption) accountButton.click();
         window.setTimeout(() => {

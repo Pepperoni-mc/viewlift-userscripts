@@ -2,6 +2,93 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Overnight deep-dive: CMS's real search API, real account IDs, why MSN feels faster - and two confirmed dead ends (2026-08-12/13)
+
+User asked why MSN's CMS search feels much faster than SCHN/others, and insisted on skipping the
+results list entirely - "OPEN the account directly" when there's a match - explicitly authorizing
+using the CMS session/network token for this and working on it unsupervised overnight. Spent
+significant live-browser time on this. Result: one real, safe improvement shipped; two deeper
+approaches investigated thoroughly and confirmed **not currently achievable**, documented in
+detail below so nobody re-discovers the same dead ends from scratch.
+
+### Why MSN is faster than SCHN/LIV-Golf/Lightning - confirmed, and now visible to the agent
+
+Not a bug - a real architectural difference. MSN (and Altitude/DIRT on the "standard" host) go
+straight to `/users/search?keyword=&filter=all` in one hop. SCHN/LIV-Golf/Lightning all live on
+the shared GCP host, which has **no account selector of its own** - if the CMS session isn't
+already on the right org, the script has to first load the full v5 dashboard SPA, open the org
+dropdown, select the right org, THEN redirect to the actual search. That's real, unavoidable
+extra work (a heavier app has to load before the search can even start), not something client-side
+script can speed up. The classic account switcher (`runV5Switch()`, ~line 2938) already
+short-circuits to a direct redirect when the org is already correct - the slowdown only happens on
+an actual cross-org switch. **Shipped**: a `bvNotify` right where a real switch is confirmed
+necessary (`switchRunning = true` branch), so the delay reads as "expected, brand needs an account
+switch" instead of a silent mystery slowdown. `@version` bumped to 3.30.2.
+
+### What was investigated for "open the account directly, skip the search results list"
+
+**Confirmed, real, useful facts (not guesses):**
+- CMS's classic search is, under the hood, `POST cms.api.viewlift.com/v3.0/invoke` wrapping
+  `POST /v2/admin/identity/user-search`, with `auth.site`/`query.site` as **per-request body
+  fields** (e.g. `"site": "lightning"` for Lightning/Tampa Bay) - captured live via
+  `unsafeWindow`-style fetch patching on a real search.
+- The response shape is `{count, users: [...]}` - each user object has a real `id` (a UUID, e.g.
+  `9c05130a-5ae3-43e0-b65e-c3b1133ba52f`), plus a full `identity` object (email, country, signup
+  info, etc.).
+- Confirmed TWO real, working detail-page URL formats (found as actual visited paths cached in
+  CMS's own `localStorage` under our own `tm-viewlift-payment-handler:<pathname>` keys - i.e. proof
+  these were really visited before, not guesses): **`/users/search/<id>`** (classic UI - confirmed
+  live: clicking a real result row navigates here) and **`/v5/customer-support/user/<id>`** (v5
+  UI, not live-tested this session).
+- **A single real click on a result row DOES navigate correctly** to `/users/search/<id>` -
+  confirmed live with a real account (`test@example.com` under Lightning, which has actual
+  identity data - the earlier "row click does nothing" finding from earlier the same day was
+  specific to a no-plan seed-stub account, not proof rows are unclickable in general).
+
+**Dead end #1 - replaying the search API call ourselves (to search any brand without an account
+switch, or to fetch just the id without rendering the UI): fails, not just CORS.** Tried twice:
+once reusing captured `Authorization`/`xApiKey` headers verbatim, once with no auth headers at all
+plus `credentials:'include'`. **Both attempts failed identically** with a bare `TypeError: Failed
+to fetch` - before any response, meaning this isn't a "wrong token" problem (that would be a
+401/403), it's the request never completing at the network/CORS layer. Since `customer::session`
+in localStorage is stored as an **array of 16 elements, not a plain JWT string** (confirmed via
+`typeof`/`Array.isArray` checks), the real auth is almost certainly derived per-request (possibly
+signed, e.g. AWS SigV4-style) by the app's own bundled code, not a static bearer token that can be
+lifted and replayed from outside that code. Rewriting the `site` field in the app's OWN outgoing
+request (patching `fetch` to mutate the body in-flight, letting the real authenticated call still
+go through) DID get intercepted successfully and DID reach the server (200 OK) but returned
+`count: 0` for an account confirmed to exist under that site - inconclusive whether that's session-
+level enforcement beyond the body field, or a wrong site slug for that specific test (the working
+slug `"lightning"` was only confirmed later, for a different test). **Next session, if revisited**:
+retest the site-rewrite specifically with the now-confirmed-correct `"lightning"` slug before
+concluding it's session-enforced.
+
+**Dead end #2 - automating the row click reliably: inconsistent, not shippable.** Tried the same
+`mouseover/mousedown/mouseup/click` dispatch pattern that works elsewhere in this file (e.g.
+`realClick` in the CMS Percentage Refund Workflow), then the full `PointerEvent` sequence plus
+native `.click()`, then targeting the inner name/email `<div>` instead of the `<tr>`, then adding
+explicit `detail:1`/`clientX`/`clientY` to the MouseEvent. **One observation looked like a delayed
+success**, but a clean, isolated repeat (fresh page load, single dispatch, waited 4+ seconds)
+**did not navigate** - the earlier apparent success was almost certainly leftover state from an
+actual real `computer.left_click` done moments earlier in the same session, not the synthetic
+dispatch working. Conclusion: this MUI table row's click handling appears to require a genuinely
+trusted input event, same class of wall hit earlier the same day with Freshdesk's Agent field
+(Ember Power Select) - **do not ship an auto-click-the-single-result feature on this evidence**,
+it would work inconsistently in a way that's worse than not having it (confusing, hard to debug
+without the user present). Tried reading the id directly off the row's React fiber
+(`memoizedProps` walk for a UUID pattern) as a click-free alternative - found nothing within a
+reasonable depth; the id is very likely captured in a closure (e.g. inside a `.map()` callback),
+which isn't reachable via prop/fiber introspection at all, only via decompiling the actual
+minified bundle.
+
+**Bottom line for next time**: the “jump straight to the account” idea is directionally correct
+and the data (real ids, real URLs) is all confirmed to exist - what's missing is a *reliable,
+script-triggerable* way to either (a) read the id without a network replay (blocked - dead end #1)
+or (b) trigger the navigation without a genuinely trusted click (blocked - dead end #2). Either
+would need substantially more reverse-engineering (reading the actual minified CMS bundle to find
+the signing logic, or finding some other click-independent read path) than a single session
+supports. Flagging this clearly rather than shipping something that only sometimes works.
+
 ## Removed the toolbar's visible customer-email pill (2026-08-12)
 
 User asked to remove "the email that shows up at the top" from the Unified Toolbar - the
