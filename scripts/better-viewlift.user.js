@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.29.0
+// @version      3.29.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8829,12 +8829,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         'no-reply@viewlift.com'
     ];
 
+    // Generic, domain-independent version of the list above - catches our
+    // own support-team addresses on brands/domains not already hardcoded
+    // there (e.g. a new brand's "support@" or "getsupport@"), so the CMS
+    // button never offers to search a support inbox as if it were the
+    // customer's own email.
+    const GENERIC_SUPPORT_LOCAL_PART_RE = /^(?:get)?support\b|^customer[.\-]?support\b|^[a-z]*-?appsupport\b|^(?:no-?reply|help|contact|info)\b/i;
+
     function isBlockedCmsSearchEmail(email) {
         const lower = cleanText(email).toLowerCase();
 
         if (!lower) return true;
 
-        return CMS_SEARCH_BLOCKED_EMAILS.some(blocked => lower === blocked || lower.includes(blocked));
+        if (CMS_SEARCH_BLOCKED_EMAILS.some(blocked => lower === blocked || lower.includes(blocked))) {
+            return true;
+        }
+
+        const localPart = lower.split('@')[0] || '';
+        return GENERIC_SUPPORT_LOCAL_PART_RE.test(localPart);
     }
 
     function extractBestCustomerEmailFromText(text) {

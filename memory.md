@@ -43,6 +43,17 @@ pick up the update first, and a ticket with genuinely multiple distinct emails m
 user to confirm the menu appears/positions correctly and each item opens the right email next time
 they're on a multi-email ticket.
 
+**Same day, follow-up**: user asked the CMS button to always exclude our own support-team
+addresses (`support@`, `getsupport@`, etc.), not just the 5 specific brand emails already
+hardcoded in `CMS_SEARCH_BLOCKED_EMAILS`. Added `GENERIC_SUPPORT_LOCAL_PART_RE` to
+`isBlockedCmsSearchEmail()` - matches the local-part (before `@`) against
+`support`/`getsupport`/`customer.support`/`customer-support`/`*-appsupport`/`no-reply`/`help`/
+`contact`/`info`, regardless of domain, so a NEW brand's support inbox is excluded automatically
+without needing a hardcoded entry per brand. Mirrors Feature 5's existing
+`EXCLUDED_LOCAL_PARTS` pattern (quick-copy email chips) - same idea, now also applied to the CMS
+button's own email detection (both the primary Contact-Info lookup and the new multi-email
+dropdown share this one function). `@version` bumped to 3.29.1.
+
 ## Freshdesk API key feature + full ViewLift Bot integration removal (2026-08-12)
 
 **Context**: user reported Support Plan/Platform custom fields sometimes come back `"None"`
