@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.31.1
+// @version      3.32.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -4980,9 +4980,40 @@ if (isCMSHost()) {
             'button[data-slot="dropdown-menu-trigger"], button[aria-haspopup="menu"]'
         ) || []).filter(isVisible).find(element => {
             const text = getText(element).toLowerCase();
-            const context = cleanText(element.parentElement?.innerText).toLowerCase();
+            // MUI's <InputLabel>Reason</InputLabel> is a SIBLING of the
+            // Select, not an ancestor one level up - element.parentElement
+            // alone missed it. Walk up to the nearest field/form wrapper
+            // instead, matching the broader-context pattern already used
+            // elsewhere in this file (e.g. Feature 2's getNearbyText).
+            const container = element.closest(
+                '.MuiFormControl-root, .MuiGrid-root, [role="dialog"] > div, form'
+            ) || element.parentElement;
+            const context = cleanText(container?.innerText).toLowerCase();
             return text.includes('reason') || context.includes('reason');
         }) || null;
+    }
+
+    // MUI Select keeps its real value on a hidden native <input> sibling
+    // (class="MuiSelect-nativeInput") specifically so it's readable/
+    // writable without going through the visible combobox's click-driven
+    // portal listbox - reading it (or the visible combobox's own text as a
+    // fallback) tells us the CURRENT selection without needing to open
+    // anything, which is what actually matters: MUI defaults this field to
+    // "ROTH - Other/Did not say" already on some CMS accounts, and the
+    // workflow was stalling forever trying to re-select a value that was
+    // already correct instead of just recognizing it.
+    function getReasonCurrentText(dialog) {
+        const nativeInput = dialog?.querySelector('.MuiSelect-nativeInput, select');
+        if (nativeInput && nativeInput.value) return cleanText(nativeInput.value);
+
+        const combobox = dialog?.querySelector('[role="combobox"]');
+        return combobox ? getText(combobox) : '';
+    }
+
+    function isReasonAlreadyROTH(dialog) {
+        const current = getReasonCurrentText(dialog).toUpperCase();
+        return current === REFUND_REASON_VALUE || current.startsWith(REFUND_REASON_VALUE + ' ') ||
+            current.includes('ROTH');
     }
 
     function getReasonOption() {
@@ -5079,7 +5110,16 @@ if (isCMSHost()) {
 
         if (Date.now() - workflowStartedAt > WORKFLOW_TIMEOUT_MS) {
             workflowActive = false;
-            console.warn('[Better CMS Refund] Timed out before all fields were prepared.');
+            const missing = [
+                !percentageFilled && 'percentage',
+                !reasonSelected && 'reason',
+                !commentsFilled && 'comments'
+            ].filter(Boolean);
+            console.warn('[Better CMS Refund] Timed out before all fields were prepared. Missing:', missing);
+            bvNotify(
+                `Refund auto-fill stopped - could not set: ${missing.join(', ') || 'unknown field'}. Fill it in by hand and submit manually.`,
+                { level: 'warn', ttl: 10000 }
+            );
             return;
         }
 
@@ -5127,7 +5167,9 @@ if (isCMSHost()) {
         }
 
         if (!reasonSelected) {
-            if (selectNativeROTH(dialog)) {
+            if (isReasonAlreadyROTH(dialog)) {
+                reasonSelected = true;
+            } else if (selectNativeROTH(dialog)) {
                 reasonSelected = true;
             } else {
                 const option = getReasonOption();

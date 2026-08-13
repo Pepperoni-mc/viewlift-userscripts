@@ -2,6 +2,45 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Refund reason: yesterday's diagnosis was half-wrong - it's a MUI Select, and it was already correct (2026-08-13)
+
+User pasted the actual reason field's DOM: a **MUI Select** (`role="combobox"` on a `<div>`, not a
+`<button>` - Ember/Radix guesses from 2026-08-12 were wrong for this specific field), with a
+hidden `<input class="MuiSelect-nativeInput" value="ROTH">` sibling. Critically, **the field's
+current value was already "ROTH - Other/Did not say"** - MUI Select keeps its real value on that
+hidden native input specifically so it's readable without opening anything.
+
+2026-08-12's fix removed an "assume already selected" shortcut, reasoning it was unconditionally
+wrong - but the actual bug was narrower: that shortcut's STRING check (does the trigger's text
+literally avoid saying "select a reason") was fragile, not the *concept* of checking the current
+value. Removing it entirely meant the workflow always tried to re-open/re-select even when the
+value was already correct - and since this trigger is a `<div>`, not a `<button>`, the old
+`getReasonTrigger()` selector's `button[role="combobox"]` variant never matched it (only the bare
+`[role="combobox"]` alternative did), and its context-check only looked at
+`element.parentElement?.innerText` - one level up - which misses MUI's `<InputLabel>Reason</InputLabel>`
+sibling-of-the-Select pattern (the label lives on a `FormControl` ancestor, not the direct parent).
+So the trigger was never confidently identified as "the reason field" and the workflow just spun
+until the 20s timeout, every time - regardless of whether the value was already right.
+
+**Fixed properly this time**: added `getReasonCurrentText()`/`isReasonAlreadyROTH()` - reads the
+hidden `.MuiSelect-nativeInput` (or a real `<select>`, or the visible `[role="combobox"]` text as
+last resort) and checks if it already says ROTH, checked FIRST before attempting any click/open at
+all. Also broadened `getReasonTrigger()`'s context search to `element.closest('.MuiFormControl-root,
+.MuiGrid-root, [role="dialog"] > div, form')` instead of just the direct parent, for the case
+where the value genuinely isn't ROTH yet and a real interaction is still needed (untested whether
+that click-to-open path itself works reliably - see the 2026-08-12/13 overnight entry above about
+synthetic clicks needing genuinely trusted events on other MUI components in this same app; if
+this field's dropdown has the same problem, "already correct by default" may be doing all the
+real work here in practice).
+
+Also made the 20s workflow timeout visible (`bvNotify`) instead of silent, naming exactly which
+field(s) never got filled - directly answers "why didn't it submit automatically" instead of a
+console warning nobody sees. `@version` bumped to 3.32.0.
+
+**Verified**: `node --check` only, built from the user's pasted DOM - didn't live-test. If the
+field's default is ROTH as often as the pasted snippet suggests, this should now complete the
+auto-submit chain in the common case without ever needing to click anything.
+
 ## CMS button email detection was hallucinating garbage candidates (2026-08-13)
 
 User pasted a real example: for ticket #350804 (customer `shaytaylor32@outlook.com`), the button's
