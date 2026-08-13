@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.31.0
+// @version      3.31.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8891,6 +8891,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     // customer's own email.
     const GENERIC_SUPPORT_LOCAL_PART_RE = /^(?:get)?support\b|^customer[.\-]?support\b|^[a-z]*-?appsupport\b|^(?:no-?reply|help|contact|info)\b/i;
 
+    // A customer's own account email is never on our own domain - this
+    // catches internal/bot addresses mentioned in ticket text (e.g. the
+    // "Fan Assist" triage bot's fanassist@viewlift.com) that the specific
+    // and generic support-address lists above don't otherwise name.
+    const OWN_DOMAIN_RE = /@viewlift\.com$/i;
+
+    // Common placeholder/example domains and local parts that show up in
+    // UI hint text, sample data, or documentation - not real customers.
+    const PLACEHOLDER_DOMAIN_RE = /@(?:email|example|test|domain|yourdomain|sample)\.com$/i;
+    const PLACEHOLDER_LOCAL_PART_RE = /^(?:somebody|someone|anybody|example|yourname|username)$/i;
+
     function isBlockedCmsSearchEmail(email) {
         const lower = cleanText(email).toLowerCase();
 
@@ -8900,17 +8911,31 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return true;
         }
 
+        if (OWN_DOMAIN_RE.test(lower) || PLACEHOLDER_DOMAIN_RE.test(lower)) return true;
+
         const localPart = lower.split('@')[0] || '';
-        return GENERIC_SUPPORT_LOCAL_PART_RE.test(localPart);
+        return GENERIC_SUPPORT_LOCAL_PART_RE.test(localPart) || PLACEHOLDER_LOCAL_PART_RE.test(localPart);
     }
 
     function extractBestCustomerEmailFromText(text) {
         const matches = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
+        const cleaned = matches.map(cleanText).filter(Boolean);
 
-        for (const match of matches) {
-            const email = cleanText(match);
+        // Same adjacent-text-with-no-separator problem as
+        // collectAllTicketEmailCandidates below - prefer the shorter,
+        // cleaner match when one candidate is another with extra text
+        // glued onto the front (e.g. a ticket number or name with no
+        // whitespace before the real address).
+        const deduped = cleaned.filter(candidate =>
+            !cleaned.some(other =>
+                other !== candidate &&
+                other.length < candidate.length &&
+                candidate.toLowerCase().endsWith(other.toLowerCase())
+            )
+        );
 
-            if (email && !isBlockedCmsSearchEmail(email)) {
+        for (const email of deduped) {
+            if (!isBlockedCmsSearchEmail(email)) {
                 return email;
             }
         }
@@ -9171,7 +9196,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             candidates.push(email);
         });
 
-        return candidates;
+        // The page's own text nodes sometimes render adjacent with no
+        // whitespace between them (a ticket number, a name, or a label
+        // glued directly onto the real address with no separator - e.g.
+        // "350804shaytaylor32@x.com" or "TaylorEmail:shaytaylor32@x.com"),
+        // which the regex above can't tell apart from a genuinely longer
+        // local part. When one candidate is just another, shorter
+        // candidate with extra text glued onto the front, keep only the
+        // shorter/cleaner one.
+        return candidates.filter(candidate =>
+            !candidates.some(other =>
+                other !== candidate &&
+                other.length < candidate.length &&
+                candidate.endsWith(other)
+            )
+        );
     }
 
     function addEmailMenuStyles() {

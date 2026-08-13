@@ -2,6 +2,41 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## CMS button email detection was hallucinating garbage candidates (2026-08-13)
+
+User pasted a real example: for ticket #350804 (customer `shaytaylor32@outlook.com`), the button's
+email detection surfaced `350804shaytaylor32@outlook.com`, `tayloremailshaytaylor32@outlook.com`,
+`emailshaytaylor32@outlook.com`, plus `fanassist@viewlift.com` and `somebody@email.com` as if they
+were all real distinct candidates. Three separate real bugs, all in the same area
+(`isBlockedCmsSearchEmail`/`collectAllTicketEmailCandidates`/`extractBestCustomerEmailFromText`,
+Feature 3):
+
+1. **Concatenation artifacts** - `collectTextFromRoot`'s scraped text sometimes has no whitespace
+   between adjacent DOM text nodes (a ticket number, a name, or a label glued directly onto the
+   real address - e.g. "...350804" + "shaytaylor32@outlook.com" with nothing between them). The
+   email regex's local-part character class (`[A-Z0-9._%+-]+`) happily consumes that glued-on
+   prefix, producing a "different" garbage email that's really the same real address with junk
+   stuck to the front. Fixed both `collectAllTicketEmailCandidates` and (which had the identical
+   risk, just less visibly since it only returns one result) `extractBestCustomerEmailFromText`:
+   when one matched candidate is another matched candidate with extra text prefixed onto it
+   (`candidate.endsWith(other)`, `other` shorter), drop the longer one and keep the clean suffix.
+2. **Our own internal/bot addresses weren't excluded** - `fanassist@viewlift.com` (the "Fan
+   Assist" triage bot mentioned in tickets, see the 2026-08-13 Cancel Subscription entry and
+   others above) isn't in `CMS_SEARCH_BLOCKED_EMAILS` and doesn't match the generic support-pattern
+   regex added 2026-08-12. Rather than adding bot names one at a time, added `OWN_DOMAIN_RE`
+   (`@viewlift\.com$`) - a customer's real account email is never on our own company domain, so
+   this excludes any `@viewlift.com` address categorically, present or future.
+3. **Placeholder/example addresses weren't excluded** - `somebody@email.com` reads exactly like
+   UI hint/placeholder text, not real data. Added `PLACEHOLDER_DOMAIN_RE` (email.com, example.com,
+   test.com, domain.com, yourdomain.com, sample.com) and `PLACEHOLDER_LOCAL_PART_RE`
+   (somebody/someone/anybody/example/yourname/username).
+
+`@version` bumped to 3.31.1. **Verified**: `node --check` only - built from the user's pasted
+example, not re-tested live against that exact ticket. If more garbage candidates show up, they're
+most likely either another concatenation-artifact shape the suffix check doesn't catch (e.g. junk
+appended AFTER the real email instead of before - the current fix only handles the "prefix glued
+on" direction) or another internal-system address worth adding to the blocklist.
+
 ## A second, separate cancellation dialog was never covered by Feature 2 (2026-08-13)
 
 User reported the Comments field on the "Are you sure you want to cancel Subscription?" confirm
