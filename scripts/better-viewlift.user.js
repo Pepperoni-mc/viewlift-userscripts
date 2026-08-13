@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.28.0
+// @version      3.28.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9749,17 +9749,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 })();
 
 /* ============================================================
- * Feature: Auto-fill empty Support Plan/Platform via Freshdesk API
- * Support Plan and Platform sometimes come back "None" (set by an
- * external triage bot when it can't determine them), which the user
- * reported causes problems downstream. Both are Ember Power Select
+ * Feature: Auto-fill unset ("--") Support Plan/Platform via Freshdesk API
+ * "None" is a legitimate, deliberately-chosen value on both fields - the
+ * user confirmed only the actual unset placeholder ("--") should be
+ * touched, "None" should be left alone. Both are Ember Power Select
  * fields that would not respond to click-simulation despite trying
  * the exact same technique the working Set Agent feature uses - so
  * instead of fighting that UI, this calls Freshdesk's own v2 REST
  * API directly. Requires the user's own Freshdesk API key (entered
  * via the "Freshdesk: Set API Key" Tampermonkey menu command); a
  * request to swap either field to a specific value was not made -
- * per the user, any real (non-"None") value is fine.
+ * per the user, any real value is fine as long as it isn't "--".
  * ============================================================ */
 
 (function () {
@@ -9805,9 +9805,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         if (!ticketId || ticketId === lastFixedTicketId) return;
         if (!getFreshdeskApiKey()) return;
 
+        // "None" is a legitimate, deliberately-chosen value (not blank) -
+        // only "--" is the actual unset/blocking placeholder state.
         const fields = {};
-        if (getPropertyFieldValue('Support Plan') === 'None') fields.cf_support_plan = DEFAULT_VALUE;
-        if (getPropertyFieldValue('Platform') === 'None') fields.cf_platform = DEFAULT_VALUE;
+        if (getPropertyFieldValue('Support Plan') === '--') fields.cf_support_plan = DEFAULT_VALUE;
+        if (getPropertyFieldValue('Platform') === '--') fields.cf_platform = DEFAULT_VALUE;
 
         if (!Object.keys(fields).length) return;
 
@@ -9828,7 +9830,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                     return;
                 }
                 bvNotify(
-                    `Support Plan/Platform were "None" - set to "${DEFAULT_VALUE}" via the Freshdesk API. Refresh to see it reflected in the form.`,
+                    `Support Plan/Platform were unset ("--") - set to "${DEFAULT_VALUE}" via the Freshdesk API. Refresh to see it reflected in the form.`,
                     { level: 'info', ttl: 9000 }
                 );
             }

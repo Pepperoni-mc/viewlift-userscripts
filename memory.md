@@ -41,6 +41,12 @@ live-ticket changes on #350785 today). If it doesn't fire, check the key was act
 approach - the internal-API 401 encountered during investigation was a different, unrelated
 endpoint).
 
+**Corrected same day**: user clarified "None" is a legitimate, deliberately-chosen value on both
+fields - it should be left alone. Only the actual unset placeholder, literally `"--"` (the first
+option in both fields' shared picklist), is the real blocking state and should trigger the
+auto-fill. Changed both `getPropertyFieldValue(...) === 'None'` checks to `=== '--'`. `@version`
+bumped to 3.28.1.
+
 **Full removal of the ViewLift Bot integration**, per explicit user request the same day. This
 was the `http://135.181.37.72:3001` "ViewLift Support Assistant" integration added 2026-08-10 (see
 below) - `BV_BOT_BASE_URL`/`BV_BOT_TOKEN_KEY`/`BV_BOT_BRAND_MAP`, `getBotToken`/`promptForBotToken`
