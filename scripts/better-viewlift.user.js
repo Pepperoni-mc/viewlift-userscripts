@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.30.2
+// @version      3.31.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -5212,6 +5212,120 @@ if (isCMSHost()) {
 
 }
 
+/* ============================================================
+ * Feature: Auto-fill the "Cancel Subscription?" confirmation Comments field
+ * A separate v5 dialog from the classic Cancellation Reason field (Feature
+ * 2 above) - its own required "Comments" textarea was always coming back
+ * empty. Fills it with the Freshdesk ticket link, same idea as Feature 2,
+ * but never touches the actual confirm/cancel button - the agent still
+ * reviews and submits by hand.
+ * ============================================================ */
+
+if (isCMSHost()) {
+
+(function () {
+    'use strict';
+
+    function cleanText(value) {
+        return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function getFreshdeskTicketURL() {
+        const liveValue = String(
+            document.getElementById('refund-freshdesk')?.value || ''
+        ).trim();
+
+        if (/^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(liveValue)) {
+            return liveValue;
+        }
+
+        try {
+            const storedValue = String(GM_getValue('Freshdesk ID', '') || '').trim();
+
+            return /^https:\/\/viewlift\.freshdesk\.com\/a\/tickets\/\d+$/i.test(storedValue)
+                ? storedValue
+                : '';
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function setControlledValue(element, value) {
+        if (!element || !value || element.value === value) return false;
+
+        const previousValue = element.value;
+        const prototype = element.tagName.toLowerCase() === 'textarea'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+
+        if (descriptor && descriptor.set) descriptor.set.call(element, value);
+        else element.value = value;
+
+        if (element._valueTracker) element._valueTracker.setValue(previousValue);
+
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        return true;
+    }
+
+    function getCancelSubscriptionDialog() {
+        return Array.from(document.querySelectorAll('[role="dialog"]')).find(dialog => {
+            const text = cleanText(dialog.textContent).toLowerCase();
+            return text.includes('cancel subscription');
+        }) || null;
+    }
+
+    function getCommentsField(dialog) {
+        return dialog.querySelector(
+            'textarea[placeholder*="add comments" i], textarea[placeholder*="comment" i]'
+        ) || null;
+    }
+
+    let lastFilledDialog = null;
+    let debounceTimer = null;
+
+    function fillCancelSubscriptionComments() {
+        const dialog = getCancelSubscriptionDialog();
+
+        if (!dialog) {
+            lastFilledDialog = null;
+            return;
+        }
+
+        if (dialog === lastFilledDialog) return;
+
+        const field = getCommentsField(dialog);
+        if (!field) return;
+
+        const ticketURL = getFreshdeskTicketURL();
+        if (!ticketURL) return;
+
+        if (setControlledValue(field, ticketURL)) {
+            lastFilledDialog = dialog;
+            console.log('[Better CMS] Filled Cancel Subscription comments with the ticket link.');
+        }
+    }
+
+    const observer = new MutationObserver(function () {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(fillCancelSubscriptionComments, 120);
+    });
+
+    function init() {
+        if (!document.body) {
+            window.setTimeout(init, 300);
+            return;
+        }
+
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    init();
+})();
+
+}
 
 /* ============================================================
  * Feature 4: CMS Real Snapshot to Clipboard

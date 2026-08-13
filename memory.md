@@ -2,6 +2,33 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## A second, separate cancellation dialog was never covered by Feature 2 (2026-08-13)
+
+User reported the Comments field on the "Are you sure you want to cancel Subscription?" confirm
+dialog was still always empty, even after the Cancellation Reason fix earlier. Turns out this is a
+genuinely different v5 dialog from the classic Cancellation Reason field Feature 2 (~line 3022)
+targets - different trigger, different field (`textarea[placeholder="Add comments"]` inside a
+MUI `role="dialog"`, not the classic UI's reason input Feature 2's `isCancelButton`/
+`getBestReasonField` were built against. Feature 2 was never wrong, it just never had a code path
+that could reach this dialog at all.
+
+Added a new, separate feature (right after the CMS Percentage Refund Workflow, ~line 5216):
+watches for any `[role="dialog"]` whose text includes "cancel subscription", and fills its
+Comments textarea with the Freshdesk ticket link via the same `setControlledValue`
+(native-setter + `_valueTracker` reset) pattern already proven throughout this file - this is a
+plain MUI `<textarea>`, not an Ember Power Select or a table row, so it doesn't have the
+"requires a genuinely trusted event" problem hit twice on 2026-08-12/13 elsewhere. Deliberately
+does **not** touch the actual confirm/cancel button - matches this project's consistent rule of
+auto-filling for human review, never auto-submitting a real cancellation. `@version` bumped to
+3.31.0.
+
+**Verified**: `node --check` only - built from the user's pasted DOM snippet, not live-tested
+against the real dialog (didn't have live CMS access in this turn). If the field still comes back
+empty, check in DevTools whether the dialog's `role="dialog"` text actually contains "cancel
+subscription" (case doesn't matter, `cleanText(...).toLowerCase()` already normalizes it) and
+whether the textarea's placeholder is exactly "Add comments" - the selector also has a broader
+`textarea[placeholder*="comment" i]` fallback in case the exact wording differs from the snippet.
+
 ## Overnight deep-dive: CMS's real search API, real account IDs, why MSN feels faster - and two confirmed dead ends (2026-08-12/13)
 
 User asked why MSN's CMS search feels much faster than SCHN/others, and insisted on skipping the
