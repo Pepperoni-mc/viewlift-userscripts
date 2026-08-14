@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.42.0
+// @version      3.42.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7284,17 +7284,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   let actionBarFallbackSince = 0;
 
   function getActionBar() {
+    // Both of these are the real, correctly-laid-out containers.
+    //
+    // There used to be a third candidate here - the native Reply button's
+    // parent - which is now permanently dead: Feature 6 removes that button
+    // itself, so it is never present to be found. Worse than useless, it
+    // made the bare-section fallback below look like a rare edge case when
+    // it had actually become the normal outcome of a slow load.
     return document.querySelector('section#mainactionbar .reply-bar-top') ||
       document.querySelector('section#mainactionbar .page-actions__left') ||
-      document.querySelector('section#mainactionbar button[data-test-email-action="reply"]')?.parentElement ||
       null;
   }
 
-  // Only settle for the bare section (a worse flex container, visually
-  // different from the real action bar) after giving Freshdesk's own
-  // controls a few seconds to render. Falling back immediately causes the
-  // toolbar to render once in the wrong spot and then visibly jump into the
-  // right one the moment the real container shows up.
+  // The bare section is a genuinely worse container - a different flex
+  // layout - so a toolbar placed there looks misaligned and then visibly
+  // jumps once the real container appears. That is only ever an acceptable
+  // outcome if Freshdesk has renamed its classes and the real containers are
+  // never coming; it is NOT an acceptable outcome for a page that is merely
+  // loading slowly. Hence a long grace period: waiting a few extra seconds
+  // for correct placement beats rendering wrong and then moving.
+  const ACTION_BAR_GRACE_MS = 15000;
+  let warnedAboutFallbackBar = false;
+
   function getActionBarWithFallback() {
     const actionBar = getActionBar();
     if (actionBar) {
@@ -7303,9 +7314,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     if (!actionBarFallbackSince) actionBarFallbackSince = Date.now();
-    if (Date.now() - actionBarFallbackSince < 4000) return null;
+    if (Date.now() - actionBarFallbackSince < ACTION_BAR_GRACE_MS) return null;
 
-    return document.querySelector('section#mainactionbar');
+    const bareSection = document.querySelector('section#mainactionbar');
+
+    // Loud once, because reaching this means the selectors above have gone
+    // stale and the toolbar is now rendering in the degraded position.
+    if (bareSection && !warnedAboutFallbackBar) {
+      warnedAboutFallbackBar = true;
+      console.warn(
+        '[Better ViewLift] Neither .reply-bar-top nor .page-actions__left appeared within ' +
+        (ACTION_BAR_GRACE_MS / 1000) + 's - falling back to the bare action bar, so the toolbar ' +
+        'will look misaligned. Freshdesk may have renamed these containers.'
+      );
+    }
+
+    return bareSection;
   }
 
   function getContextText() {
@@ -9703,6 +9727,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
         if (!leftActions) return null;
 
+        // Feature 6 removes the native Reply button, so this lookup normally
+        // finds nothing and the firstElementChild path is what actually runs.
+        // Kept because it costs nothing and would anchor correctly again if
+        // that removal is ever turned off.
         const replyButton = leftActions.querySelector('button[data-test-email-action="reply"]');
 
         return replyButton || leftActions.firstElementChild || leftActions;
