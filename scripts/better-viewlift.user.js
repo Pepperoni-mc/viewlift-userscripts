@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.41.0
+// @version      3.41.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -10024,6 +10024,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // from repeating on every pointer twitch.
         let lastWarmAt = 0;
         const warmUp = function () {
+            // Don't spend a lookup on a ticket nobody is looking at - opening
+            // a batch of tickets in background tabs shouldn't each fire one.
+            if (document.visibilityState !== 'visible') return;
             if (Date.now() - lastWarmAt < 5000) return;
             lastWarmAt = Date.now();
             try {
@@ -10034,8 +10037,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         };
         button.addEventListener('mouseenter', warmUp);
         // Delayed rather than immediate so simply skimming past a ticket
-        // doesn't fire a lookup for it.
-        window.setTimeout(warmUp, 2000);
+        // doesn't fire a lookup for it - by 3.5s the agent has settled on
+        // this ticket rather than passing through it.
+        window.setTimeout(warmUp, 3500);
 
         button.addEventListener('click', function (event) {
             event.preventDefault();
