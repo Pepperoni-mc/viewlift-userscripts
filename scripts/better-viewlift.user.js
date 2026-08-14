@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.41.1
+// @version      3.42.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -235,10 +235,47 @@
   // of being guessed here.
   const BV_CMS_API_PATH = '/v3.0/invoke';
   const BV_CMS_CREDS_KEY = 'betterViewliftCmsApiCreds';
-  // Deliberately below the real ~12h rotation so a token that is about to
-  // expire is treated as already gone instead of producing a confusing
-  // mid-request 401.
+  // Nothing here ever *refreshes* the session token - the CMS app owns that.
+  // What happens instead is re-capture: whenever the app makes an API call,
+  // the capture module overwrites the stored token with whatever the app is
+  // currently using, so it stays current as a side effect of normal work.
+  //
+  // Validity is read from the token's own "exp" claim rather than guessed
+  // from how long ago it was captured. An earlier version used a flat 11h
+  // age limit, written when the lifetime was believed to be ~12h; the JWT
+  // was then measured at 1440 minutes (24h), so that heuristic was throwing
+  // away tokens with half their life left and dropping the button back to
+  // the slow path for no reason. The age limit survives only as a fallback
+  // for a token that isn't a readable JWT.
   const BV_CMS_CRED_MAX_AGE_MS = 11 * 60 * 60 * 1000;
+  // Treat a token as gone slightly before it really expires, so a lookup
+  // can't be issued into the gap and come back as a confusing 401.
+  const BV_CMS_CRED_EXPIRY_MARGIN_MS = 2 * 60 * 1000;
+
+  // Epoch ms this token expires, or 0 when that can't be determined.
+  // Reads only the "exp" claim - the value itself is never logged or stored
+  // anywhere beyond the credential record it came from.
+  function bvTokenExpiresAt(token) {
+    try {
+      const raw = String(token || '').replace(/^Bearer\s+/i, '');
+      const parts = raw.split('.');
+      if (parts.length !== 3) return 0;
+
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return payload && payload.exp ? Number(payload.exp) * 1000 : 0;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function bvCredsAreLive(auth) {
+    if (!auth || !auth.value) return false;
+
+    const expiresAt = bvTokenExpiresAt(auth.value);
+    if (expiresAt) return Date.now() < expiresAt - BV_CMS_CRED_EXPIRY_MARGIN_MS;
+
+    return Date.now() - Number(auth.capturedAt || 0) <= BV_CMS_CRED_MAX_AGE_MS;
+  }
 
   function bvGetCmsCreds() {
     try {
@@ -294,7 +331,7 @@
 
     if (!auth || !auth.value || !siteEntry || !siteEntry.xApiKey) return null;
     if (!siteEntry.apiOrigin) return null;
-    if (Date.now() - Number(auth.capturedAt || 0) > BV_CMS_CRED_MAX_AGE_MS) return null;
+    if (!bvCredsAreLive(auth)) return null;
 
     return {
       xApiKey: siteEntry.xApiKey,
@@ -369,18 +406,32 @@
       return;
     }
 
-    const ageMs = Date.now() - Number(auth.capturedAt || 0);
-    const ageMinutes = Math.round(ageMs / 60000);
-    const stale = ageMs > BV_CMS_CRED_MAX_AGE_MS;
-    const ageText = ageMinutes < 60 ? `${ageMinutes} min` : `${Math.round(ageMinutes / 60)} h`;
+    const live = bvCredsAreLive(auth);
+    const expiresAt = bvTokenExpiresAt(auth.value);
+    const brands = sites.length ? `Brands ready: ${sites.join(', ')}.` : 'No brand keys captured yet.';
 
-    bvNotify(
-      (stale
-        ? `CMS API: token is ${ageText} old and treated as expired - open a CMS tab to refresh it. `
-        : `CMS API: token captured ${ageText} ago (rotates ~12h). `) +
-      (sites.length ? `Brands ready: ${sites.join(', ')}.` : 'No brand keys captured yet.'),
-      { level: stale ? 'warn' : 'info', ttl: 12000 }
-    );
+    if (!live) {
+      bvNotify(
+        `CMS API: session token has expired - open any CMS tab once and it is picked up again automatically. ${brands}`,
+        { level: 'warn', ttl: 12000 }
+      );
+      return;
+    }
+
+    // Report real remaining life from the token's own claim when it has one,
+    // rather than how long ago it happened to be captured.
+    let lifeText;
+    if (expiresAt) {
+      const minutesLeft = Math.round((expiresAt - Date.now()) / 60000);
+      lifeText = minutesLeft < 60
+        ? `expires in ${minutesLeft} min`
+        : `expires in ${Math.round(minutesLeft / 60)} h`;
+    } else {
+      const ageMinutes = Math.round((Date.now() - Number(auth.capturedAt || 0)) / 60000);
+      lifeText = `captured ${ageMinutes < 60 ? `${ageMinutes} min` : `${Math.round(ageMinutes / 60)} h`} ago (no expiry claim)`;
+    }
+
+    bvNotify(`CMS API: session token ${lifeText}. ${brands}`, { level: 'info', ttl: 12000 });
   }
 
   try {
