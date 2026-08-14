@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.36.0
+// @version      3.37.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -522,6 +522,15 @@
         }
       }
 
+      // The request body isn't always readable (a Request object's body is
+      // a stream, and not every call carries a site anyway), but the CMS
+      // page always knows which brand it is currently on - it keeps it in
+      // its own "site" cookie. Far more reliable than parsing bodies.
+      function siteFromPage() {
+        const match = document.cookie.match(/(?:^|;\s*)site=([^;]*)/);
+        return match ? decodeURIComponent(match[1]).trim() : '';
+      }
+
       function capture(url, headers, body) {
         try {
           if (!/cms\.api\.viewlift\.com/i.test(String(url || ''))) return;
@@ -530,14 +539,23 @@
           const authorization = readHeader(headers, 'Authorization');
           if (!xApiKey && !authorization) return;
 
+          const site = siteFromRequestBody(body) || siteFromPage();
+
           bvRecordCmsCreds({
-            site: siteFromRequestBody(body),
+            site,
             xApiKey,
             authorization,
             host: location.hostname
           });
+
+          // Page-visible counters so "is capture actually recording?" can be
+          // answered without digging into GM storage. Deliberately only
+          // counts and a brand slug - never the credentials themselves.
+          pageWindow.__bvCmsCredCaptureCount = (pageWindow.__bvCmsCredCaptureCount || 0) + 1;
+          pageWindow.__bvCmsCredLastSite = site || '(no site in body)';
+          pageWindow.__bvCmsCredLastHad = (xApiKey ? 'key' : '') + (authorization ? '+auth' : '');
         } catch (error) {
-          // Capture is best-effort - never let it disturb the real request.
+          pageWindow.__bvCmsCredCaptureError = String(error && error.message || error);
         }
       }
 
@@ -546,8 +564,15 @@
         if (typeof originalFetch === 'function') {
           pageWindow.fetch = function (input, init) {
             try {
-              const url = (input && typeof input === 'object' && input.url) ? input.url : input;
-              capture(url, init && init.headers, init && init.body);
+              const isRequestObject = input && typeof input === 'object' && input.url;
+              const url = isRequestObject ? input.url : input;
+              // fetch(url, init) puts the headers on init, but
+              // fetch(new Request(url, {headers})) carries them on the
+              // Request itself - miss that second form and nothing is ever
+              // captured even though the patch is installed.
+              const headers = (init && init.headers) || (isRequestObject ? input.headers : null);
+              const body = (init && init.body) || null;
+              capture(url, headers, body);
             } catch (error) { /* never block the request */ }
             return originalFetch.apply(this, arguments);
           };
@@ -7037,24 +7062,25 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         height: 32px !important;
         margin-right: 6px !important;
         padding: 0 !important;
-        border: 1px solid #cfd7df !important;
+        border: 1px solid #1a7f5a !important;
         border-radius: 4px !important;
-        background: #ffffff !important;
-        color: #12344d !important;
+        background: #1a7f5a !important;
+        color: #ffffff !important;
         font-size: 14px !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         cursor: pointer !important;
         box-shadow: none !important;
         transition: background 120ms ease, border-color 120ms ease !important;
       }
 
       #${REFUND_TOGGLE_ID}:hover {
-        background: #f5f7f9 !important;
-        border-color: #b9c3cd !important;
+        background: #15684a !important;
+        border-color: #15684a !important;
       }
 
       #${REFUND_TOGGLE_ID}:active {
-        background: #ebeff3 !important;
+        background: #11543b !important;
+        border-color: #11543b !important;
       }
 
       #${BRAND_ID} {
@@ -7064,22 +7090,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         box-sizing: border-box !important;
         white-space: nowrap !important;
         padding: 0 10px !important;
-        border: 1px solid #cfd7df !important;
+        border: 1px solid transparent !important;
         border-radius: 4px !important;
-        background: #f5f7f9 !important;
-        color: #5a6c7d !important;
-        font: 600 12px/1.2 Arial, sans-serif !important;
+        font: 700 12px/1.2 Arial, sans-serif !important;
+        letter-spacing: .03em !important;
         box-shadow: none !important;
       }
 
-      /* Brand tint is carried by the text colour alone - enough to tell
-         them apart at a glance without turning the bar into confetti. */
-      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; }
-      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; }
-      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; }
-      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; }
-      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; }
-      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; }
+      /* One flat tinted chip per brand - enough colour to tell them apart
+         instantly, without the glow/gradient treatment. */
+      #${BRAND_ID}[data-brand="LIV"]      { color: #14683f !important; background: #e6f4ec !important; border-color: #bcdfcb !important; }
+      #${BRAND_ID}[data-brand="DIRT"]     { color: #8a5200 !important; background: #fdf3e3 !important; border-color: #eed7ab !important; }
+      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1b4a9c !important; background: #e8f0fc !important; border-color: #bed4f2 !important; }
+      #${BRAND_ID}[data-brand="MSN"]      { color: #5b2a86 !important; background: #f2eafa !important; border-color: #d9c6ed !important; }
+      #${BRAND_ID}[data-brand="SCHN"]     { color: #96233f !important; background: #fdeaee !important; border-color: #f2c2ce !important; }
+      #${BRAND_ID}[data-brand="FOX"]      { color: #93400f !important; background: #fdefe4 !important; border-color: #f0cdb2 !important; }
+      #${BRAND_ID}[data-brand="CASE"]     { color: #5a6c7d !important; background: #f0f2f5 !important; border-color: #d5dbe1 !important; }
 
       #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
         position: absolute !important;
@@ -7683,9 +7709,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         gap: 5px !important;
         padding: 3px 9px !important;
         border-radius: 4px !important;
-        border: 1px solid #cfd7df !important;
-        background: #f5f7f9 !important;
-        color: #5a6c7d !important;
+        border: 1px solid #bed4f2 !important;
+        background: #e8f0fc !important;
+        color: #1b4a9c !important;
         font: 500 12px Arial, sans-serif !important;
         cursor: copy !important;
         white-space: nowrap !important;
@@ -7693,18 +7719,33 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         transition: background 120ms ease, border-color 120ms ease !important;
       }
       .${CHIP_CLASS}:hover {
-        background: #ebeff3 !important;
-        border-color: #b9c3cd !important;
+        background: #d8e6fa !important;
+        border-color: #9dbfe9 !important;
+      }
+      .${CHIP_CLASS}[data-type="phone"] {
+        border-color: #bcdfcb !important;
+        background: #e6f4ec !important;
+        color: #14683f !important;
+      }
+      .${CHIP_CLASS}[data-type="phone"]:hover {
+        background: #d5ebde !important;
+        border-color: #9fcfb4 !important;
       }
       .${CHIP_CLASS}[data-type="cms"] {
         cursor: pointer !important;
-        color: #12344d !important;
+        border-color: #2c5cc5 !important;
+        background: #2c5cc5 !important;
+        color: #ffffff !important;
         font-weight: 600 !important;
-        background: #ffffff !important;
+      }
+      .${CHIP_CLASS}[data-type="cms"]:hover {
+        background: #24499c !important;
+        border-color: #24499c !important;
       }
       .${CHIP_CLASS}[data-copied="yes"] {
-        border-color: #96c78a !important;
-        color: #3c763d !important;
+        border-color: #9fcfb4 !important;
+        background: #e6f4ec !important;
+        color: #14683f !important;
       }
     `;
     document.head.appendChild(style);
@@ -9511,10 +9552,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 margin-right: 6px !important;
                 height: 32px !important;
                 padding: 0 12px !important;
-                border: 1px solid #cfd7df !important;
+                border: 1px solid #2c5cc5 !important;
                 border-radius: 4px !important;
-                background: #ffffff !important;
-                color: #12344d !important;
+                background: #2c5cc5 !important;
+                color: #ffffff !important;
                 font-size: 13px !important;
                 font-weight: 600 !important;
                 cursor: pointer !important;
@@ -9525,11 +9566,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 transition: background 120ms ease, border-color 120ms ease !important;
             }
             #${BUTTON_ID}:hover {
-                background: #f5f7f9 !important;
-                border-color: #b9c3cd !important;
+                background: #24499c !important;
+                border-color: #24499c !important;
             }
             #${BUTTON_ID}:active {
-                background: #ebeff3 !important;
+                background: #1d3b7d !important;
+                border-color: #1d3b7d !important;
             }
         `;
         document.head.appendChild(style);
