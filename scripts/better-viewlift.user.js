@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.39.0
+// @version      3.40.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9795,6 +9795,88 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         else window.open(href, '_blank');
     }
 
+    // How long to wait for the account lookup before giving up and just
+    // opening the search page. Comfortably above a normal round trip, but
+    // short enough that a slow API never leaves the agent watching a blank
+    // tab wondering whether the click registered.
+    const LOOKUP_DEADLINE_MS = 3500;
+
+    // A blank white tab gives no signal that anything is happening, which is
+    // exactly what "it sits on about:blank for ages" feels like even when
+    // the wait is short. This paints something honest into the tab the
+    // instant it opens, so the wait reads as progress rather than a hang.
+    function showLookupPlaceholder(tab, email) {
+        try {
+            const safeEmail = String(email).replace(/[&<>"']/g, function (character) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character];
+            });
+
+            tab.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title>Opening CMS…</title></head>
+<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f7f9;font:14px -apple-system,Segoe UI,Arial,sans-serif;color:#12344d;">
+  <div style="text-align:center;max-width:420px;padding:24px;">
+    <div style="width:26px;height:26px;margin:0 auto 14px;border:3px solid #d5dbe1;border-top-color:#2c5cc5;border-radius:50%;animation:s .8s linear infinite;"></div>
+    <div style="font-weight:600;margin-bottom:6px;">Looking up the CMS account…</div>
+    <div style="color:#5a6c7d;font-size:13px;word-break:break-all;">${safeEmail}</div>
+  </div>
+  <style>@keyframes s{to{transform:rotate(360deg)}}</style>
+</body></html>`);
+            tab.document.close();
+        } catch (error) {
+            // A placeholder is a nicety - never let it stop the real journey.
+        }
+    }
+
+    /* ------------------------------------------------------------
+     * Prefetch
+     *
+     * The lookup used to start on click, so every single use paid the
+     * full round trip while staring at a new tab. The answer almost never
+     * changes between opening a ticket and pressing the button, so it is
+     * fetched ahead of time instead: once shortly after the button
+     * appears, and again the moment the pointer touches it. A hit makes
+     * the click instant - the destination is known before it happens, so
+     * no holding tab is needed at all.
+     * ------------------------------------------------------------ */
+    const PREFETCH_TTL_MS = 3 * 60 * 1000;
+    let prefetchEntry = null;
+    let prefetchInFlight = '';
+
+    function prefetchKeyFor(email, site) {
+        const ticketMatch = location.pathname.match(/\/a\/tickets\/(\d+)/i);
+        return `${ticketMatch ? ticketMatch[1] : ''}|${String(email).toLowerCase()}|${site}`;
+    }
+
+    function readPrefetch(email, site) {
+        if (!prefetchEntry) return null;
+        if (prefetchEntry.key !== prefetchKeyFor(email, site)) return null;
+        if (Date.now() - prefetchEntry.at > PREFETCH_TTL_MS) return null;
+        return prefetchEntry;
+    }
+
+    function prefetchAccountLookup(email, clientContext) {
+        if (!email) return;
+
+        const site = resolveCmsSite(clientContext);
+        if (!site || !bvGetCmsCredForSite(site)) return;
+
+        const key = prefetchKeyFor(email, site);
+        if (prefetchInFlight === key || readPrefetch(email, site)) return;
+
+        prefetchInFlight = key;
+        bvCmsUserSearch({
+            site,
+            searchTerm: email,
+            onDone: function (error, result) {
+                prefetchInFlight = '';
+                // A failed prefetch is deliberately not cached - the click
+                // should get a real attempt rather than inherit a stale error.
+                if (error) return;
+                prefetchEntry = { key, users: (result && result.users) || [], at: Date.now() };
+            }
+        });
+    }
+
     // One email in, one lookup, straight into the account. Exposed on
     // window so the in-ticket email chips (Feature 5) can reuse the exact
     // same path for the alternate addresses a customer mentions - the CMS
@@ -9810,6 +9892,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
+        // Already know the answer: skip the holding tab entirely and open
+        // the real destination straight from the click.
+        const prefetched = readPrefetch(email, site);
+        if (prefetched) {
+            const users = prefetched.users;
+            if (users.length === 1 && users[0] && users[0].id) {
+                openCMSAccount(users[0].id, email, clientContext);
+                return;
+            }
+            if (users.length > 1) {
+                bvNotify(`CMS: ${users.length} accounts match "${email}" - opening the list to pick.`, { level: 'info', ttl: 9000 });
+            } else {
+                bvNotify(`CMS: no account found for ${email}.`, { level: 'warn', ttl: 9000 });
+            }
+            openCMSForEmail(email, clientContext);
+            return;
+        }
+
         // The tab has to be opened synchronously inside the click handler or
         // the popup blocker kills it - the async lookup below just points
         // this already-granted tab at the right destination once it knows.
@@ -9819,16 +9919,42 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
+        showLookupPlaceholder(tab, email);
+
+        // Whichever of the lookup and the deadline lands first wins; the
+        // other becomes a no-op. Without this the tab could be navigated
+        // twice (deadline fires, then a slow lookup answers), which reloads
+        // the page under the agent.
+        let settled = false;
+        const settle = function (run) {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(deadline);
+            run();
+        };
+
+        // Never leave the agent staring at a placeholder: if the lookup is
+        // slow, the plain search page is still a useful destination and one
+        // they can work with immediately.
+        const deadline = window.setTimeout(function () {
+            settle(function () {
+                console.warn('[CMS Search] Lookup exceeded the deadline - opening the search page instead.');
+                openCMSForEmail(email, clientContext, tab);
+            });
+        }, LOOKUP_DEADLINE_MS);
+
         bvCmsUserSearch({
             site,
             searchTerm: email,
             onDone: function (error, result) {
                 if (error) {
-                    console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
-                    if (error.message === 'cms-unauthorized') {
-                        bvNotify('CMS session expired - open any CMS page once, then this will jump straight to accounts again.', { level: 'info', ttl: 9000 });
-                    }
-                    openCMSForEmail(email, clientContext, tab);
+                    settle(function () {
+                        console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
+                        if (error.message === 'cms-unauthorized') {
+                            bvNotify('CMS session expired - open any CMS page once, then this will jump straight to accounts again.', { level: 'info', ttl: 9000 });
+                        }
+                        openCMSForEmail(email, clientContext, tab);
+                    });
                     return;
                 }
 
@@ -9836,17 +9962,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
                 // Single unambiguous hit is the whole point: go straight in.
                 if (users.length === 1 && users[0] && users[0].id) {
-                    openCMSAccount(users[0].id, email, clientContext, tab);
+                    settle(function () {
+                        openCMSAccount(users[0].id, email, clientContext, tab);
+                    });
                     return;
                 }
 
                 // Anything else is a judgement call - hand over the list.
-                if (users.length > 1) {
-                    bvNotify(`CMS: ${users.length} accounts match "${email}" - opening the list to pick.`, { level: 'info', ttl: 9000 });
-                } else {
-                    bvNotify(`CMS: no account found for ${email}.`, { level: 'warn', ttl: 9000 });
-                }
-                openCMSForEmail(email, clientContext, tab);
+                settle(function () {
+                    if (users.length > 1) {
+                        bvNotify(`CMS: ${users.length} accounts match "${email}" - opening the list to pick.`, { level: 'info', ttl: 9000 });
+                    } else {
+                        bvNotify(`CMS: no account found for ${email}.`, { level: 'warn', ttl: 9000 });
+                    }
+                    openCMSForEmail(email, clientContext, tab);
+                });
             }
         });
     }
@@ -9880,6 +10010,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         button.textContent = 'CMS';
 
         styleHeaderButton(button);
+
+        // Warm the lookup before it is needed: on pointer approach, and once
+        // shortly after the button appears. Both are cheap no-ops when the
+        // answer is already cached or no credentials exist yet.
+        const warmUp = function () {
+            try {
+                prefetchAccountLookup(getCustomerEmailFromContactInfo(), getFreshdeskClientContext());
+            } catch (error) {
+                console.warn('[CMS Search] Prefetch skipped.', error);
+            }
+        };
+        button.addEventListener('mouseenter', warmUp);
+        button.addEventListener('focus', warmUp);
+        // Delayed rather than immediate so simply skimming past a ticket
+        // doesn't fire a lookup for it.
+        window.setTimeout(warmUp, 2000);
 
         button.addEventListener('click', function (event) {
             event.preventDefault();
