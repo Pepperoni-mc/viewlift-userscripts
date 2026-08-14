@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.35.0
+// @version      3.36.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -138,100 +138,26 @@
   const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
   const BV_CMS_KEEP_ALIVE_STATUS_KEY = 'betterViewliftCmsSessionStatus';
 
-  // Shared visible-notification system. Several real bugs today were
-  // "silent failures" - things that only ever logged to a console.warn
-  // nobody reads (CMS session dying, a lookup silently falling back to a
-  // worse method). Anything worth an agent actually knowing about should
-  // go through here instead of console.* alone, so it shows up on-screen
-  // wherever they are (Freshdesk or CMS) instead of requiring someone to
-  // dig through DevTools after the fact.
-  const BV_NOTIFY_CONTAINER_ID = 'better-viewlift-notify-stack';
-  const BV_NOTIFY_STYLE_ID = 'better-viewlift-notify-style';
+  // Diagnostic channel for things worth knowing about (CMS session dying,
+  // a lookup falling back to a worse method). Routed to the console -
+  // see bvNotify below.
 
-  function bvEnsureNotifyStyles() {
-    if (document.getElementById(BV_NOTIFY_STYLE_ID)) return;
-
-    const style = document.createElement('style');
-    style.id = BV_NOTIFY_STYLE_ID;
-    style.textContent = `
-      #${BV_NOTIFY_CONTAINER_ID} {
-        position: fixed !important;
-        top: 16px !important;
-        right: 16px !important;
-        z-index: 2147483600 !important;
-        display: flex !important;
-        flex-direction: column !important;
-        gap: 8px !important;
-        max-width: 340px !important;
-        pointer-events: none !important;
-      }
-
-      .bv-notify-item {
-        pointer-events: auto !important;
-        padding: 10px 13px !important;
-        border-radius: 10px !important;
-        font: 600 12.5px Arial, sans-serif !important;
-        line-height: 1.4 !important;
-        box-shadow: 0 10px 24px rgba(15, 23, 42, .22) !important;
-        cursor: pointer !important;
-        animation: bv-notify-in 160ms ease !important;
-      }
-
-      .bv-notify-item[data-level="warn"] {
-        background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%) !important;
-        color: #92400e !important;
-        border: 1px solid #fcd34d !important;
-      }
-
-      .bv-notify-item[data-level="error"] {
-        background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%) !important;
-        color: #991b1b !important;
-        border: 1px solid #fca5a5 !important;
-      }
-
-      .bv-notify-item[data-level="info"] {
-        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
-        color: #1e40af !important;
-        border: 1px solid #93c5fd !important;
-      }
-
-      @keyframes bv-notify-in {
-        from { opacity: 0; transform: translateY(-6px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function bvGetNotifyContainer() {
-    let container = document.getElementById(BV_NOTIFY_CONTAINER_ID);
-    if (!container) {
-      container = document.createElement('div');
-      container.id = BV_NOTIFY_CONTAINER_ID;
-      (document.body || document.documentElement).appendChild(container);
-    }
-    return container;
-  }
-
+  // The on-screen toasts these used to render were removed per request -
+  // they piled up in the top-right corner and got in the way. The messages
+  // themselves are still worth keeping, so they go to the console instead:
+  // nothing is lost, nothing is in the way. Signature is unchanged so the
+  // ~15 existing call sites keep working untouched.
   function bvNotify(message, options = {}) {
-    if (!document.body && !document.documentElement) return null;
-
     const level = options.level || 'warn';
-    const ttl = options.ttl || 7000;
+    const log = level === 'error' ? console.error : (level === 'info' ? console.info : console.warn);
 
-    bvEnsureNotifyStyles();
+    try {
+      log('[Better ViewLift] ' + message);
+    } catch (error) {
+      // Never let a logging failure break a caller.
+    }
 
-    const item = document.createElement('div');
-    item.className = 'bv-notify-item';
-    item.dataset.level = level;
-    item.textContent = message;
-    item.title = 'Click to dismiss';
-    item.addEventListener('click', () => item.remove());
-
-    bvGetNotifyContainer().appendChild(item);
-    window.setTimeout(() => item.remove(), ttl);
-
-    return item;
+    return null;
   }
 
   // Freshdesk API key - entered by each user themselves via the menu command
@@ -3747,46 +3673,41 @@ if (isCMSHost()) {
                 height: 32px !important;
                 margin-right: 6px !important;
                 padding: 0 12px !important;
-                border: 1px solid #334155 !important;
-                border-radius: 8px !important;
-                background: linear-gradient(180deg, #64748b 0%, #475569 100%) !important;
-                color: #fff !important;
-                font-size: 12px !important;
-                font-weight: 700 !important;
-                letter-spacing: .02em !important;
+                border: 1px solid #cfd7df !important;
+                border-radius: 4px !important;
+                background: #ffffff !important;
+                color: #12344d !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
                 line-height: 30px !important;
                 white-space: nowrap !important;
                 cursor: pointer !important;
-                box-shadow: 0 4px 12px rgba(71, 85, 105, .3), inset 0 1px 0 rgba(255, 255, 255, .16) !important;
-                transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
+                box-shadow: none !important;
+                transition: background 120ms ease, border-color 120ms ease !important;
             }
 
             #${BUTTON_ID}:hover {
-                border-color: #1e293b !important;
-                background: linear-gradient(180deg, #475569 0%, #334155 100%) !important;
-                box-shadow: 0 6px 16px rgba(71, 85, 105, .38), inset 0 1px 0 rgba(255, 255, 255, .14) !important;
-                transform: translateY(-1px) !important;
+                background: #f5f7f9 !important;
+                border-color: #b9c3cd !important;
             }
 
             #${BUTTON_ID}:active {
-                transform: translateY(0) !important;
-                box-shadow: 0 2px 6px rgba(71, 85, 105, .28), inset 0 2px 4px rgba(0, 0, 0, .16) !important;
+                background: #ebeff3 !important;
             }
 
             #${BUTTON_ID}[data-configured="no"] {
-                border-color: #92400e !important;
-                background: linear-gradient(180deg, #d97706 0%, #b45309 100%) !important;
-                box-shadow: 0 4px 12px rgba(180, 83, 9, .32), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
+                border-color: #e3b04b !important;
+                background: #fdf6e7 !important;
+                color: #7a5312 !important;
             }
 
             #${BUTTON_ID}[data-configured="no"]:hover {
-                background: linear-gradient(180deg, #b45309 0%, #92400e 100%) !important;
+                background: #faedd2 !important;
             }
 
             #${BUTTON_ID}[data-busy="yes"] {
-                opacity: .72 !important;
+                opacity: .6 !important;
                 cursor: wait !important;
-                transform: none !important;
             }
 
             #${MENU_ID} {
@@ -7116,26 +7037,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         height: 32px !important;
         margin-right: 6px !important;
         padding: 0 !important;
-        border: 1px solid #0e4d8c !important;
-        border-radius: 999px !important;
-        background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%) !important;
-        color: #ffffff !important;
-        font-size: 15px !important;
-        font-weight: 800 !important;
+        border: 1px solid #cfd7df !important;
+        border-radius: 4px !important;
+        background: #ffffff !important;
+        color: #12344d !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
         cursor: pointer !important;
-        box-shadow: 0 4px 12px rgba(11, 92, 171, .32), inset 0 1px 0 rgba(255, 255, 255, .2) !important;
-        transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
+        box-shadow: none !important;
+        transition: background 120ms ease, border-color 120ms ease !important;
       }
 
       #${REFUND_TOGGLE_ID}:hover {
-        background: linear-gradient(180deg, #3d8bea 0%, #0e4d8c 100%) !important;
-        box-shadow: 0 6px 16px rgba(11, 92, 171, .4), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
-        transform: translateY(-1px) !important;
+        background: #f5f7f9 !important;
+        border-color: #b9c3cd !important;
       }
 
       #${REFUND_TOGGLE_ID}:active {
-        transform: translateY(0) !important;
-        box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
+        background: #ebeff3 !important;
       }
 
       #${BRAND_ID} {
@@ -7144,27 +7063,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         height: 32px !important;
         box-sizing: border-box !important;
         white-space: nowrap !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 999px !important;
-        background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%) !important;
-        color: #334155 !important;
+        padding: 0 10px !important;
+        border: 1px solid #cfd7df !important;
+        border-radius: 4px !important;
+        background: #f5f7f9 !important;
+        color: #5a6c7d !important;
         font: 600 12px/1.2 Arial, sans-serif !important;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, .06) !important;
-        transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease !important;
+        box-shadow: none !important;
       }
 
-      #${BRAND_ID} {
-        padding: 0 12px !important;
-        letter-spacing: .05em !important;
-        font-weight: 800 !important;
-      }
-
-      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important; border-color: #86efac !important; box-shadow: 0 1px 3px rgba(22, 101, 52, .16) !important; }
-      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%) !important; border-color: #fcd34d !important; box-shadow: 0 1px 3px rgba(146, 64, 14, .16) !important; }
-      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important; border-color: #93c5fd !important; box-shadow: 0 1px 3px rgba(30, 64, 175, .16) !important; }
-      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; background: linear-gradient(180deg, #faf5ff 0%, #f3e8ff 100%) !important; border-color: #d8b4fe !important; box-shadow: 0 1px 3px rgba(88, 28, 135, .16) !important; }
-      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important; border-color: #fda4af !important; box-shadow: 0 1px 3px rgba(159, 18, 57, .16) !important; }
-      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%) !important; border-color: #fdba74 !important; box-shadow: 0 1px 3px rgba(154, 52, 18, .16) !important; }
+      /* Brand tint is carried by the text colour alone - enough to tell
+         them apart at a glance without turning the bar into confetti. */
+      #${BRAND_ID}[data-brand="LIV"] { color: #166534 !important; }
+      #${BRAND_ID}[data-brand="DIRT"] { color: #92400e !important; }
+      #${BRAND_ID}[data-brand="ALTITUDE"] { color: #1e40af !important; }
+      #${BRAND_ID}[data-brand="MSN"] { color: #581c87 !important; }
+      #${BRAND_ID}[data-brand="SCHN"] { color: #9f1239 !important; }
+      #${BRAND_ID}[data-brand="FOX"] { color: #9a3412 !important; }
 
       #${TOOLBAR_ID} #refund-capture-panel.better-freshdesk-inline-panel {
         position: absolute !important;
@@ -7766,49 +7681,30 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         display: inline-flex !important;
         align-items: center !important;
         gap: 5px !important;
-        padding: 4px 11px !important;
-        border-radius: 999px !important;
-        border: 1px solid #93c5fd !important;
-        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
-        color: #1e40af !important;
-        font: 700 11.5px Arial, sans-serif !important;
-        letter-spacing: .01em !important;
+        padding: 3px 9px !important;
+        border-radius: 4px !important;
+        border: 1px solid #cfd7df !important;
+        background: #f5f7f9 !important;
+        color: #5a6c7d !important;
+        font: 500 12px Arial, sans-serif !important;
         cursor: copy !important;
         white-space: nowrap !important;
-        box-shadow: 0 1px 3px rgba(30, 64, 175, .14) !important;
-        transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease !important;
+        box-shadow: none !important;
+        transition: background 120ms ease, border-color 120ms ease !important;
       }
-      .${CHIP_CLASS}[data-type="email"]::before { content: "\\2709"; }
-      .${CHIP_CLASS}[data-type="phone"]::before { content: "\\260E"; }
       .${CHIP_CLASS}:hover {
-        box-shadow: 0 3px 8px rgba(30, 64, 175, .22) !important;
-        transform: translateY(-1px) !important;
-      }
-      .${CHIP_CLASS}[data-type="phone"] {
-        border-color: #6ee7b7 !important;
-        background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%) !important;
-        color: #065f46 !important;
-        box-shadow: 0 1px 3px rgba(6, 95, 70, .14) !important;
+        background: #ebeff3 !important;
+        border-color: #b9c3cd !important;
       }
       .${CHIP_CLASS}[data-type="cms"] {
-        border-color: #93c5fd !important;
-        background: linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%) !important;
-        color: #ffffff !important;
         cursor: pointer !important;
-        box-shadow: 0 1px 3px rgba(30, 64, 175, .3) !important;
-      }
-      .${CHIP_CLASS}[data-type="cms"]::before { content: "\\1F50E"; }
-      .${CHIP_CLASS}[data-type="cms"]:hover {
-        background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%) !important;
-        box-shadow: 0 3px 8px rgba(30, 64, 175, .35) !important;
-      }
-      .${CHIP_CLASS}[data-type="phone"]:hover {
-        box-shadow: 0 3px 8px rgba(6, 95, 70, .22) !important;
+        color: #12344d !important;
+        font-weight: 600 !important;
+        background: #ffffff !important;
       }
       .${CHIP_CLASS}[data-copied="yes"] {
-        background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
-        border-color: #86efac !important;
-        color: #166534 !important;
+        border-color: #96c78a !important;
+        color: #3c763d !important;
       }
     `;
     document.head.appendChild(style);
@@ -9615,28 +9511,25 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 margin-right: 6px !important;
                 height: 32px !important;
                 padding: 0 12px !important;
-                border: 1px solid #0e4d8c !important;
-                border-radius: 8px !important;
-                background: linear-gradient(180deg, #2f7fe0 0%, #0b5cab 100%) !important;
-                color: #ffffff !important;
-                font-size: 12px !important;
-                font-weight: 700 !important;
-                letter-spacing: .02em !important;
+                border: 1px solid #cfd7df !important;
+                border-radius: 4px !important;
+                background: #ffffff !important;
+                color: #12344d !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
                 cursor: pointer !important;
                 display: inline-flex !important;
                 align-items: center !important;
                 gap: 4px !important;
-                box-shadow: 0 4px 12px rgba(11, 92, 171, .32), inset 0 1px 0 rgba(255, 255, 255, .2) !important;
-                transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease !important;
+                box-shadow: none !important;
+                transition: background 120ms ease, border-color 120ms ease !important;
             }
             #${BUTTON_ID}:hover {
-                background: linear-gradient(180deg, #3d8bea 0%, #0e4d8c 100%) !important;
-                box-shadow: 0 6px 16px rgba(11, 92, 171, .4), inset 0 1px 0 rgba(255, 255, 255, .18) !important;
-                transform: translateY(-1px) !important;
+                background: #f5f7f9 !important;
+                border-color: #b9c3cd !important;
             }
             #${BUTTON_ID}:active {
-                transform: translateY(0) !important;
-                box-shadow: 0 2px 6px rgba(11, 92, 171, .3), inset 0 2px 4px rgba(0, 0, 0, .14) !important;
+                background: #ebeff3 !important;
             }
         `;
         document.head.appendChild(style);
@@ -9679,6 +9572,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // GCP's classic CMS has no account selector. Route through the
         // existing v5 selector when the ticket identifies the account.
         if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
+            // ...but only when the session isn't already on that brand.
+            // Measured 2026-08-13: opening an account id while the session
+            // sits on a different org renders an empty shell (no account
+            // data), so the switch is genuinely required when they differ -
+            // yet going through /v5/overview when they ALREADY match is the
+            // pure-waste second hop that reads as a "double lookup". The
+            // captured credentials record which brand this host last really
+            // used, so that check costs nothing.
+            if (bvGetSiteForCmsHost(url.hostname) === account) {
+                return finalPath;
+            }
+
             url.pathname = '/v5/overview';
             url.searchParams.set('betterSwitch', account);
             try {
