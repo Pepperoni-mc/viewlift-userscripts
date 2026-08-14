@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.44.0
+// @version      3.45.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -5366,8 +5366,10 @@ if (isCMSHost()) {
     // Select's hidden native input before we stop waiting and go clicking.
     const REASON_WRITE_SETTLE_MS = 700;
     const REASON_WRITE_RETRY_MS = 1400;
-    // Grace period for a dialog that some other click is supposed to open.
-    const DIALOG_WAIT_MS = 4000;
+    // How long the run waits to recognise ANYTHING refund-shaped (a Refund
+    // button, the percentage menu item, or the dialog) before concluding the
+    // click it started from had nothing to do with refunds.
+    const NO_PROGRESS_MS = 6000;
     const DEBUG_KEY = 'bvRefundDebug';
     const DRY_RUN_KEY = 'bvRefundDryRun';
 
@@ -5381,12 +5383,21 @@ if (isCMSHost()) {
     let lastRefundTriggerClickAt = 0;
     let lastReasonTriggerClickAt = 0;
     let reasonNativeWriteAt = 0;
-    let expectedDialog = false;
-    let dialogSeen = false;
+    let sawProgress = false;
     let runTimer = null;
     let lastDebugLine = '';
 
     function readFlag(key) {
+        // Also read the flag off <html data-bv-refund-dry-run="true">, because
+        // Tampermonkey hands this script a sandboxed window: neither the page's
+        // own console nor browser automation can reach window.__bvRefundDryRun
+        // from outside. A data attribute is the one channel both sides see,
+        // which is what makes a dry run settable from DevTools.
+        try {
+            if (document.documentElement.dataset[key] === 'true') return true;
+        } catch (error) {
+            // No documentElement yet - fall through to the other sources.
+        }
         if (window[`__${key}`] === true) return true;
         try {
             return GM_getValue(key, false) === true;
@@ -5399,9 +5410,16 @@ if (isCMSHost()) {
         try {
             GM_setValue(key, value === true);
         } catch (error) {
-            // Storage is optional here - window.__bvRefundDebug still works.
+            // Storage is optional here - the other two channels still work.
         }
         window[`__${key}`] = value === true;
+        // Mirrored so the state is visible (and clearable) from DevTools.
+        try {
+            if (value === true) document.documentElement.dataset[key] = 'true';
+            else delete document.documentElement.dataset[key];
+        } catch (error) {
+            // Non-fatal - the GM value stays the source of truth.
+        }
     }
 
     // Off by default: this runs on every CMS page and the per-tick state dump
@@ -5447,10 +5465,16 @@ if (isCMSHost()) {
             style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     }
 
+    // Live CMS (2026-08-14) renders this as a plain MUI Button - a MoreHoriz
+    // icon plus the word "Refund" - with NO aria-haspopup and NO data-slot.
+    // The old selector demanded one of those attributes, so it never found the
+    // button and the whole chain died at step one: that is why clicking the eye
+    // "did nothing". Identity is the exact text: "Confirm Refund" and "Issue
+    // percentage refund" must not match, so equality, not includes().
     function getRefundTrigger() {
-        return Array.from(document.querySelectorAll(
-            'button[data-slot="dropdown-menu-trigger"], button[aria-haspopup="menu"]'
-        )).filter(isVisible).find(button => getText(button).toLowerCase() === 'refund') || null;
+        return Array.from(document.querySelectorAll('button, [role="button"]'))
+            .filter(isVisible)
+            .find(button => getText(button).toLowerCase() === 'refund') || null;
     }
 
     function isRefundTrigger(target) {
@@ -5844,33 +5868,43 @@ if (isCMSHost()) {
         const openDialog = getIssueRefundDialog();
         if (openDialog) {
             percentageOptionClicked = true;
-            dialogSeen = true;
-        }
-
-        // CMS uses MUI's Visibility icon for more than refunds, so an eye click
-        // elsewhere would otherwise sit here for the full 20s and then warn the
-        // user about a refund they never started. If the dialog we were told to
-        // expect has not appeared in a few seconds, this was not a refund.
-        if (expectedDialog && !dialogSeen && Date.now() - workflowStartedAt > DIALOG_WAIT_MS) {
-            workflowActive = false;
-            debugLog('No refund dialog appeared - that was not a refund action. Standing down quietly.');
-            return;
+            sawProgress = true;
         }
 
         if (!percentageOptionClicked) {
             const option = getPercentageRefundOption();
             if (option) {
+                sawProgress = true;
                 percentageOptionClicked = realClick(option, '[Better CMS Refund] Percentage selected.');
                 scheduleRun(150);
                 return;
             }
 
             const trigger = getRefundTrigger();
-            if (trigger && trigger.getAttribute('aria-expanded') !== 'true' &&
-                Date.now() - lastRefundTriggerClickAt > 500) {
-                lastRefundTriggerClickAt = Date.now();
-                realClick(trigger, '[Better CMS Refund] Refund menu opened.');
+            if (trigger) {
+                sawProgress = true;
+                // This button carries no aria-expanded, so there is no way to
+                // read whether its menu is open - the 1.2s spacing is what
+                // keeps a second click from closing a menu that just opened.
+                if (trigger.getAttribute('aria-expanded') !== 'true' &&
+                    Date.now() - lastRefundTriggerClickAt > 1200) {
+                    lastRefundTriggerClickAt = Date.now();
+                    realClick(trigger, '[Better CMS Refund] Refund menu opened.');
+                }
+            } else {
+                debugState('Waiting for a Refund button to appear.');
             }
+
+            // CMS uses MUI's Visibility icon for more than refunds. Without
+            // this, an eye click anywhere else would sit for the full 20s and
+            // then warn about a refund the user never started. Nothing
+            // recognised within a few seconds means this was not a refund.
+            if (!sawProgress && Date.now() - workflowStartedAt > NO_PROGRESS_MS) {
+                workflowActive = false;
+                debugLog('Nothing refund-shaped appeared - that was not a refund action. Standing down quietly.');
+                return;
+            }
+
             scheduleRun(120);
             return;
         }
@@ -5925,22 +5959,27 @@ if (isCMSHost()) {
         scheduleRun(150);
     }
 
-    // percentageAlreadySelected means "something else is opening the Issue
-    // Refund dialog" - the eye, or the Percentage item in the Refund menu - so
-    // this run must wait for that dialog rather than drive the Refund dropdown.
-    function startWorkflow(percentageAlreadySelected = false) {
-        debugLog(`Workflow started (dialog is opening elsewhere: ${percentageAlreadySelected}).`);
+    // The eye does NOT open the refund dialog - it opens the transaction's
+    // detail view, where the Refund button and its "Issue percentage refund"
+    // item still have to be driven from here. So the eye starts a run with
+    // nothing done yet (3.44.0 wrongly had it wait for a dialog that only
+    // appears two clicks later, and stood down before ever getting there).
+    //
+    // percentageChosen: the user picked "Issue percentage refund" themselves.
+    // triggerClicked: the user clicked Refund themselves - that only suppresses
+    // an immediate re-click, which would close the menu they just opened.
+    function startWorkflow({ percentageChosen = false, triggerClicked = false } = {}) {
+        debugLog(`Workflow started (percentage chosen: ${percentageChosen}, refund menu already clicked: ${triggerClicked}).`);
         lastDebugLine = '';
         reasonNativeWriteAt = 0;
-        expectedDialog = percentageAlreadySelected;
-        dialogSeen = false;
+        sawProgress = percentageChosen || triggerClicked;
         workflowActive = true;
         workflowStartedAt = Date.now();
-        percentageOptionClicked = percentageAlreadySelected;
+        percentageOptionClicked = percentageChosen;
         percentageFilled = false;
         reasonSelected = false;
         commentsFilled = false;
-        lastRefundTriggerClickAt = Date.now();
+        lastRefundTriggerClickAt = triggerClicked ? Date.now() : 0;
         lastReasonTriggerClickAt = 0;
         scheduleRun(80);
     }
@@ -5949,22 +5988,18 @@ if (isCMSHost()) {
         if (internalClick) return;
 
         if (isRefundActionIconClick(event.target)) {
-            // The eye opens the Issue-percentage-refund dialog by itself, so
-            // there is no Refund dropdown to drive. Passing false here made the
-            // first ticks (before the dialog rendered) go hunting for that menu
-            // and click it, fighting the dialog the eye was already opening.
-            debugLog('Refund eye clicked - waiting for the dialog it opens.');
-            startWorkflow(true);
+            debugLog('Refund eye clicked - will drive Refund then Issue percentage refund.');
+            startWorkflow();
             return;
         }
 
         if (isRefundTrigger(event.target)) {
-            startWorkflow(false);
+            startWorkflow({ triggerClicked: true });
             return;
         }
 
         if (isPercentageRefundOption(event.target)) {
-            startWorkflow(true);
+            startWorkflow({ percentageChosen: true });
         }
     }, true);
 

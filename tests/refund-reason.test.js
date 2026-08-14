@@ -163,6 +163,15 @@ function buildDialog(nativeValue = '', comboText = ZWSP) {
 
 // ------------------------------------------------------- helpers under test
 
+// getRefundTrigger/isPercentageRefundOption search the whole document, so the
+// sandbox needs one. It is backed by a tree built per assertion.
+const docRoot = { current: new El('div', {}, []) };
+const fakeDocument = {
+  documentElement: { dataset: {} },
+  querySelectorAll: sel => docRoot.current.descendants().filter(n => n.matches(sel)),
+  querySelector: sel => docRoot.current.descendants().find(n => n.matches(sel)) || null
+};
+
 const sandbox = [
   extractConst(/const REFUND_REASON_VALUE = .*;/, 'REFUND_REASON_VALUE'),
   // Debug output is deliberately stubbed: this test is about the decisions,
@@ -178,16 +187,20 @@ const sandbox = [
   extractFunction(/function getReasonNativeInput/, 'getReasonNativeInput'),
   extractFunction(/function writeReasonNativeValue/, 'writeReasonNativeValue'),
   extractFunction(/function isRefundActionIconClick/, 'isRefundActionIconClick'),
+  extractFunction(/function getRefundTrigger/, 'getRefundTrigger'),
+  extractFunction(/function isPercentageRefundOption/, 'isPercentageRefundOption'),
   `module.exports = { cleanText, getText, getReasonCurrentText, isReasonAlreadyROTH,
-     getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick, REFUND_REASON_VALUE };`
+     getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick,
+     getRefundTrigger, isPercentageRefundOption, REFUND_REASON_VALUE };`
 ].join('\n');
 
 const fakeWindow = { HTMLInputElement: Input, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) };
 const mod = { exports: {} };
-new Function('module', 'window', 'Event', sandbox)(mod, fakeWindow, FakeEvent);
+new Function('module', 'window', 'Event', 'document', sandbox)(mod, fakeWindow, FakeEvent, fakeDocument);
 const {
   cleanText, getReasonCurrentText, isReasonAlreadyROTH,
-  getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick, REFUND_REASON_VALUE
+  getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick,
+  getRefundTrigger, isPercentageRefundOption, REFUND_REASON_VALUE
 } = mod.exports;
 
 // ------------------------------------------------------------------ checks
@@ -260,6 +273,45 @@ const closeButton = new El('button', { class: 'MuiIconButton-colorError' }, [
 ]);
 check('the dialog\'s close button does not start the workflow',
   isRefundActionIconClick(closeButton), false);
+
+// The chain the eye kicks off: Refund -> Issue percentage refund -> dialog.
+// The live Refund button is a plain MUI Button with a MoreHoriz icon and NO
+// aria-haspopup/data-slot - demanding either of those is what broke this.
+function buildRefundChain() {
+  const icon = new El('span', { class: 'MuiButton-startIcon' }, [
+    new El('svg', { 'data-testid': 'MoreHorizIcon' }, [])
+  ]);
+  const refundButton = new El('button', {
+    class: 'MuiButtonBase-root MuiButton-root MuiButton-text MuiButton-textError MuiButton-colorError',
+    type: 'button'
+  }, [icon]);
+  refundButton.own = 'Refund';
+
+  const confirmButton = new El('button', { class: 'MuiButton-containedError', type: 'button' });
+  confirmButton.own = 'Confirm Refund';
+
+  const percentageItem = new El('li', { class: 'MuiMenuItem-root', role: 'menuitem', tabindex: '-1' });
+  percentageItem.own = 'Issue percentage refund';
+
+  const fullItem = new El('li', { class: 'MuiMenuItem-root', role: 'menuitem', tabindex: '-1' });
+  fullItem.own = 'Issue full refund';
+
+  return { root: new El('div', {}, [refundButton, percentageItem, fullItem, confirmButton]), refundButton, confirmButton, percentageItem, fullItem };
+}
+
+const chain = buildRefundChain();
+docRoot.current = chain.root;
+check('the plain MUI Refund button is found without aria-haspopup',
+  getRefundTrigger() === chain.refundButton, true);
+check('Confirm Refund is not mistaken for the Refund menu button',
+  getRefundTrigger() === chain.confirmButton, false);
+check('the percentage menu item is recognised',
+  isPercentageRefundOption(chain.percentageItem), true);
+check('a full refund is not treated as the percentage option',
+  isPercentageRefundOption(chain.fullItem), false);
+
+docRoot.current = new El('div', {}, [chain.confirmButton]);
+check('no Refund button means no trigger', getRefundTrigger(), null);
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed against the shipped source.');
 process.exit(failures ? 1 : 0);
