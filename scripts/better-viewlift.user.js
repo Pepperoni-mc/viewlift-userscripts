@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.40.1
+// @version      3.41.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -10397,16 +10397,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         });
     }
 
+    // The legacy fill-the-box-and-click-Search flow below is no longer
+    // reachable: nothing has produced its "openCmsEmail" parameter since the
+    // CMS button switched to CMS's own keyword/filter URL, and the account
+    // lookup replaced it entirely. Leaving it *running* was not harmless
+    // though - on every CMS page it polled for up to 10s (scanning every
+    // input on the page each tick), and if a stale pending email were still
+    // sitting in storage from an old version it would happily type that into
+    // the search box. So the entry point is disabled and the leftovers are
+    // cleared once.
+    //
+    // The functions themselves are left in place deliberately: removing ~150
+    // lines of interconnected code is a change that deserves to be made when
+    // someone can click through CMS afterwards, not silently.
     if (isCMSPage()) {
-        getPendingCMSEmail();
-
-        cmsFlowObserver = {
-            disconnect: onRouteChange(function () {
-                scheduleCMSFlow(200);
-            })
-        };
-
-        initCMSFlow();
+        try {
+            sessionStorage.removeItem(CMS_PENDING_EMAIL_KEY);
+        } catch (error) { /* storage unavailable */ }
+        try {
+            GM_deleteValue(CMS_PENDING_EMAIL_KEY);
+        } catch (error) { /* storage unavailable */ }
     }
 
     window.__betterFreshdeskGetCustomerEmail = getCustomerEmailFromContactInfo;
