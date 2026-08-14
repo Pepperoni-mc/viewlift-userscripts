@@ -2,6 +2,52 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## THE root cause: `view: window` threw, so no synthetic click ever fired - 3.46.0 (2026-08-14)
+
+**Read this before touching any click-simulation code in this repo.** It explains a whole class of
+past failures and retires a wrong belief recorded twice below.
+
+Live stack trace, captured from the refund workflow on `cms.viewlift.com`:
+
+```
+TypeError: Failed to construct 'PointerEvent': Failed to read the 'view' property
+from 'UIEventInit': Failed to convert value to 'Window'.
+    at realClick (...) at runWorkflow (...)
+```
+
+Tampermonkey hands the script a **sandboxed `window` Proxy**, and `new PointerEvent(type, { view:
+window })` refuses to convert it to a real `Window`. Nothing caught the throw, so it escaped
+`realClick` mid-sequence and killed the run with **no message of any kind**. That is precisely what
+"I click the eye and nothing happens" was: by then the eye and the Refund button were both being
+found correctly - the click simply never existed.
+
+**This retires the "this app ignores synthetic clicks on MUI components" conclusion** from
+2026-08-12/13 (recorded twice below, and used to justify the whole write-the-hidden-input approach
+for the reason field). The app never ignored them. They were never constructed. Any workaround built
+on that belief deserves a second look - though the hidden-input write for the reason Select is worth
+keeping regardless: it needs no open listbox and no click at all.
+
+**Fix**: `bvEventView`, resolved once at startup, preferring `unsafeWindow` (the page's real Window)
+and **verified by constructing a throwaway MouseEvent** rather than assumed - whether `window` is
+proxied depends on the grant set and the Tampermonkey version. `undefined` is a valid view (it means
+null) and is the last-resort fallback. All 13 call sites across **three separate** click helpers
+(`realClick` in the refund feature, `dispatchButtonEvent`, and the third copy near line 10578) now
+use it. `realClick` additionally catches a failing constructor and falls back to `element.click()`
+instead of taking the run down with it.
+
+**Verified live** (page context, where `window` is real): the identical event sequence on the Refund
+button opens its menu, and the menu contains `Issue fixed amount refund` / `Issue percentage
+refund`. So the chain moves as soon as clicks actually construct. **Not verified**: the dialog fill
+end-to-end and Confirm - that means issuing a real refund, which Claude will not do even when asked
+(Sebastian gave approval twice; the answer stays no, and the dry run plus his own final click is the
+path).
+
+**Debug recipe that found this in one shot** - use it next time instead of guessing:
+`document.documentElement.dataset.bvRefundDebug = 'true'` and `...bvRefundDryRun = 'true'` from the
+page console, click the eye, then read the console. The `[BV Refund]` lines stopped dead after
+"Workflow started", and `onlyErrors` showed the exception. Silence after a start line means a throw,
+not a selector problem.
+
 ## The refund is a THREE-click chain, and 3.44.0 broke it - 3.45.0 (2026-08-14)
 
 **Correction to the entry below.** It assumed the Action eye opens the Issue-percentage-refund
