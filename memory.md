@@ -2,6 +2,84 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The CMS API integration, end state and how it actually works (2026-08-13, late)
+
+This supersedes the scattered notes below it from the same day - several of those describe
+intermediate wrong turns. **Read this one first for how the CMS lookup works now.**
+
+### The three facts that took all night to establish
+
+1. **The API host is per CMS host.** `cms-gcp.viewlift.com` talks to `cms-gcp.api.viewlift.com`,
+   not a shared `cms.api.viewlift.com`. Hardcoding the latter is why credential capture silently
+   recorded nothing for hours - the URL filter never matched a real request. The API origin is now
+   recorded per brand alongside its key.
+2. **Auth is two headers, both captured live, never hardcoded.** `xApiKey` (per brand) and
+   `Authorization` (per user, 24h JWT). The capture module patches the PAGE's fetch/XHR via
+   `unsafeWindow` - confirmed working live (`__bvCmsCredCaptureInstalled` is visible from the page
+   and a probe request incremented `__bvCmsCredCaptureCount`). Credentials live only in GM storage,
+   are never logged or displayed, and only go back to the API they came from.
+3. **A brand switch is required when the org differs, and cannot be skipped.** Opening an account
+   id while the session sits on another org renders an empty shell. But going through
+   `/v5/overview` when the session is ALREADY on that brand is pure waste, so that case now goes
+   direct.
+
+### Debugging entry points (use these before re-deriving anything)
+
+- `window.__bvCmsCredCaptureCount` / `__bvCmsCredLastSite` / `__bvCmsCredLastApiOrigin` /
+  `__bvCmsCredCaptureError` - set on the CMS page window. Counts and brand slugs only, never
+  credentials. If the count stays 0 while the user works, capture is broken.
+- Tampermonkey menu → "CMS API: Check captured credentials" - token age and ready brands.
+- **`data-better-viewlift-installed` is a hardcoded `'3.26.0'` string and tells you nothing about
+  the running version.** Use behavioural markers instead (native Reply button removed ⇒ ≥3.30.1).
+  Worth fixing properly one day.
+
+### The two bugs that made cross-brand jumps "get stuck"
+
+Both were real, and neither was slowness:
+
+- Selecting an org makes the v5 app do **its own full page navigation** (lands on `/content`). The
+  old code waited a fixed 1200ms then redirected, racing it - when the app won, the journey just
+  stopped. Completion is now event-driven: `completePendingSwitchIfReady()` runs on every CMS page
+  and continues to the destination once the session's `site` cookie matches the pending brand. **Do
+  not reintroduce a timed redirect here.**
+- `captureQuerySwitchRequest()` rebuilt the destination from the page's query string, overwriting
+  the pending entry the button had just stored - and since the v5 URL only carries `betterSwitch`,
+  that replaced a direct account URL with a bare keyword-less search page. It now leaves a usable
+  pending entry alone.
+
+### Speed work (the "it sits on about:blank" complaint)
+
+The lookup used to start on click. It now **prefetches**: once ~2s after the button appears and
+again on pointer approach (throttled to 5s, network side de-duplicated, 3min TTL keyed by
+ticket+email+brand). A cache hit skips the holding tab entirely. When it does have to wait, the
+tab paints a "looking up <email>" placeholder immediately and a 3.5s deadline falls back to the
+search page, both funnelled through one `settle()` guard so the tab is never navigated twice.
+
+Snapshot path: Freshdesk now reacts via `GM_addValueChangeListener` instead of a 900ms poll, and
+capture dropped from `devicePixelRatio` scale to 1 (on retina that was 4x the pixels to render and
+push through storage, for detail a support note doesn't need).
+
+### Deliberately NOT done - decisions worth preserving
+
+- **Tab reuse.** The button opens a new tab each time; duplicates of the same account do happen.
+  A named `window.open` target would fix it, but it would also break having two accounts open side
+  by side. Left alone on purpose - ask the user before changing.
+- **Removing the keep-alive presence gate.** The session-extending call is gated on real
+  mouse/keyboard activity in the last 30 minutes. That is a security decision, not an oversight
+  (see the keep-alive entry below) - removing it is a regression.
+- **Auto-submitting anything.** The refund workflow's existing auto-submit predates this work;
+  nothing new was given the power to mutate customer data.
+
+### Open threads
+
+- Whether a `user-search` call actually resets the server's idle timer is still unproven - it
+  cannot be without sitting through a real idle period. If logouts persist, attack that first.
+- The account-detail page's own API calls could not be observed from an injected patch (the app
+  binds its fetch reference before injection on that route). If a future feature needs subscription
+  or billing data, that is the obstacle to solve first.
+- `/v1/token` in the bundle is **Firebase's** securetoken endpoint, not ViewLift session refresh.
+  Don't chase it again.
+
 ## CMS button reduced to one click; email chips became the multi-address path (2026-08-13)
 
 User: the CMS button "no funciona para nada bien", does too many checks before opening, wants
