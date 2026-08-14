@@ -70,6 +70,26 @@ push through storage, for detail a support note doesn't need).
 - **Auto-submitting anything.** The refund workflow's existing auto-submit predates this work;
   nothing new was given the power to mutate customer data.
 
+### Removing the Reply button silently broke toolbar placement (2026-08-14)
+
+User reported the toolbar occasionally rendering misaligned (screenshot). Cause was self-inflicted
+and worth remembering as a pattern: **removing a Freshdesk element that other code used as a
+landmark.** `getActionBar()` had three candidates, the third being the native Reply button's
+parent - and Feature 6 has removed that button since 3.30.1, so that candidate has been dead ever
+since. On a slow load, with `.reply-bar-top` and `.page-actions__left` not yet rendered, detection
+fell through to the bare `section#mainactionbar` after only 4s: a different flex layout, hence the
+misalignment, followed by a visible jump when the real container appeared.
+
+Fixed by deleting the dead candidate and raising the grace period 4s → 15s, so a slow load waits
+for correct placement rather than rendering wrong and moving. The bare-section fallback now only
+serves its intended purpose (Freshdesk renaming those classes) and `console.warn`s once when used.
+
+`findHeaderInsertionPoint()` has the same dead Reply lookup but degrades correctly via
+`firstElementChild`; left in place with a comment.
+
+**Pattern to watch**: anything added to Feature 6's `removalRules` may be load-bearing elsewhere.
+Grep for the selector before removing an element.
+
 ### The session token is never refreshed - it is re-captured (2026-08-14)
 
 Asked directly "how do you refresh the JWT?". **Nothing in this script refreshes it.** The CMS app
