@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.45.1
+// @version      3.46.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -52,6 +52,42 @@
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
   }
+
+  // Tampermonkey hands userscripts a sandboxed `window` Proxy, and
+  // `new PointerEvent(type, { view: window })` throws
+  // "Failed to convert value to 'Window'" on it - killing whatever function was
+  // dispatching the click, mid-sequence, with an exception nobody was catching.
+  //
+  // This is the real reason two earlier sessions concluded "this app ignores
+  // synthetic clicks on MUI components" (see memory.md, 2026-08-12/13). The
+  // clicks were never ignored - they were never constructed. Confirmed live on
+  // 2026-08-14 from the refund workflow's own stack trace.
+  //
+  // unsafeWindow is the page's real Window. Verified by construction rather
+  // than assumed, because whether it is proxied depends on the grants and the
+  // Tampermonkey version; `undefined` is a valid view (it means null) and every
+  // consumer here tolerates it, so omitting it is the safe last resort.
+  const bvEventView = (function () {
+    const candidates = [];
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) candidates.push(unsafeWindow);
+    } catch (error) {
+      // unsafeWindow is not reachable under this grant set.
+    }
+    candidates.push(window);
+
+    for (const candidate of candidates) {
+      try {
+        new MouseEvent('mousedown', { view: candidate });
+        return candidate;
+      } catch (error) {
+        // Not a real Window - try the next candidate.
+      }
+    }
+
+    console.warn('[Better Viewlift] No usable event view; dispatching without one.');
+    return undefined;
+  })();
 
   function waitFor(predicateFn, { timeout = 5000, pollMs = 50 } = {}) {
     return new Promise(resolve => {
@@ -5500,17 +5536,30 @@ if (isCMSHost()) {
 
         try {
             if (typeof window.PointerEvent === 'function') {
-                element.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, view: window }));
-                element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, view: window }));
-                element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                element.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, view: bvEventView }));
+                element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, view: bvEventView }));
+                element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: bvEventView, button: 0 }));
             }
-            element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+            element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: bvEventView }));
+            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: bvEventView }));
             if (typeof window.PointerEvent === 'function') {
-                element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: bvEventView, button: 0 }));
             }
-            element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-            element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: bvEventView }));
+            element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: bvEventView }));
+        } catch (error) {
+            // A throwing constructor used to escape here and kill the whole
+            // workflow silently, mid-sequence - which is how the Refund button
+            // "did nothing" with no message of any kind. Never let that happen
+            // again: fall back to the element's own click() and say so.
+            console.warn('[Better CMS Refund] Synthetic click sequence failed; falling back to element.click().', error);
+            try {
+                element.click();
+            } catch (clickError) {
+                console.warn('[Better CMS Refund] element.click() failed too.', clickError);
+                internalClick = false;
+                return false;
+            }
         } finally {
             internalClick = false;
         }
@@ -9314,7 +9363,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             bubbles: true,
             cancelable: true,
             composed: true,
-            view: window,
+            view: bvEventView,
             button: 0,
             buttons: type === 'mousedown' || type === 'pointerdown' ? 1 : 0,
             detail: type === 'click' ? 1 : 0
@@ -10539,10 +10588,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             inline: 'center'
         });
 
-        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: bvEventView }));
+        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: bvEventView }));
+        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: bvEventView }));
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: bvEventView }));
 
         if (logMessage) {
             console.log(logMessage);
