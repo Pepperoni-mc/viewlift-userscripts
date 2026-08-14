@@ -2,6 +2,59 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The CMS keep-alive never kept anything alive - measured, corrected (2026-08-13)
+
+User asked to make the CMS login persistent instead of re-authenticating after some minutes of
+inactivity. The 2026-08-10 entry below "fixed" this by repointing the keep-alive from a static
+CloudFront SPA route to `/api/auth/verify`, and explicitly flagged the untested assumption:
+*"the next thing to check is whether `/api/auth/verify` itself resets an idle timer server-side,
+or only reports current status"*. **Measured it this time. It only reports.**
+
+### What was actually measured (live, on cms-gcp.viewlift.com)
+
+- `GET /api/auth/verify` returns `{error, valid}` and, compared before/after by fingerprinting the
+  cookies, **changes neither `vl-accessToken` nor `vl-refreshToken`**. It rotates and extends
+  nothing. So both keep-alive mechanisms have, since 2026-08-10, been doing nothing but polling
+  status - the "fix" was never a fix, it just made the status *reading* accurate.
+- The session cookies are JWTs with a **1440-minute (24h) lifetime** (claims: `aud, deviceId, exp,
+  iat, iss, site, sub`). So being logged out after minutes of inactivity is **not** token expiry -
+  a fresh token still had 1437 of its 1440 minutes left.
+- No client-side idle-logout machinery found (no activity listeners, no idle/timeout globals).
+- `/v1/token` with `grant_type`/`refresh_token` exists in the bundle but belongs to the **Firebase**
+  SDK (`photoURL`, `_getAdditionalHeaders`, `tokenApiHost` alongside it), not to ViewLift's own
+  `vl-` session - so it is NOT the session refresh endpoint. Don't be fooled by it next time.
+
+**Conclusion by elimination**: token is valid for a day, no client timer, verify doesn't extend →
+the logout is a **server-side idle timeout**, and only genuine authenticated backend traffic can
+reset it.
+
+### What was built
+
+`bvCmsApiKeepAlive()` (prelude) now makes a **real authenticated call** every keep-alive tick: a
+deliberately empty, read-only `user-search` (`searchTerm: 'bv-keepalive-noop'`, `limit: 1`) via the
+CMS API credentials captured in 3.33.0. Crucially it authenticates with the **Authorization
+header, not cookies**, so it works from the Freshdesk tab without depending on cross-site cookie
+rules - which is the whole point, since Chrome freezes a backgrounded CMS tab's own timers. Wired
+into Feature 1b2's existing 5-minute cycle; the old `/api/auth/verify` ping stays but is now
+correctly scoped to driving the toolbar's session dot only, and Feature 1b's header comment was
+corrected to stop claiming it keeps the session warm.
+
+**Deliberate design choice worth keeping**: the session-extending call is gated behind
+`agentIsPresent()` - real mouse/keyboard activity on Freshdesk within the last 30 minutes. An idle
+timeout is a genuine security control on a system holding customer data and refund powers; this
+bridges the specific gap it gets wrong (agent at their desk working in Freshdesk, CMS sitting in a
+background tab) without keeping a session open for someone who actually walked away. If someone
+later "simplifies" this by removing the presence gate, that is a security regression, not a
+cleanup.
+
+**Verified**: `node --check` plus the live measurements above (which is the part that actually
+mattered - the previous attempt failed precisely because it skipped this). **Not verified**:
+whether a `user-search` call genuinely resets the server's idle timer. That is the one remaining
+assumption and it cannot be proven without sitting through a real idle period. If logouts persist,
+that assumption is the thing to attack next - and the fallback would be to find which endpoint the
+server does treat as activity, rather than assuming any authenticated call counts. `@version`
+3.34.0.
+
 ## CMS API lookup from Freshdesk - the overnight dead end, reopened and solved (2026-08-13)
 
 The 2026-08-12/13 overnight entry below concluded "open the account directly" was blocked: the

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.33.0
+// @version      3.34.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -365,6 +365,55 @@
 
   function bvGetSiteForCmsHost(host) {
     return bvGetCmsCreds().hostSites[host] || '';
+  }
+
+  // Keeps the CMS session from lapsing by making a REAL authenticated
+  // backend call, which is the part the old keep-alive never did.
+  //
+  // Measured 2026-08-13, which is why this exists: the session token is a
+  // JWT with a 24h lifetime, so being logged out after minutes of
+  // inactivity is NOT the token expiring - and /api/auth/verify (what the
+  // old keep-alive pinged) returns {error, valid} and provably does not
+  // rotate or extend either session cookie. That endpoint only ever
+  // reported status, so nothing was actually being kept alive. The
+  // remaining explanation is a server-side idle timeout, which only real
+  // authenticated traffic can reset.
+  //
+  // Uses a deliberately empty, read-only user-search - the cheapest
+  // genuine authenticated call available - and goes out with the captured
+  // Authorization header rather than cookies, so it works from Freshdesk
+  // without depending on cross-site cookie rules.
+  const BV_KEEP_ALIVE_SEARCH_TERM = 'bv-keepalive-noop';
+
+  function bvCmsApiKeepAlive(onDone) {
+    const creds = bvGetCmsCreds();
+    const sites = Object.keys(creds.sites || {}).filter(site => bvGetCmsCredForSite(site));
+
+    if (!sites.length) {
+      if (onDone) onDone('no-credentials');
+      return;
+    }
+
+    let remaining = sites.length;
+    let anyAlive = false;
+    let anyUnauthorized = false;
+
+    sites.forEach(site => {
+      bvCmsUserSearch({
+        site,
+        searchTerm: BV_KEEP_ALIVE_SEARCH_TERM,
+        limit: 1,
+        onDone: function (error) {
+          if (!error) anyAlive = true;
+          else if (error.message === 'cms-unauthorized') anyUnauthorized = true;
+
+          remaining -= 1;
+          if (remaining === 0 && onDone) {
+            onDone(anyAlive ? 'alive' : (anyUnauthorized ? 'needs-login' : 'error'));
+          }
+        }
+      });
+    });
   }
 
   // Diagnostic for "why didn't it jump straight to the account?" - reports
@@ -2774,8 +2823,13 @@
 
 
 /* ============================================================
- * Feature 1b: CMS Session Keep-Alive
- * Keeps the current CMS session warm while the tab remains open.
+ * Feature 1b: CMS Session Status Check (same tab)
+ * NOTE: despite the original name, this only ever DETECTED an expired
+ * session - measured 2026-08-13, /api/auth/verify returns {error, valid}
+ * and does not rotate or extend either session cookie, so it never kept
+ * anything alive. The call that actually holds the session open is
+ * bvCmsApiKeepAlive(), driven from the Freshdesk tab (Feature 1b2), since
+ * a backgrounded CMS tab has its timers frozen by Chrome anyway.
  * This does not bypass OTP or store authentication data.
  * ============================================================ */
 
@@ -2916,12 +2970,40 @@
         } catch (error) { /* storage unavailable, skip */ }
     }
 
+    // The session-extending call below is gated on the agent actually being
+    // at their desk. An idle timeout is a real security control on a system
+    // holding customer data and refund powers, so this bridges the gap it
+    // gets wrong - "working in Freshdesk with CMS in a background tab" - and
+    // deliberately does NOT keep a session alive for someone who has walked
+    // away: stop touching the keyboard for this long and it lapses normally.
+    const PRESENCE_WINDOW_MS = 30 * 60 * 1000;
+    let lastUserActivityAt = Date.now();
+
+    ['mousemove', 'keydown', 'click', 'scroll'].forEach(eventName => {
+        document.addEventListener(eventName, () => { lastUserActivityAt = Date.now(); }, { passive: true, capture: true });
+    });
+
+    function agentIsPresent() {
+        return Date.now() - lastUserActivityAt < PRESENCE_WINDOW_MS;
+    }
+
     function pingAllCMSHosts(onComplete) {
         // Only bother while Freshdesk is actually the tab being looked at -
         // if neither tab is active there is nothing useful to keep alive.
         if (document.visibilityState !== 'visible') {
             onComplete?.();
             return;
+        }
+
+        // /api/auth/verify is a status check only (measured - it does not
+        // extend anything), so it still drives the toolbar's session dot
+        // while the API call below is what actually holds the session open.
+        if (agentIsPresent()) {
+            bvCmsApiKeepAlive(status => {
+                if (status === 'needs-login') {
+                    console.debug('[Better ViewLift] CMS API keep-alive: session needs login again.');
+                }
+            });
         }
 
         const hostResults = {};
