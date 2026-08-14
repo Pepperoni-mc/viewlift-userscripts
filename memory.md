@@ -90,6 +90,34 @@ serves its intended purpose (Freshdesk renaming those classes) and `console.warn
 **Pattern to watch**: anything added to Feature 6's `removalRules` may be load-bearing elsewhere.
 Grep for the selector before removing an element.
 
+### A JWT refresher is impossible here - measured, don't rebuild it (2026-08-14)
+
+User asked for "something that refreshes the JWT". **It cannot be built with these tokens, and it
+would not fix the logout problem anyway.** Both points are measured, not assumed:
+
+- `vl-accessToken` and `vl-refreshToken` are **both JWTs with a 24h lifetime that expire at the
+  same instant** (checked live: 24h total, 23.9h remaining on each, identical claim sets). That is
+  not a real refresh-token pattern - a refresh token exists precisely to outlive the access token
+  so it can mint new ones. Here, when one dies the other is already dead, so a refresh could never
+  extend a session past 24h. Inside the 24h window the access token is valid anyway, so there is
+  nothing to gain.
+- `vl-refreshToken` appears **nowhere in the client bundle** - it is handled server-side by the
+  Next.js layer. And only the server can mint a signed token regardless.
+- The recurring "logged out after minutes of inactivity" complaint is **not** token expiry (24h
+  token, minutes-long problem). See the keep-alive entry below: by elimination it is a server-side
+  idle timeout, which real authenticated traffic is the lever for - not a refresher.
+
+**What was built instead** (the achievable part of the request): the stored token now also comes
+straight from the `vl-accessToken` cookie on every CMS page load, not only from intercepted
+request headers. Capture was purely passive before, so the stored copy was only as current as the
+last request caught - and on routes where the app binds its fetch reference before injection,
+nothing was caught at all. Now it is correct from page load and updates instantly after a re-login.
+
+Both sources feed one record and the tie-break is deliberate: **newer expiry always wins; on equal
+expiry the header wins.** The two sources format the value differently (a header may carry a
+`Bearer ` prefix the cookie has no reason to), and the header value is known-good because it is
+literally what the app put on the wire. Locked down by `tests/cred-precedence.test.js`.
+
 ### The session token is never refreshed - it is re-captured (2026-08-14)
 
 Asked directly "how do you refresh the JWT?". **Nothing in this script refreshes it.** The CMS app
@@ -108,7 +136,7 @@ JWT. **If the lifetime changes again, nothing needs updating.**
 
 ### The repo now has a test (2026-08-13)
 
-`tests/` - run with `node tests/email-detection.test.js` and `node tests/token-expiry.test.js`. It **extracts the
+`tests/` - run everything with `node tests/run-all.js` (syntax check + all test files). It **extracts the
 real helpers out of the shipped userscript** rather than duplicating them, so it cannot drift from
 what actually runs. Covers the reported ticket #350804 garbage, glue-trimming in both directions
 (without damaging mixed-case/subdomain/plus-tag addresses), and the blocklist. Extend this rather
