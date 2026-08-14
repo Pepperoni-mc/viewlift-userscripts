@@ -70,9 +70,25 @@ push through storage, for detail a support note doesn't need).
 - **Auto-submitting anything.** The refund workflow's existing auto-submit predates this work;
   nothing new was given the power to mutate customer data.
 
+### The session token is never refreshed - it is re-captured (2026-08-14)
+
+Asked directly "how do you refresh the JWT?". **Nothing in this script refreshes it.** The CMS app
+owns the token; the capture module just overwrites the stored copy with whatever the app is
+currently sending. It therefore stays current as a side effect of the user working in CMS, and
+goes stale only if they don't open CMS for a long stretch. There is no refresh endpoint call, and
+`/v1/token` in the bundle is Firebase's, not ViewLift's (see above).
+
+Answering that surfaced a real defect: staleness was judged by a flat 11h age limit, written when
+the lifetime was believed to be ~12h - but the JWT was later measured at **1440 minutes (24h)**.
+So valid tokens were being discarded with half their life left, dropping the CMS button to the
+slow path for no reason (most visibly first thing in the morning, before any CMS tab had been
+opened). Validity now reads the token's own `exp` claim (`bvTokenExpiresAt`/`bvCredsAreLive`) with
+a 2 minute margin; the age limit survives only as a fallback for a token that isn't a readable
+JWT. **If the lifetime changes again, nothing needs updating.**
+
 ### The repo now has a test (2026-08-13)
 
-`tests/email-detection.test.js` - run with `node tests/email-detection.test.js`. It **extracts the
+`tests/` - run with `node tests/email-detection.test.js` and `node tests/token-expiry.test.js`. It **extracts the
 real helpers out of the shipped userscript** rather than duplicating them, so it cannot drift from
 what actually runs. Covers the reported ticket #350804 garbage, glue-trimming in both directions
 (without damaging mixed-case/subdomain/plus-tag addresses), and the blocklist. Extend this rather
