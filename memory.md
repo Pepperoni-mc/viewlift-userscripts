@@ -2,6 +2,93 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Freshdesk Scenario Automations - reference for authoring new ones (2026-08-14)
+
+User plans to write scenarios (`/a/admin/scenario_automations`) and asked for a study first.
+Everything below was read live from Freshdesk's own internal API, read-only - **no scenario was
+created, edited or deleted.**
+
+### The headline finding: this solves the Platform/Support Plan problem properly
+
+`GET /api/_/ticket_fields` reports these as **`required_for_closure`**:
+
+`cf_b2b_client_name`, `cf_product`, `subject`, `cf_support_plan`, `cf_platform`, `ticket_type`,
+`group`, `priority`, `agent`, `company`
+
+So "I can't submit Waiting on End User because Platform/Support Plan are empty" was never a bug -
+it is Freshdesk configuration, and those fields are *meant* to be filled before closure. **66 of
+the 84 existing scenarios already set `cf_platform`**, and 10 set `cf_support_plan`. Which means
+the native fix is a scenario, not the Freshdesk-API auto-fill added in 3.28.0 - that feature is a
+workaround for something the platform already handles, and is a candidate for retirement once
+scenarios cover the common cases. Worth raising with the user rather than quietly keeping both.
+
+### Data model
+
+`GET /api/_/scenario_automations` → `{ scenario_automations: [...] }`, 84 shared today.
+Each: `{ id, name, description, private, actions[], created_at, updated_at }`.
+
+`actions` is a flat list of `{ name, value }`. Custom fields are addressed as
+`cf_<field>_<accountId>` where the account id is **976229** (the same tenant id that appears in
+the CMS JWT). So `cf_platform` becomes `cf_platform_976229` inside a scenario action.
+
+Action vocabulary actually in use, by frequency:
+
+| action | used by | notes |
+|---|---|---|
+| `status` | 80 | numeric id, see table below |
+| `ticket_type` | 76 | label string, e.g. `"Billing"` |
+| `add_tag` | 68 | tag string |
+| `cf_platform_976229` | 66 | label string |
+| `add_reply` | 61 | appears with **no `value`** in the list payload - body lives elsewhere |
+| `responder_id` | 43 | agent id; `-2` = "assign to me" |
+| `add_comment` | 14 | private note |
+| `cf_support_plan_976229` | 10 | `Enterprise` / `Business` / `Standard` / `Basic` / `Starter` / `None` |
+| `cf_b2b_client_name_976229` | 10 | long picklist (Altitude+ B2B, DIRTVision B2C, FOX One B2C, …) |
+| `product_id`, `priority`, `group_id` | 6-7 | ids |
+| `send_email_to_requester` | 3 | |
+| `internal_agent_id` | 1 | |
+
+### Status ids (needed because scenarios store numbers, not labels)
+
+2 Open · 3 Pending · 4 Resolved · 5 Closed · 6 Waiting on Client · 7 Waiting on Third Party ·
+8 Waiting on Development · 10 Waiting on QA · **12 Waiting on End User** · 13 Ready for Production ·
+14 Waiting on Backend/Billing · 15 Waiting on L1 …
+
+Scenarios currently use 2, 4, 5, 8, 12, 15. Statuses carry `stop_sla_timer` and `group_ids`
+(some are restricted to specific groups) - worth checking before using an unusual one.
+
+### Valid `cf_platform` values
+
+Web, Android Mobile, Android Tablet, Amazon Vega OS, Backend, Data Analytics, DevOps, iOS Mobile,
+iPad, Apple TV, Fire TV, Android TV, Roku, Jio, Samsung TV, LG TV, LiveOps, Vizio TV, VL CMS,
+Kindle, Xbox, Xfinity/Xumo, Chromecast, Airplay, ALL, None, Mac/Safari
+
+Note some existing scenarios store `""` (empty) for platform/support plan - those will not satisfy
+the required-for-closure rule, so copying one of those as a template is a trap.
+
+### How a scenario is applied
+
+`PUT /api/_/tickets/<ticketId>/execute_scenario` with `{"scenario_id": <id>}`. This is already
+observable in the wild: `schn-case-tracker.user.js` watches for exactly this call to detect when a
+ticket was moved (its console line `[SCHN+] PUT /api/_/tickets/…/execute_scenario`). **If we ever
+automate scenario execution, that tracker will see it and count it** - check that interaction
+before wiring anything up.
+
+### A worked example (real, id 43001062194 "ALT LIVESTREAM ISSUES")
+
+```
+ticket_type          = "Live Stream"
+status               = "12"        (Waiting on End User)
+responder_id         = "-2"        (assign to me)
+add_tag              = "ALT-Issue-NoGameNuggets"
+cf_platform_976229   = "ALL"
+add_reply            (body not in the list payload)
+```
+
+**Caveat**: `add_reply` comes back without its body in the list response, so the reply text lives
+on a per-scenario detail endpoint not yet identified. Find that before trying to author scenarios
+programmatically - reading the list alone is not enough to clone one faithfully.
+
 ## The CMS API integration, end state and how it actually works (2026-08-13, late)
 
 This supersedes the scattered notes below it from the same day - several of those describe
