@@ -2,6 +2,39 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## CMS button reduced to one click; email chips became the multi-address path (2026-08-13)
+
+User: the CMS button "no funciona para nada bien", does too many checks before opening, wants
+"click usuario y ya" - and proposed making each highlighted in-ticket email its own CMS lookup,
+asking whether that would be redundant. **It isn't redundant, it's the better split**, and it is
+what removed the slowness:
+
+- **CMS button = the ticket's official Contact Info email only.** One `bvCmsUserSearch`, then
+  straight into `/users/search/<id>`. Deleted the whole multi-candidate machinery added earlier
+  the same day (`collectAllTicketEmailCandidates`, `findCmsAccountForCandidates`, the
+  `showCmsEmailMenu` dropdown and its styles, `runCmsLookupAndOpen`) - that walked every address
+  in the ticket through the API **sequentially**, so a ticket mentioning four emails meant up to
+  four round-trips before anything opened. That sequential walk was the "demasiados checks".
+- **Email chips = every other address the customer mentioned.** Feature 5 already surfaces those;
+  each email chip now gets a companion 🔎 CMS chip that runs the identical lookup for that
+  address. The human picks, which is strictly better than the script guessing, and it costs
+  exactly one request when they do.
+
+Wiring: `openCmsForEmail(email, clientContext)` is exposed as `window.__bvOpenCmsForEmail`, and
+Feature 3 additionally exposes `window.__bvGetFreshdeskClientContext` so a chip's lookup resolves
+to the same brand/host the button would have used (same cross-IIFE bridge pattern as
+`__betterFreshdeskGetCustomerEmail` / `__bvReconcileFreshdeskToolbar`). `@version` 3.35.0.
+
+**Careful when editing this area**: deleting the old dropdown block left an orphaned `}` from
+`runCmsLookupAndOpen`'s closing brace that `node --check` caught - re-run it after any block
+deletion here, the nesting is deep.
+
+**Live check done while testing**: `data-better-viewlift-installed` is a **hardcoded `'3.26.0'`
+string** that has never been updated on version bumps - it is useless for telling which version is
+loaded, don't trust it (it cost time this session). Use behavioural markers instead: native Reply
+button removed ⇒ ≥3.30.1, bot Generate toggle absent ⇒ ≥3.28.0, email pill absent/hidden ⇒
+≥3.30.0. Worth actually fixing that attribute to interpolate the real version at some point.
+
 ## The CMS keep-alive never kept anything alive - measured, corrected (2026-08-13)
 
 User asked to make the CMS login persistent instead of re-authenticating after some minutes of

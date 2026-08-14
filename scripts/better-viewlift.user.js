@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.34.0
+// @version      3.35.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7790,6 +7790,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         color: #065f46 !important;
         box-shadow: 0 1px 3px rgba(6, 95, 70, .14) !important;
       }
+      .${CHIP_CLASS}[data-type="cms"] {
+        border-color: #93c5fd !important;
+        background: linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%) !important;
+        color: #ffffff !important;
+        cursor: pointer !important;
+        box-shadow: 0 1px 3px rgba(30, 64, 175, .3) !important;
+      }
+      .${CHIP_CLASS}[data-type="cms"]::before { content: "\\1F50E"; }
+      .${CHIP_CLASS}[data-type="cms"]:hover {
+        background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%) !important;
+        box-shadow: 0 3px 8px rgba(30, 64, 175, .35) !important;
+      }
       .${CHIP_CLASS}[data-type="phone"]:hover {
         box-shadow: 0 3px 8px rgba(6, 95, 70, .22) !important;
       }
@@ -7857,6 +7869,27 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       chip.title = 'Click to copy';
       chip.addEventListener('click', function () { copyValue(chip, entry.value); });
       row.appendChild(chip);
+
+      // These are exactly the addresses the CMS button deliberately does
+      // NOT chase (it only ever uses the ticket's Contact Info email), so
+      // give each mentioned address its own one-click CMS lookup instead
+      // of making the button guess between them.
+      if (entry.type === 'email' && typeof window.__bvOpenCmsForEmail === 'function') {
+        const cmsChip = document.createElement('button');
+        cmsChip.type = 'button';
+        cmsChip.className = CHIP_CLASS;
+        cmsChip.dataset.type = 'cms';
+        cmsChip.textContent = 'CMS';
+        cmsChip.title = `Open the CMS account for ${entry.value}`;
+        cmsChip.addEventListener('click', function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          window.__bvOpenCmsForEmail(entry.value, window.__bvGetFreshdeskClientContext
+            ? window.__bvGetFreshdeskClientContext()
+            : { primary: '', fallback: '' });
+        });
+        row.appendChild(cmsChip);
+      }
     });
 
     if (note.parentElement) note.parentElement.insertBefore(row, note.nextSibling);
@@ -9618,145 +9651,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         ensureHeaderButtonStyle();
     }
 
-    const EMAIL_MENU_ID = 'viewlift-cms-email-menu';
-    const EMAIL_MENU_STYLE_ID = 'viewlift-cms-email-menu-style';
-
-    function collectAllTicketEmailCandidates(primaryEmail) {
-        const chunks = [];
-        collectTextFromRoot(document, chunks, 0);
-        const matches = chunks.join('\n').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
-        const seen = new Set();
-        const candidates = [];
-
-        if (primaryEmail) {
-            seen.add(primaryEmail.toLowerCase());
-            candidates.push(primaryEmail);
-        }
-
-        // normalizeEmailMatches strips text glued onto either end of a
-        // match, which the page's separator-less adjacent text nodes
-        // produce constantly (e.g. "350804shaytaylor32@x.com" or
-        // "shaytaylor32@x.comContact Info").
-        normalizeEmailMatches(matches).forEach(match => {
-            const email = match.toLowerCase();
-            if (!email || seen.has(email) || isBlockedCmsSearchEmail(email)) return;
-            seen.add(email);
-            candidates.push(email);
-        });
-
-        // The primary email is prepended before normalisation, so run the
-        // front-glue check once more across the final list.
-        return candidates.filter(candidate =>
-            !candidates.some(other =>
-                other !== candidate &&
-                other.length < candidate.length &&
-                candidate.endsWith(other)
-            )
-        );
-    }
-
-    function addEmailMenuStyles() {
-        if (document.getElementById(EMAIL_MENU_STYLE_ID)) return;
-
-        const style = document.createElement('style');
-        style.id = EMAIL_MENU_STYLE_ID;
-        style.textContent = `
-            #${EMAIL_MENU_ID} {
-                position: fixed !important;
-                z-index: 2147483000 !important;
-                min-width: 220px !important;
-                max-width: 340px !important;
-                padding: 6px !important;
-                border: 1px solid #c7d2e0 !important;
-                border-radius: 10px !important;
-                background: #ffffff !important;
-                box-shadow: 0 12px 28px rgba(15, 23, 42, .2) !important;
-                font: 12.5px Arial, sans-serif !important;
-            }
-            #${EMAIL_MENU_ID} .viewlift-cms-email-hint {
-                padding: 4px 8px 6px !important;
-                color: #64748b !important;
-                font-size: 11px !important;
-            }
-            #${EMAIL_MENU_ID} button {
-                display: block !important;
-                width: 100% !important;
-                box-sizing: border-box !important;
-                text-align: left !important;
-                padding: 7px 8px !important;
-                border: none !important;
-                border-radius: 6px !important;
-                background: none !important;
-                color: #1e293b !important;
-                font: inherit !important;
-                cursor: pointer !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-            }
-            #${EMAIL_MENU_ID} button:hover { background: #eff6ff !important; }
-            #${EMAIL_MENU_ID} button .viewlift-cms-email-tag {
-                margin-left: 6px !important;
-                color: #2563eb !important;
-                font-weight: 700 !important;
-                font-size: 10.5px !important;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    function closeCmsEmailMenu() {
-        document.getElementById(EMAIL_MENU_ID)?.remove();
-    }
-
-    function showCmsEmailMenu(button, emails, clientContext) {
-        addEmailMenuStyles();
-        closeCmsEmailMenu();
-
-        const menu = document.createElement('div');
-        menu.id = EMAIL_MENU_ID;
-        menu.setAttribute('role', 'menu');
-
-        const hint = document.createElement('div');
-        hint.className = 'viewlift-cms-email-hint';
-        hint.textContent = 'Multiple emails found in this ticket - pick one to search:';
-        menu.appendChild(hint);
-
-        emails.forEach((email, index) => {
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.textContent = email;
-
-            if (index === 0) {
-                const tag = document.createElement('span');
-                tag.className = 'viewlift-cms-email-tag';
-                tag.textContent = 'Contact Info';
-                item.appendChild(tag);
-            }
-
-            item.addEventListener('click', function (event) {
-                event.preventDefault();
-                event.stopPropagation();
-                closeCmsEmailMenu();
-                openCMSForEmail(email, clientContext);
-            });
-            menu.appendChild(item);
-        });
-
-        document.body.appendChild(menu);
-
-        const rect = button.getBoundingClientRect();
-        menu.style.top = `${Math.round(rect.bottom + 6)}px`;
-        menu.style.left = `${Math.round(rect.left)}px`;
-
-        window.setTimeout(function () {
-            document.addEventListener('click', function onOutsideClick(event) {
-                if (menu.contains(event.target)) return;
-                closeCmsEmailMenu();
-                document.removeEventListener('click', onOutsideClick);
-            });
-        }, 0);
-    }
 
     function warnAboutUnroutedBrand(clientContext) {
         const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
@@ -9838,62 +9732,18 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         else window.open(href, '_blank');
     }
 
-    // Walks the ticket's candidate emails through CMS's own user-search
-    // API and reports the FIRST one that actually has an account. This is
-    // what turns "guess which of these addresses is the customer" into
-    // "ask CMS which one really exists" - and yields the account id, which
-    // is what makes opening the account directly possible at all.
-    function findCmsAccountForCandidates(candidates, site, onDone) {
-        let index = 0;
-
-        function tryNext() {
-            if (index >= candidates.length) {
-                onDone(null, null);
-                return;
-            }
-
-            const email = candidates[index];
-            index += 1;
-
-            bvCmsUserSearch({
-                site,
-                searchTerm: email,
-                onDone: function (error, result) {
-                    if (error) {
-                        onDone(error, null);
-                        return;
-                    }
-
-                    const users = (result && result.users) || [];
-                    // Only auto-open on an unambiguous single hit - more than
-                    // one match is exactly the case a human should eyeball.
-                    if (users.length === 1 && users[0] && users[0].id) {
-                        onDone(null, { email, userId: users[0].id });
-                        return;
-                    }
-                    if (users.length > 1) {
-                        onDone(null, { email, userId: '', ambiguous: true });
-                        return;
-                    }
-
-                    tryNext();
-                }
-            });
-        }
-
-        tryNext();
-    }
-
-    function runCmsLookupAndOpen(candidates, clientContext, button) {
-        const primaryEmail = candidates[0];
+    // One email in, one lookup, straight into the account. Exposed on
+    // window so the in-ticket email chips (Feature 5) can reuse the exact
+    // same path for the alternate addresses a customer mentions - the CMS
+    // button owns the ticket's official Contact Info email, the chips own
+    // everything else, and neither has to guess which one is "right".
+    function openCmsForEmail(email, clientContext) {
         const site = resolveCmsSite(clientContext);
         const cred = site ? bvGetCmsCredForSite(site) : null;
 
-        // Without usable credentials there is nothing to look up - keep the
-        // previous behaviour exactly (menu when ambiguous, search otherwise).
+        // No usable credentials - fall back to the plain search page.
         if (!cred) {
-            if (candidates.length > 1) showCmsEmailMenu(button, candidates, clientContext);
-            else openCMSForEmail(primaryEmail, clientContext);
+            openCMSForEmail(email, clientContext);
             return;
         }
 
@@ -9906,38 +9756,39 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
-        findCmsAccountForCandidates(candidates, site, function (error, match) {
-            if (error) {
-                console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
-                if (error.message === 'cms-unauthorized') {
-                    bvNotify('CMS session token expired - open any CMS page once to refresh it, then this will jump straight to accounts again.', { level: 'info', ttl: 9000 });
+        bvCmsUserSearch({
+            site,
+            searchTerm: email,
+            onDone: function (error, result) {
+                if (error) {
+                    console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
+                    if (error.message === 'cms-unauthorized') {
+                        bvNotify('CMS session expired - open any CMS page once, then this will jump straight to accounts again.', { level: 'info', ttl: 9000 });
+                    }
+                    openCMSForEmail(email, clientContext, tab);
+                    return;
                 }
-                openCMSForEmail(primaryEmail, clientContext, tab);
-                return;
-            }
 
-            if (match && match.userId) {
-                if (match.email !== primaryEmail) {
-                    bvNotify(`CMS: the account is under "${match.email}", not the ticket's "${primaryEmail}".`, { level: 'info', ttl: 12000 });
+                const users = (result && result.users) || [];
+
+                // Single unambiguous hit is the whole point: go straight in.
+                if (users.length === 1 && users[0] && users[0].id) {
+                    openCMSAccount(users[0].id, email, clientContext, tab);
+                    return;
                 }
-                openCMSAccount(match.userId, match.email, clientContext, tab);
-                return;
-            }
 
-            if (match && match.ambiguous) {
-                bvNotify(`CMS: more than one account matches "${match.email}" - opening the results list to pick.`, { level: 'info', ttl: 9000 });
-                openCMSForEmail(match.email, clientContext, tab);
-                return;
+                // Anything else is a judgement call - hand over the list.
+                if (users.length > 1) {
+                    bvNotify(`CMS: ${users.length} accounts match "${email}" - opening the list to pick.`, { level: 'info', ttl: 9000 });
+                } else {
+                    bvNotify(`CMS: no account found for ${email}.`, { level: 'warn', ttl: 9000 });
+                }
+                openCMSForEmail(email, clientContext, tab);
             }
-
-            bvNotify(
-                `CMS: no account found for ${primaryEmail}` +
-                (candidates.length > 1 ? ` or the ${candidates.length - 1} other email(s) in this ticket` : '') + '.',
-                { level: 'warn', ttl: 10000 }
-            );
-            openCMSForEmail(primaryEmail, clientContext, tab);
         });
     }
+
+    window.__bvOpenCmsForEmail = openCmsForEmail;
 
     function installHeaderButton() {
         if (!isFreshdeskPage()) return;
@@ -9978,13 +9829,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 return;
             }
 
-            const clientContext = getFreshdeskClientContext();
-            const candidates = collectAllTicketEmailCandidates(email);
-
-            // Asks CMS which candidate actually has an account and opens it
-            // directly; silently falls back to the old search-page/menu
-            // behaviour whenever credentials are missing or stale.
-            runCmsLookupAndOpen(candidates, clientContext, button);
+            // Only ever the ticket's own Contact Info email. Alternate
+            // addresses mentioned in the conversation are handled by their
+            // own chips, so this stays a single predictable action.
+            openCmsForEmail(email, getFreshdeskClientContext());
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);
@@ -10343,6 +10191,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     window.__betterFreshdeskGetCustomerEmail = getCustomerEmailFromContactInfo;
+    // Needed by the in-ticket email chips so their CMS lookup routes to the
+    // same brand/host the CMS button would have used.
+    window.__bvGetFreshdeskClientContext = getFreshdeskClientContext;
 
 })();
 
