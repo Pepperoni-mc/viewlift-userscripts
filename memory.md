@@ -70,6 +70,24 @@ push through storage, for detail a support note doesn't need).
 - **Auto-submitting anything.** The refund workflow's existing auto-submit predates this work;
   nothing new was given the power to mutate customer data.
 
+### The repo now has a test (2026-08-13)
+
+`tests/email-detection.test.js` - run with `node tests/email-detection.test.js`. It **extracts the
+real helpers out of the shipped userscript** rather than duplicating them, so it cannot drift from
+what actually runs. Covers the reported ticket #350804 garbage, glue-trimming in both directions
+(without damaging mixed-case/subdomain/plus-tag addresses), and the blocklist. Extend this rather
+than re-deriving one-off harnesses in scratch files.
+
+### Legacy CMS search flow: disabled, not deleted (2026-08-13)
+
+The old fill-the-box-and-click-Search module (`runCMSFlow`, `runCMSSearch`, `getPendingCMSEmail`,
+`CMS_EMAIL_PARAM`, ~150 lines) has been unreachable since the button moved to CMS's own
+keyword/filter URL. It was still *running* on every CMS page though - polling for up to 10s and
+scanning every input each tick - and a stale pending email in storage would have been typed into
+the search box. Its entry point is now disabled and the leftover storage keys cleared once. The
+functions remain in the file on purpose: deleting interconnected code deserves a session where
+someone can click through CMS afterwards.
+
 ### Open threads
 
 - Whether a `user-search` call actually resets the server's idle timer is still unproven - it
