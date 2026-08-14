@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.42.1
+// @version      3.43.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -298,14 +298,38 @@
     }
   }
 
-  function bvRecordCmsCreds({ site, xApiKey, authorization, host, apiOrigin }) {
+  function bvRecordCmsCreds({ site, xApiKey, authorization, host, apiOrigin, authSource }) {
     if (!xApiKey && !authorization) return;
 
     const creds = bvGetCmsCreds();
     const now = Date.now();
 
     if (authorization) {
-      creds.authorization = { value: authorization, capturedAt: now };
+      // Two sources feed this: the Authorization header lifted off the app's
+      // own requests, and the session cookie. They carry the same token but
+      // NOT necessarily the same formatting - a header may include a
+      // "Bearer " prefix the cookie has no reason to. So:
+      //
+      //  - a genuinely newer token always wins (that's a re-login), and
+      //  - on a tie the header wins, because that value is known-good: it is
+      //    exactly what the app itself put on the wire. Letting the cookie
+      //    overwrite it on equal expiry could quietly swap a working format
+      //    for an untested one.
+      const source = authSource || 'header';
+      const incomingExpiry = bvTokenExpiresAt(authorization);
+      const stored = creds.authorization;
+      const storedExpiry = stored ? bvTokenExpiresAt(stored.value) : 0;
+
+      const replace =
+        !stored ||
+        !storedExpiry ||
+        !incomingExpiry ||
+        incomingExpiry > storedExpiry ||
+        (incomingExpiry === storedExpiry && source === 'header' && stored.source === 'cookie');
+
+      if (replace) {
+        creds.authorization = { value: authorization, capturedAt: now, source };
+      }
     }
     if (site && xApiKey) {
       // apiOrigin is recorded per brand because each CMS host has its own
@@ -687,6 +711,46 @@
       } catch (error) {
         console.warn('[CMS API] Could not observe XHR for credential capture.', error);
       }
+
+      // Read the session token straight from the live session instead of
+      // only ever waiting to intercept it on an outgoing request.
+      //
+      // Why this matters: intercepting is passive, so the stored copy is
+      // only ever as current as the last request we happened to catch - and
+      // on some routes the app binds its fetch reference before this script
+      // is injected, so we catch nothing at all there. Reading the cookie
+      // means the stored token matches the real session from the moment any
+      // CMS page loads, and updates immediately after a re-login rather than
+      // leaving a superseded token in place.
+      //
+      // This does NOT extend anything: only the server can mint a token, and
+      // this session's access and refresh tokens were measured expiring at
+      // the same instant, so there is nothing here that could be refreshed.
+      // It only keeps our copy honest.
+      function captureTokenFromCookie() {
+        try {
+          const match = document.cookie.match(/(?:^|;\s*)vl-accessToken=([^;]*)/);
+          if (!match) return;
+
+          const token = decodeURIComponent(match[1]).trim();
+          // Only accept something that really is a JWT with an expiry -
+          // bvRecordCmsCreds compares expiries to decide what to keep, and a
+          // value it can't read would look infinitely old to that comparison.
+          if (!bvTokenExpiresAt(token)) return;
+
+          bvRecordCmsCreds({
+            site: siteFromPage(),
+            authorization: token,
+            host: location.hostname,
+            authSource: 'cookie'
+          });
+        } catch (error) {
+          // Never let credential housekeeping disturb the page.
+        }
+      }
+
+      captureTokenFromCookie();
+      onRouteChange(captureTokenFromCookie);
     })();
   }
 
