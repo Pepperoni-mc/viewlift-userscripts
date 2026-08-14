@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.43.0
+// @version      3.43.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8157,16 +8157,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
           element.closest('.conversation-app-icon') ||
           element;
       }
-    },
-    {
-      // The top action bar's own "Reply" shortcut - removed per request.
-      // The actual Reply/Note/Forward compose tabs at the bottom of the
-      // conversation are a separate part of the page and are untouched.
-      selector: 'section#mainactionbar button[data-test-email-action="reply"]',
-      getTarget: function (element) {
-        return element;
-      }
     }
+    // The top action bar's own "Reply" shortcut used to be deleted here.
+    // It is only CSS-hidden now (see addStyles): Sebastian runs a separate
+    // "reply with bot" userscript that anchors on that button, and ripping
+    // the node out of the DOM on every route change broke it. Hiding keeps
+    // it out of his way - which is all he asked for - while leaving the
+    // node in place for the other script to find and click. Do not put
+    // this back into removalRules.
   ];
 
   function addStyles() {
