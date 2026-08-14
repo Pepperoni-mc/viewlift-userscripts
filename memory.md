@@ -2,7 +2,49 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
-## Refund Reason finally solved: write MUI's hidden input, don't click - 3.44.0 (2026-08-14)
+## The refund is a THREE-click chain, and 3.44.0 broke it - 3.45.0 (2026-08-14)
+
+**Correction to the entry below.** It assumed the Action eye opens the Issue-percentage-refund
+dialog. It does not. Read live on `cms.viewlift.com` (account page → BILLING & PURCHASE →
+SUBSCRIPTION PLANS AND ENTITLEMENTS, table `Date | Title | Transaction Type | Order Number | Total
+Amount | Payment Handler | Offer | Action`, 10 rows) plus the DOM Sebastian pasted, the real chain is:
+
+1. **Action cell eye** - `button.MuiIconButton-root` containing `svg[data-testid="VisibilityIcon"]`,
+   inside a `<td id="enhanced-table-checkbox-0">`. Opens the transaction's detail view.
+2. **Refund** - a plain `MuiButton` (`MuiButton-textError`, MoreHoriz start icon, text `Refund`).
+   Opens a menu.
+3. **Issue percentage refund** - `<li class="MuiMenuItem-root" role="menuitem">`. Opens the dialog.
+4. Then fill + **Confirm Refund**.
+
+Two bugs, one of them introduced by 3.44.0:
+
+- **`getRefundTrigger()` could never see step 2.** It required
+  `button[data-slot="dropdown-menu-trigger"]` or `button[aria-haspopup="menu"]`; the live button has
+  **neither** attribute. So "click the eye and nothing happens" was the chain dying at its first
+  step - and it had been dying there since long before the reason work. Now it matches any visible
+  control whose text is exactly `Refund`. **Equality is deliberate**: `includes` would also match
+  "Confirm Refund" (auto-submitting the dialog) and "Issue percentage refund".
+- **3.44.0 made it worse.** It changed the eye to start the run with the dialog treated as already
+  opening, on the wrong assumption above, so the run waited for a dialog two clicks away and then
+  stood down. The eye now starts a run with nothing done and drives all three steps.
+
+`startWorkflow` now takes named options (`{ percentageChosen, triggerClicked }`) instead of one
+positional boolean that had drifted into meaning two different things. The quiet stand-down fires on
+"nothing refund-shaped recognised in 6s" rather than "no dialog in 4s", so a stray eye click
+elsewhere in CMS still exits without warning about a refund nobody started.
+
+**Debug flags are now readable from the page**: `<html data-bv-refund-dry-run="true">` (and
+`data-bv-refund-debug`). Tampermonkey sandboxes the script's `window`, so neither DevTools nor
+browser automation can reach `window.__bvRefundDryRun` - a data attribute is the one channel both
+sides see. This is what makes a live dry run possible at all; set the attribute, click the eye,
+watch it fill everything and stop before Confirm.
+
+**Verified**: `node tests/run-all.js` passes (the new checks cover the plain Refund button, Confirm
+Refund not matching, percentage item vs full refund). Live: the table structure and the eye were
+read on the real page; **the chain was NOT run end to end** - doing that means issuing a real refund
+on a real customer, so it needs a dry run (or Sebastian clicking Confirm himself).
+
+## Refund Reason: write MUI's hidden input, don't click - 3.44.0 (2026-08-14)
 
 Sebastian: clicking the eye should issue the refund in one go, and "no estás seleccionando el
 refund reason como ROTH". He pasted the live "Issue percentage refund" dialog, which settled it -

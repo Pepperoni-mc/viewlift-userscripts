@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.45.0
+// @version      3.45.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -36,7 +36,18 @@
 
   const installMarker = document.documentElement;
   if (!installMarker || installMarker.hasAttribute('data-better-viewlift-installed')) return;
-  installMarker.setAttribute('data-better-viewlift-installed', '3.26.0');
+  // Read the real version out of the metadata block instead of a hardcoded
+  // string, which had been stuck at 3.26.0 for dozens of releases. It is the
+  // only way to answer "which version is actually loaded?" from the page -
+  // Tampermonkey updates on its own schedule, so testing a fix without being
+  // able to check this wastes a whole round of "it still does not work".
+  let installedVersion = 'unknown';
+  try {
+    installedVersion = GM_info?.script?.version || 'unknown';
+  } catch (error) {
+    // GM_info is not available - the marker still records that we loaded.
+  }
+  installMarker.setAttribute('data-better-viewlift-installed', installedVersion);
 
   function isCMSHost(hostname = location.hostname) {
     return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
@@ -5384,6 +5395,7 @@ if (isCMSHost()) {
     let lastReasonTriggerClickAt = 0;
     let reasonNativeWriteAt = 0;
     let sawProgress = false;
+    let missingTicketId = false;
     let runTimer = null;
     let lastDebugLine = '';
 
@@ -5859,7 +5871,9 @@ if (isCMSHost()) {
                 debugDumpReasonOptions();
             }
             bvNotify(
-                `Refund auto-fill stopped - could not set: ${missing.join(', ') || 'unknown field'}. Fill it in by hand and submit manually.`,
+                missingTicketId
+                    ? 'Refund auto-fill stopped: no Freshdesk ticket ID stored, and Additional Comments is required. Set the ID in the refund sheet ($) and click the eye again.'
+                    : `Refund auto-fill stopped - could not set: ${missing.join(', ') || 'unknown field'}. Fill it in by hand and submit manually.`,
                 { level: 'warn', ttl: 10000 }
             );
             return;
@@ -5926,6 +5940,14 @@ if (isCMSHost()) {
             const ticketURL = getFreshdeskTicketURL();
             if (textarea && ticketURL) {
                 commentsFilled = setControlledValue(textarea, `Customer wanted a refund: ${ticketURL}`);
+            } else if (textarea && !ticketURL) {
+                // Additional Comments is required by the dialog, so with no
+                // ticket id there is nothing valid to put there and the run can
+                // never finish. Say so instead of spinning to the timeout with
+                // a generic message - and do NOT invent a comment: the ticket
+                // link is the audit trail for the refund.
+                missingTicketId = true;
+                debugState('No Freshdesk ticket id stored - cannot fill the required Comments field.');
             }
         }
 
@@ -5973,6 +5995,7 @@ if (isCMSHost()) {
         lastDebugLine = '';
         reasonNativeWriteAt = 0;
         sawProgress = percentageChosen || triggerClicked;
+        missingTicketId = false;
         workflowActive = true;
         workflowStartedAt = Date.now();
         percentageOptionClicked = percentageChosen;
