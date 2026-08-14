@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.38.0
+// @version      3.39.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -3068,6 +3068,44 @@
         return /^\/logout(?:\/|$)/i.test(location.pathname);
     }
 
+    // Which brand this CMS session is currently on. The app keeps it in its
+    // own "site" cookie (a brand slug, not a credential), which is a far
+    // more reliable "did the switch land yet?" signal than a fixed timer.
+    function currentSessionSite() {
+        const match = document.cookie.match(/(?:^|;\s*)site=([^;]*)/);
+        return match ? decodeURIComponent(match[1]).trim().toLowerCase() : '';
+    }
+
+    // Finishes a pending switch from WHEREVER the app happens to land.
+    //
+    // Selecting an organization makes the v5 app do a full page navigation
+    // of its own (measured 2026-08-13: it lands on /content). The old code
+    // waited a fixed 1200ms and then redirected, which raced that
+    // navigation - when the app won, the redirect never happened and the
+    // journey just stopped there, which is exactly the "it gets stuck and
+    // never runs the search" report. Completing on page load instead of on
+    // a timer removes the race: whatever page the app ends up on, this runs
+    // there and continues to the real destination.
+    function completePendingSwitchIfReady() {
+        const pending = safeGetPending();
+        if (!pending || !pending.key || !pending.returnUrl) return false;
+
+        if (Date.now() - Number(pending.startedAt || 0) > 60000) {
+            clearPending();
+            return false;
+        }
+
+        if (currentSessionSite() !== String(pending.key).toLowerCase()) return false;
+
+        clearPending();
+
+        // Already at the destination - nothing left to do.
+        if (location.href === pending.returnUrl) return true;
+
+        location.replace(pending.returnUrl);
+        return true;
+    }
+
     function captureQuerySwitchRequest() {
         try {
             const params = new URLSearchParams(location.search);
@@ -3078,6 +3116,20 @@
             // runs the real search on load - carrying the email through as
             // these native params means no DOM fill/click simulation is
             // needed once we land back there after the account switch.
+            // The Freshdesk button already stored a pending entry with the
+            // real destination (often a direct account URL). Rebuilding one
+            // from this page's query string would overwrite it with a bare
+            // search page, throwing away the account id the lookup just
+            // found - which stranded every cross-brand jump on an empty
+            // search screen. Only build one when nothing usable is pending.
+            const existing = safeGetPending();
+            const existingIsUsable = existing &&
+                String(existing.key || '').toLowerCase() === key &&
+                existing.returnUrl &&
+                Date.now() - Number(existing.startedAt || 0) < 60000;
+
+            if (existingIsUsable) return;
+
             const email = clean(params.get('keyword'));
             const returnUrl = `${location.origin}/users/search${email ? `?keyword=${encodeURIComponent(email)}&filter=all` : ''}`;
             safeSetPending({ key, returnUrl, startedAt: Date.now() });
@@ -3332,18 +3384,37 @@
             }
 
             option.click();
-            clearPending();
-            // Give the v5 app time to persist the selected organization before
-            // returning to the classic route.
-            window.setTimeout(() => location.replace(returnUrl), 1200);
+
+            // Deliberately does NOT clear the pending switch or redirect on a
+            // timer: selecting an organization makes the app navigate itself,
+            // and racing that navigation is what used to strand the journey
+            // half-way. The pending entry is left in place so that whichever
+            // page the app lands on finishes it via
+            // completePendingSwitchIfReady(). This poll is only a fallback
+            // for the case where the app re-renders without navigating - it
+            // watches for the session's brand to actually flip rather than
+            // guessing at a fixed delay, so it fires as soon as it is ready.
+            let waited = 0;
+            const settleTimer = window.setInterval(() => {
+                waited += 250;
+                if (completePendingSwitchIfReady() || waited > 15000) {
+                    window.clearInterval(settleTimer);
+                    switchRunning = false;
+                }
+            }, 250);
         }, 500);
     }
 
     captureQuerySwitchRequest();
+    // Runs first, and on every CMS page: if a switch was requested earlier
+    // and the session is now on that brand, continue straight to the real
+    // destination no matter which page the app dropped us on.
+    completePendingSwitchIfReady();
     installClassicButton();
     continueFromLogout();
     runV5Switch();
     onRouteChange(() => {
+        completePendingSwitchIfReady();
         installClassicButton();
         continueFromLogout();
         runV5Switch();
@@ -6280,7 +6351,7 @@ if (isCMSHost()) {
 
             await nextFrame();
             await nextFrame();
-            await delay(150);
+            await delay(50);
 
             if (typeof window.html2canvas !== "function") {
                 throw new Error("DOM capture library is unavailable. Reload the CMS tab and try again.");
@@ -6290,7 +6361,12 @@ if (isCMSHost()) {
                 backgroundColor: "#ffffff",
                 useCORS: true,
                 allowTaint: false,
-                scale: Math.min(window.devicePixelRatio || 1, 2),
+                // Deliberately 1, not devicePixelRatio: on a retina screen
+                // that meant rendering 4x the pixels and then pushing a
+                // correspondingly huge data URL through GM storage to the
+                // Freshdesk tab - the single biggest cost in this whole
+                // path. A support note doesn't need retina detail.
+                scale: 1,
                 x: window.scrollX,
                 y: window.scrollY,
                 width: document.documentElement.clientWidth,
@@ -7620,7 +7696,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     window.setTimeout(consumeSnapshotIfReady, 150);
-    window.setInterval(consumeSnapshotIfReady, 900);
+
+    // React the instant the CMS tab queues a snapshot instead of waiting for
+    // the next poll tick - that poll was up to ~0.9s of dead time on every
+    // single capture, which is most of the "it takes a moment to show up"
+    // feel. The interval stays purely as a safety net (and much slower now)
+    // for the case where the change event doesn't arrive.
+    try {
+      if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener(SNAPSHOT_KEY, function (_name, _oldValue, _newValue, remote) {
+          if (!remote) return;
+          consumeSnapshotIfReady();
+        });
+      }
+    } catch (error) {
+      console.warn('[Freshdesk Snapshot] Could not subscribe to snapshot updates.', error);
+    }
+
+    window.setInterval(consumeSnapshotIfReady, 2500);
   }
 
   init();
