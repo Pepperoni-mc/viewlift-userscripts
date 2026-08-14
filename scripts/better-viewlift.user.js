@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.37.0
+// @version      3.38.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -26,8 +26,9 @@
 // @connect      cms-gcp.viewlift.com
 // @connect      cms-qcp.viewlift.com
 // @connect      cms.monumentalsportsnetwork.com
-// @connect      cms.api.viewlift.com
+// @connect      viewlift.com
 // @connect      viewlift.freshdesk.com
+// @connect      monumentalsportsnetwork.com
 // ==/UserScript==
 
 (function () {
@@ -211,7 +212,7 @@
    * CMS API credentials, captured from the user's own live CMS
    * session rather than hardcoded.
    *
-   * Every CMS search is really a POST to cms.api.viewlift.com/v3.0/invoke
+   * Every CMS search is really a POST to <brand-api-host>/v3.0/invoke
    * wrapping /v2/admin/identity/user-search, authenticated by two request
    * headers: a per-brand "xApiKey" and a per-user "Authorization" bearer
    * token that ROTATES ROUGHLY EVERY 12 HOURS. Hardcoding either would
@@ -226,7 +227,13 @@
    * were captured from. Everything degrades to the old open-the-search-
    * page behaviour when they are missing or stale.
    * ---------------------------------------------------------- */
-  const BV_CMS_API_URL = 'https://cms.api.viewlift.com/v3.0/invoke';
+  // The API host is PER CMS HOST, not one fixed domain: cms-gcp.viewlift.com
+  // talks to cms-gcp.api.viewlift.com, and MSN has its own. Measured
+  // 2026-08-13 - hardcoding cms.api.viewlift.com meant the capture never
+  // matched a real request and the lookup would have queried the wrong
+  // backend, so the origin is recorded per brand alongside its key instead
+  // of being guessed here.
+  const BV_CMS_API_PATH = '/v3.0/invoke';
   const BV_CMS_CREDS_KEY = 'betterViewliftCmsApiCreds';
   // Deliberately below the real ~12h rotation so a token that is about to
   // expire is treated as already gone instead of producing a confusing
@@ -254,7 +261,7 @@
     }
   }
 
-  function bvRecordCmsCreds({ site, xApiKey, authorization, host }) {
+  function bvRecordCmsCreds({ site, xApiKey, authorization, host, apiOrigin }) {
     if (!xApiKey && !authorization) return;
 
     const creds = bvGetCmsCreds();
@@ -264,7 +271,9 @@
       creds.authorization = { value: authorization, capturedAt: now };
     }
     if (site && xApiKey) {
-      creds.sites[site] = { xApiKey, capturedAt: now };
+      // apiOrigin is recorded per brand because each CMS host has its own
+      // API host - see the note above.
+      creds.sites[site] = { xApiKey, apiOrigin: apiOrigin || '', capturedAt: now };
     }
     // Remembering which brand slug a given CMS host last used lets the
     // Freshdesk side resolve a site for hosts whose brands aren't in the
@@ -284,9 +293,14 @@
     const siteEntry = creds.sites[site];
 
     if (!auth || !auth.value || !siteEntry || !siteEntry.xApiKey) return null;
+    if (!siteEntry.apiOrigin) return null;
     if (Date.now() - Number(auth.capturedAt || 0) > BV_CMS_CRED_MAX_AGE_MS) return null;
 
-    return { xApiKey: siteEntry.xApiKey, authorization: auth.value };
+    return {
+      xApiKey: siteEntry.xApiKey,
+      authorization: auth.value,
+      apiOrigin: siteEntry.apiOrigin
+    };
   }
 
   function bvGetSiteForCmsHost(host) {
@@ -389,7 +403,7 @@
 
     GM_xmlhttpRequest({
       method: 'POST',
-      url: BV_CMS_API_URL,
+      url: cred.apiOrigin + BV_CMS_API_PATH,
       headers: {
         'Content-Type': 'application/json',
         Authorization: cred.authorization,
@@ -533,19 +547,27 @@
 
       function capture(url, headers, body) {
         try {
-          if (!/cms\.api\.viewlift\.com/i.test(String(url || ''))) return;
+          const href = String(url || '');
+          // Any of ViewLift's API hosts, not one fixed domain - the GCP CMS
+          // uses cms-gcp.api.viewlift.com, MSN has its own, and the same
+          // credentials ride along on both the /v3.0/invoke and the
+          // /management/graphql calls.
+          if (!/\bapi\.viewlift\.com/i.test(href)) return;
 
           const xApiKey = readHeader(headers, 'xApiKey');
           const authorization = readHeader(headers, 'Authorization');
           if (!xApiKey && !authorization) return;
 
           const site = siteFromRequestBody(body) || siteFromPage();
+          let apiOrigin = '';
+          try { apiOrigin = new URL(href, location.href).origin; } catch (error) { /* keep empty */ }
 
           bvRecordCmsCreds({
             site,
             xApiKey,
             authorization,
-            host: location.hostname
+            host: location.hostname,
+            apiOrigin
           });
 
           // Page-visible counters so "is capture actually recording?" can be
@@ -554,6 +576,7 @@
           pageWindow.__bvCmsCredCaptureCount = (pageWindow.__bvCmsCredCaptureCount || 0) + 1;
           pageWindow.__bvCmsCredLastSite = site || '(no site in body)';
           pageWindow.__bvCmsCredLastHad = (xApiKey ? 'key' : '') + (authorization ? '+auth' : '');
+          pageWindow.__bvCmsCredLastApiOrigin = apiOrigin;
         } catch (error) {
           pageWindow.__bvCmsCredCaptureError = String(error && error.message || error);
         }
