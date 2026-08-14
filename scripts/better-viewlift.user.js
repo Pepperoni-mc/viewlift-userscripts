@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.43.1
+// @version      3.44.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -5362,6 +5362,14 @@ if (isCMSHost()) {
     const REFUND_PERCENTAGE = '100';
     const REFUND_REASON_VALUE = 'ROTH';
     const WORKFLOW_TIMEOUT_MS = 20000;
+    // How long React gets to accept a value written straight onto the MUI
+    // Select's hidden native input before we stop waiting and go clicking.
+    const REASON_WRITE_SETTLE_MS = 700;
+    const REASON_WRITE_RETRY_MS = 1400;
+    // Grace period for a dialog that some other click is supposed to open.
+    const DIALOG_WAIT_MS = 4000;
+    const DEBUG_KEY = 'bvRefundDebug';
+    const DRY_RUN_KEY = 'bvRefundDryRun';
 
     let workflowActive = false;
     let workflowStartedAt = 0;
@@ -5372,10 +5380,59 @@ if (isCMSHost()) {
     let internalClick = false;
     let lastRefundTriggerClickAt = 0;
     let lastReasonTriggerClickAt = 0;
+    let reasonNativeWriteAt = 0;
+    let expectedDialog = false;
+    let dialogSeen = false;
     let runTimer = null;
+    let lastDebugLine = '';
+
+    function readFlag(key) {
+        if (window[`__${key}`] === true) return true;
+        try {
+            return GM_getValue(key, false) === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function writeFlag(key, value) {
+        try {
+            GM_setValue(key, value === true);
+        } catch (error) {
+            // Storage is optional here - window.__bvRefundDebug still works.
+        }
+        window[`__${key}`] = value === true;
+    }
+
+    // Off by default: this runs on every CMS page and the per-tick state dump
+    // would bury the console. Turn it on from the Tampermonkey menu (or
+    // window.__bvRefundDebug = true) when a refund does not auto-fill, which
+    // is the only time anyone needs it.
+    function debugLog(message, detail) {
+        if (!readFlag(DEBUG_KEY)) return;
+        if (detail === undefined) console.log(`[BV Refund] ${message}`);
+        else console.log(`[BV Refund] ${message}`, detail);
+    }
+
+    // Same as debugLog but collapses the identical line repeating every tick -
+    // the workflow polls every ~150ms and the interesting part is when the
+    // state CHANGES.
+    function debugState(message, detail) {
+        if (!readFlag(DEBUG_KEY)) return;
+        if (message === lastDebugLine) return;
+        lastDebugLine = message;
+        debugLog(message, detail);
+    }
 
     function cleanText(value) {
-        return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            // MUI renders an empty Select as a zero-width space inside a
+            // <span class="notranslate">. Those are not \s, so without this an
+            // EMPTY reason field reads as if it had content.
+            .replace(/[\u200b-\u200d\ufeff]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     function getText(element) {
@@ -5472,10 +5529,15 @@ if (isCMSHost()) {
         const dialog = Array.from(document.querySelectorAll(
             '[role="dialog"], [data-slot="dialog-content"]'
         )).filter(isVisible).find(element => {
+            // h4-h6 matter: the live dialog titles this with MUI's
+            // <h6 class="MuiTypography-h6">Issue percentage refund</h6>, so an
+            // h1-h3 lookup found nothing and dialog detection was silently
+            // falling through to the placeholder heuristic below every time.
             const title = getText(element.querySelector(
-                '[data-slot="dialog-title"], h1, h2, h3'
+                '[data-slot="dialog-title"], h1, h2, h3, h4, h5, h6'
             )).toLowerCase();
-            return title === 'issue refund' || title === 'issue percentage refund';
+            return title.includes('refund') &&
+                (title.includes('issue') || title.includes('percentage'));
         });
 
         if (dialog) return dialog;
@@ -5548,6 +5610,59 @@ if (isCMSHost()) {
             current.includes('ROTH');
     }
 
+    function getReasonNativeInput(dialog) {
+        return dialog?.querySelector('input.MuiSelect-nativeInput') || null;
+    }
+
+    // The one that actually works, and the reason this feature kept failing.
+    //
+    // MUI's non-native Select renders a hidden <input class="MuiSelect-nativeInput">
+    // whose onChange handler looks the written value up among the MenuItem
+    // `value` props and, on a hit, selects that item - it exists precisely so
+    // browser autofill can drive the field. So the value can be set WITHOUT
+    // opening the portal listbox, which matters twice over here: this app has
+    // already been observed (twice, 2026-08-12/13) ignoring synthetic clicks on
+    // MUI components, and the listbox is portalled outside the dialog anyway.
+    //
+    // Value must match a MenuItem's value exactly or MUI's handler bails with
+    // index -1 and nothing happens - hence the read-back verification by the
+    // caller rather than trusting the write.
+    function writeReasonNativeValue(dialog, value) {
+        const nativeInput = getReasonNativeInput(dialog);
+        if (!nativeInput) {
+            debugLog('No hidden MuiSelect-nativeInput in the dialog - cannot set the reason without the menu.');
+            return false;
+        }
+
+        const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        const previousValue = nativeInput.value;
+        if (descriptor?.set) descriptor.set.call(nativeInput, value);
+        else nativeInput.value = value;
+        if (nativeInput._valueTracker) nativeInput._valueTracker.setValue(previousValue);
+        nativeInput.dispatchEvent(new Event('input', { bubbles: true }));
+        nativeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        debugLog(`Wrote "${value}" onto the hidden reason input; verifying on the next tick.`);
+        return true;
+    }
+
+    // Only called when the write path failed - dumps what the listbox actually
+    // offers so a wording/value mismatch is visible instead of guessed at.
+    function debugDumpReasonOptions() {
+        if (!readFlag(DEBUG_KEY)) return;
+        const options = Array.from(document.querySelectorAll(
+            '[data-slot="select-item"], [data-slot="dropdown-menu-item"], [role="option"], [role="menuitem"], [data-radix-collection-item]'
+        ));
+        if (!options.length) {
+            debugLog('Reason listbox is not open (no option nodes anywhere in the document).');
+            return;
+        }
+        debugLog('Reason options currently rendered:', options.map(option => ({
+            dataValue: option.getAttribute('data-value'),
+            text: getText(option),
+            visible: isVisible(option)
+        })));
+    }
+
     function getReasonOption() {
         // Matches the same selector list getPercentageRefundOption() already
         // uses successfully - the reason picker may render as the same kind
@@ -5565,6 +5680,15 @@ if (isCMSHost()) {
     }
 
     function isRefundActionIconClick(target) {
+        // MUI names its own icons, so the testid is the stable identity of the
+        // eye button; the path-data comparison below stays as a fallback for
+        // builds that render the same glyph without a testid. Matching the
+        // whole button (not just the <path>) also catches clicks that land on
+        // the ripple span or the button's padding rather than the glyph itself.
+        const button = target?.closest?.('button');
+        if (button?.querySelector('svg[data-testid="VisibilityIcon"]')) return true;
+        if (target?.closest?.('svg[data-testid="VisibilityIcon"]')) return true;
+
         const path = target?.closest?.('path');
         if (!path) return false;
 
@@ -5632,6 +5756,59 @@ if (isCMSHost()) {
         return ticketId ? `https://viewlift.freshdesk.com/a/tickets/${ticketId}` : '';
     }
 
+    // Returns true only when the field VERIFIABLY reads ROTH - never merely
+    // because an event was dispatched at it. The old code set reasonSelected
+    // from realClick()'s return value, which only reports "events were sent",
+    // so a silently-ignored click counted as success.
+    function ensureReasonSelected(dialog) {
+        if (isReasonAlreadyROTH(dialog)) {
+            debugState('Reason is ROTH.', getReasonCurrentText(dialog));
+            return true;
+        }
+
+        // A genuine <select> (older CMS builds) is unambiguous - try it first.
+        if (selectNativeROTH(dialog) && isReasonAlreadyROTH(dialog)) return true;
+
+        // Preferred path: write straight to MUI's hidden native input, then let
+        // the next tick confirm React accepted it.
+        const sinceWrite = reasonNativeWriteAt ? Date.now() - reasonNativeWriteAt : Infinity;
+        if (sinceWrite > REASON_WRITE_RETRY_MS) {
+            if (writeReasonNativeValue(dialog, REFUND_REASON_VALUE)) {
+                reasonNativeWriteAt = Date.now();
+                return false;
+            }
+        } else if (sinceWrite < REASON_WRITE_SETTLE_MS) {
+            debugState('Waiting for React to accept the written reason value.');
+            return false;
+        }
+
+        // Fallback: the click-driven path. Reached when the hidden input is
+        // missing, or when MUI rejected the written value because the real
+        // MenuItem value is not literally "ROTH" - in which case the option
+        // dump below is what identifies the correct value.
+        const option = getReasonOption();
+        if (option) {
+            realClick(option, '[Better CMS Refund] Reason option clicked.');
+            return isReasonAlreadyROTH(dialog);
+        }
+
+        const trigger = getReasonTrigger(dialog);
+        if (!trigger) {
+            debugState('No reason trigger found inside the dialog.');
+            return false;
+        }
+        if (trigger.getAttribute('aria-expanded') === 'true') {
+            debugState('Reason listbox reports open but no matching option was found.');
+            debugDumpReasonOptions();
+            return false;
+        }
+        if (Date.now() - lastReasonTriggerClickAt > 500) {
+            lastReasonTriggerClickAt = Date.now();
+            realClick(trigger, '[Better CMS Refund] Reason menu opened.');
+        }
+        return false;
+    }
+
     function scheduleRun(delay = 100) {
         window.clearTimeout(runTimer);
         runTimer = window.setTimeout(runWorkflow, delay);
@@ -5648,6 +5825,15 @@ if (isCMSHost()) {
                 !commentsFilled && 'comments'
             ].filter(Boolean);
             console.warn('[Better CMS Refund] Timed out before all fields were prepared. Missing:', missing);
+            if (!reasonSelected) {
+                const timedOutDialog = getIssueRefundDialog();
+                console.warn(
+                    '[Better CMS Refund] Reason field still reads:',
+                    JSON.stringify(getReasonCurrentText(timedOutDialog)),
+                    '- turn on the Tampermonkey menu\'s "Refund: debug logging" and retry to see the option list.'
+                );
+                debugDumpReasonOptions();
+            }
             bvNotify(
                 `Refund auto-fill stopped - could not set: ${missing.join(', ') || 'unknown field'}. Fill it in by hand and submit manually.`,
                 { level: 'warn', ttl: 10000 }
@@ -5658,6 +5844,17 @@ if (isCMSHost()) {
         const openDialog = getIssueRefundDialog();
         if (openDialog) {
             percentageOptionClicked = true;
+            dialogSeen = true;
+        }
+
+        // CMS uses MUI's Visibility icon for more than refunds, so an eye click
+        // elsewhere would otherwise sit here for the full 20s and then warn the
+        // user about a refund they never started. If the dialog we were told to
+        // expect has not appeared in a few seconds, this was not a refund.
+        if (expectedDialog && !dialogSeen && Date.now() - workflowStartedAt > DIALOG_WAIT_MS) {
+            workflowActive = false;
+            debugLog('No refund dialog appeared - that was not a refund action. Standing down quietly.');
+            return;
         }
 
         if (!percentageOptionClicked) {
@@ -5699,46 +5896,44 @@ if (isCMSHost()) {
         }
 
         if (!reasonSelected) {
-            if (isReasonAlreadyROTH(dialog)) {
-                reasonSelected = true;
-            } else if (selectNativeROTH(dialog)) {
-                reasonSelected = true;
-            } else {
-                const option = getReasonOption();
-                if (option) {
-                    reasonSelected = realClick(option, '[Better CMS Refund] Reason selected: ROTH.');
-                } else {
-                    // Previously assumed "already selected" whenever the
-                    // trigger's visible text didn't literally match "select a
-                    // reason" - a live CMS wording mismatch made this true
-                    // immediately without ever actually picking ROTH, so the
-                    // form could submit with the wrong (or no) reason instead
-                    // of just failing to select one. Always try to open the
-                    // menu and pick ROTH explicitly; the 20s workflowStartedAt
-                    // timeout above is the only bailout now.
-                    const trigger = getReasonTrigger(dialog);
-                    if (trigger && trigger.getAttribute('aria-expanded') !== 'true' &&
-                        Date.now() - lastReasonTriggerClickAt > 500) {
-                        lastReasonTriggerClickAt = Date.now();
-                        realClick(trigger, '[Better CMS Refund] Reason menu opened.');
-                    }
-                }
-            }
+            reasonSelected = ensureReasonSelected(dialog);
         }
+
+        debugState(
+            `state percentage=${percentageFilled} reason=${reasonSelected} comments=${commentsFilled}`,
+            { reason: getReasonCurrentText(dialog) }
+        );
 
         if (percentageFilled && reasonSelected && commentsFilled) {
             const submitButton = getIssueRefundButton(dialog);
             if (submitButton) {
+                // Dry run exists so this workflow can be debugged live without
+                // moving real money on a real customer's subscription.
+                if (readFlag(DRY_RUN_KEY)) {
+                    workflowActive = false;
+                    console.log('[BV Refund] DRY RUN - all fields are set; NOT clicking', JSON.stringify(getText(submitButton)));
+                    bvNotify('Refund dry run: fields filled, submit skipped. Review and confirm by hand.', { level: 'info', ttl: 8000 });
+                    return;
+                }
                 realClick(submitButton, '[Better CMS Refund] Issue Refund clicked automatically.');
                 workflowActive = false;
                 return;
             }
+            debugState('All fields set but no enabled Issue/Confirm Refund button found yet.');
         }
 
         scheduleRun(150);
     }
 
+    // percentageAlreadySelected means "something else is opening the Issue
+    // Refund dialog" - the eye, or the Percentage item in the Refund menu - so
+    // this run must wait for that dialog rather than drive the Refund dropdown.
     function startWorkflow(percentageAlreadySelected = false) {
+        debugLog(`Workflow started (dialog is opening elsewhere: ${percentageAlreadySelected}).`);
+        lastDebugLine = '';
+        reasonNativeWriteAt = 0;
+        expectedDialog = percentageAlreadySelected;
+        dialogSeen = false;
         workflowActive = true;
         workflowStartedAt = Date.now();
         percentageOptionClicked = percentageAlreadySelected;
@@ -5754,7 +5949,12 @@ if (isCMSHost()) {
         if (internalClick) return;
 
         if (isRefundActionIconClick(event.target)) {
-            startWorkflow(false);
+            // The eye opens the Issue-percentage-refund dialog by itself, so
+            // there is no Refund dropdown to drive. Passing false here made the
+            // first ticks (before the dialog rendered) go hunting for that menu
+            // and click it, fighting the dialog the eye was already opening.
+            debugLog('Refund eye clicked - waiting for the dialog it opens.');
+            startWorkflow(true);
             return;
         }
 
@@ -5772,6 +5972,29 @@ if (isCMSHost()) {
         if (workflowActive) scheduleRun(60);
     });
 
+    function registerMenuCommands() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+        try {
+            GM_registerMenuCommand('Refund: toggle debug logging', function () {
+                const next = !readFlag(DEBUG_KEY);
+                writeFlag(DEBUG_KEY, next);
+                bvNotify(`Refund debug logging ${next ? 'ON' : 'OFF'} - see the console, prefix [BV Refund].`, { level: 'info', ttl: 6000 });
+            });
+            GM_registerMenuCommand('Refund: toggle dry run (fill, do not submit)', function () {
+                const next = !readFlag(DRY_RUN_KEY);
+                writeFlag(DRY_RUN_KEY, next);
+                bvNotify(
+                    next
+                        ? 'Refund DRY RUN on - fields get filled, nothing is submitted.'
+                        : 'Refund dry run off - refunds submit automatically again.',
+                    { level: next ? 'warn' : 'info', ttl: 8000 }
+                );
+            });
+        } catch (error) {
+            console.warn('[Better CMS Refund] Could not register the debug menu commands.', error);
+        }
+    }
+
     function init() {
         if (!document.body) {
             window.setTimeout(init, 250);
@@ -5779,6 +6002,7 @@ if (isCMSHost()) {
         }
 
         observer.observe(document.body, { childList: true, subtree: true });
+        registerMenuCommands();
     }
 
     init();

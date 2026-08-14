@@ -2,6 +2,80 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Refund Reason finally solved: write MUI's hidden input, don't click - 3.44.0 (2026-08-14)
+
+Sebastian: clicking the eye should issue the refund in one go, and "no estás seleccionando el
+refund reason como ROTH". He pasted the live "Issue percentage refund" dialog, which settled it -
+`<input class="MuiSelect-nativeInput" value="">`, i.e. **empty**. So the 2026-08-13 entry's
+suspicion was right: "already ROTH by default" was doing all the real work, and on accounts where
+the field starts empty the workflow could never fill it and timed out every time.
+
+**The fix that matters**: MUI's non-native Select renders that hidden `<input>` with its own
+`onChange`, which looks the written value up among the MenuItem `value` props and selects the match
+- it exists so browser autofill can drive the field. So the reason can be set by writing
+`ROTH` onto that input (native setter + `_valueTracker` rewind + `input`/`change`), with **no
+listbox opened and no click**. That sidesteps the documented problem in this app where MUI
+components ignore synthetic clicks - the reason the old click-driven path was unreliable. The
+MenuItem value really is `ROTH`: 2026-08-13's snapshot showed exactly that string in the hidden
+input when the field was populated.
+
+Also fixed in the same pass, all found by reading the pasted DOM against the code:
+
+- **`reasonSelected` was set from `realClick()`'s return value**, which only means "events were
+  dispatched". A silently-ignored click counted as success. It is now set only from a **read-back**
+  of the field (`isReasonAlreadyROTH`) - never from having attempted something.
+- **Dialog detection never matched by title.** The real title is
+  `<h6 class="MuiTypography-h6">Issue percentage refund</h6>` and the selector only looked at
+  `h1,h2,h3`, so every run fell through to the placeholder-based heuristic. Now `h1`-`h6`.
+- **`cleanText` did not strip zero-width characters.** An unselected MUI Select renders `​`
+  inside a `<span class="notranslate">`, so an empty field read as non-empty text.
+- **The eye called `startWorkflow(false)`**, so before the dialog rendered the workflow went hunting
+  for the Refund dropdown and clicked it - fighting the dialog the eye was already opening. The eye
+  now passes `true` (dialog expected). Eye detection also matches
+  `svg[data-testid="VisibilityIcon"]` and the whole button, so clicks on the ripple or padding count.
+- **A stray eye click used to warn about a refund nobody started.** CMS uses that same Visibility
+  glyph elsewhere, and any match started a run that sat for the full 20s and then notified about
+  unfilled fields. When the dialog is expected from another click, it now stands down silently after
+  4s (`DIALOG_WAIT_MS`) if no refund dialog appeared.
+
+**New debug tooling** (this is what "has debug" got): two Tampermonkey menu commands -
+*Refund: toggle debug logging* (`[BV Refund]` console prefix, per-tick state, and a full dump of
+every rendered option with its `data-value` when no match is found) and *Refund: toggle dry run*,
+which fills every field and then **deliberately does not click Confirm Refund**. Dry run is how to
+debug this live without moving real money on a real customer. Both also settable as
+`window.__bvRefundDebug` / `window.__bvRefundDryRun`. The 20s timeout now also logs what the reason
+field actually reads plus the option inventory, instead of just naming the field.
+
+`tests/refund-reason.test.js` locks it down (22 checks): read-back precedence (hidden input wins,
+combobox text is the fallback), zero-width handling, the write's tracker rewind and
+`input`-before-`change` order, and eye-vs-close-button detection. **Its extraction is scoped to the
+refund feature's own IIFE** - several features declare their own `cleanText`/`getText`/`isVisible`,
+and the first run of this test silently pulled an earlier feature's copy and reported the
+zero-width fix as broken. Scope any future extraction the same way.
+
+**Verified**: `node tests/run-all.js` (all 4 files + syntax check) and read against the live DOM he
+pasted - **not** live-confirmed in CMS, because confirming it end-to-end means issuing a real
+refund. To live-verify: turn dry run ON, click the eye, confirm the reason shows ROTH and the
+notification says the submit was skipped. If the reason stays empty, the option dump in the console
+gives the real MenuItem value and only `REFUND_REASON_VALUE` needs changing.
+
+## Deleting the Reply button broke a *different* userscript - 3.43.1 (2026-08-14)
+
+Second casualty of the same removal, found the same day as the toolbar-placement one below.
+Sebastian reported his separate `schn-reply-with-bot` script ("🤖 Reply with Bot", not in this repo)
+had stopped working. Better Viewlift had been hard-removing
+`section#mainactionbar button[data-test-email-action="reply"]` from the DOM on **every route
+change** since 3.30.1; a script that anchors on or clicks that button has nothing left to find.
+
+Fix: the `removalRules` entry is gone, the `display:none` CSS rule stays. He asked for the button
+out of his way, not for the node destroyed - and a CSS-hidden button is still clickable
+programmatically, so the other script works either way. There is a comment at the old site saying
+**do not put this back into removalRules**.
+
+Together with the toolbar-placement bug below, that is two separate breakages from one
+`removalRules` entry. **Treat DOM deletion as a last resort in this repo: hide first.** Anything
+already in `removalRules` may be load-bearing for this script or for another one on the page.
+
 ## Freshdesk Scenario Automations - reference for authoring new ones (2026-08-14)
 
 User plans to write scenarios (`/a/admin/scenario_automations`) and asked for a study first.
