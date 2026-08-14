@@ -44,6 +44,20 @@ Refund not matching, percentage item vs full refund). Live: the table structure 
 read on the real page; **the chain was NOT run end to end** - doing that means issuing a real refund
 on a real customer, so it needs a dry run (or Sebastian clicking Confirm himself).
 
+### 3.45.1: how to tell which version is actually loaded
+
+Two rounds of "no funciona" were spent on a version that had not been fetched yet - Tampermonkey
+updates from `@updateURL` on its own schedule, and a fix pushed a minute ago is simply not running.
+`data-better-viewlift-installed` on `<html>` had been hardcoded at `3.26.0` since forever; it now
+carries `GM_info.script.version`. **Check
+`document.documentElement.dataset.betterViewliftInstalled` before debugging anything**, and force an
+update by opening the raw `@downloadURL` (Tampermonkey then offers to reinstall).
+
+Also fixed there: Additional Comments is `Mui-required` and is filled from the stored Freshdesk
+ticket id, so with **no id stored the run can never complete** - it filled two of three fields and
+timed out saying "could not set: comments". It now names the actual cause. It deliberately does not
+invent a comment: the ticket link is the refund's audit trail.
+
 ## Refund Reason: write MUI's hidden input, don't click - 3.44.0 (2026-08-14)
 
 Sebastian: clicking the eye should issue the refund in one go, and "no estás seleccionando el
