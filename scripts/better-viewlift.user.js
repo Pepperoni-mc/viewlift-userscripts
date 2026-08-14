@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.40.0
+// @version      3.40.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9925,6 +9925,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // other becomes a no-op. Without this the tab could be navigated
         // twice (deadline fires, then a slow lookup answers), which reloads
         // the page under the agent.
+        //
+        // "deadline" is declared with let BEFORE settle deliberately: if the
+        // lookup ever calls back synchronously, settle would otherwise touch
+        // a const still in its temporal dead zone and throw.
+        let deadline = 0;
         let settled = false;
         const settle = function (run) {
             if (settled) return;
@@ -9936,7 +9941,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // Never leave the agent staring at a placeholder: if the lookup is
         // slow, the plain search page is still a useful destination and one
         // they can work with immediately.
-        const deadline = window.setTimeout(function () {
+        deadline = window.setTimeout(function () {
             settle(function () {
                 console.warn('[CMS Search] Lookup exceeded the deadline - opening the search page instead.');
                 openCMSForEmail(email, clientContext, tab);
@@ -10014,7 +10019,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // Warm the lookup before it is needed: on pointer approach, and once
         // shortly after the button appears. Both are cheap no-ops when the
         // answer is already cached or no credentials exist yet.
+        // Throttled because resolving the customer email walks a lot of DOM;
+        // the network side is already de-duplicated, this keeps the scan
+        // from repeating on every pointer twitch.
+        let lastWarmAt = 0;
         const warmUp = function () {
+            if (Date.now() - lastWarmAt < 5000) return;
+            lastWarmAt = Date.now();
             try {
                 prefetchAccountLookup(getCustomerEmailFromContactInfo(), getFreshdeskClientContext());
             } catch (error) {
@@ -10022,7 +10033,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             }
         };
         button.addEventListener('mouseenter', warmUp);
-        button.addEventListener('focus', warmUp);
         // Delayed rather than immediate so simply skimming past a ticket
         // doesn't fire a lookup for it.
         window.setTimeout(warmUp, 2000);
