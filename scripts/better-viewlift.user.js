@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.32.0
+// @version      3.33.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -21,10 +21,12 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @connect      cms.viewlift.com
 // @connect      cms-gcp.viewlift.com
 // @connect      cms-qcp.viewlift.com
 // @connect      cms.monumentalsportsnetwork.com
+// @connect      cms.api.viewlift.com
 // @connect      viewlift.freshdesk.com
 // ==/UserScript==
 
@@ -279,6 +281,178 @@
     console.warn('[Freshdesk API] Could not register the menu command.', error);
   }
 
+  /* ----------------------------------------------------------
+   * CMS API credentials, captured from the user's own live CMS
+   * session rather than hardcoded.
+   *
+   * Every CMS search is really a POST to cms.api.viewlift.com/v3.0/invoke
+   * wrapping /v2/admin/identity/user-search, authenticated by two request
+   * headers: a per-brand "xApiKey" and a per-user "Authorization" bearer
+   * token that ROTATES ROUGHLY EVERY 12 HOURS. Hardcoding either would
+   * mean the token dies twice a day and every brand's key has to be
+   * hunted down by hand, so instead the CMS-side capture module below
+   * reads them off the CMS app's own outgoing requests as the user works,
+   * and stores them for the Freshdesk side to reuse.
+   *
+   * These values are the user's own session credentials: they are stored
+   * only in this script's private GM storage, never logged, never shown
+   * in a notification, and only ever sent back to the same CMS API they
+   * were captured from. Everything degrades to the old open-the-search-
+   * page behaviour when they are missing or stale.
+   * ---------------------------------------------------------- */
+  const BV_CMS_API_URL = 'https://cms.api.viewlift.com/v3.0/invoke';
+  const BV_CMS_CREDS_KEY = 'betterViewliftCmsApiCreds';
+  // Deliberately below the real ~12h rotation so a token that is about to
+  // expire is treated as already gone instead of producing a confusing
+  // mid-request 401.
+  const BV_CMS_CRED_MAX_AGE_MS = 11 * 60 * 60 * 1000;
+
+  function bvGetCmsCreds() {
+    try {
+      const raw = GM_getValue(BV_CMS_CREDS_KEY, '');
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed || typeof parsed !== 'object') return { sites: {}, hostSites: {} };
+      parsed.sites = parsed.sites || {};
+      parsed.hostSites = parsed.hostSites || {};
+      return parsed;
+    } catch (error) {
+      return { sites: {}, hostSites: {} };
+    }
+  }
+
+  function bvSaveCmsCreds(creds) {
+    try {
+      GM_setValue(BV_CMS_CREDS_KEY, JSON.stringify(creds));
+    } catch (error) {
+      // Storage failures are non-fatal - the lookup just falls back.
+    }
+  }
+
+  function bvRecordCmsCreds({ site, xApiKey, authorization, host }) {
+    if (!xApiKey && !authorization) return;
+
+    const creds = bvGetCmsCreds();
+    const now = Date.now();
+
+    if (authorization) {
+      creds.authorization = { value: authorization, capturedAt: now };
+    }
+    if (site && xApiKey) {
+      creds.sites[site] = { xApiKey, capturedAt: now };
+    }
+    // Remembering which brand slug a given CMS host last used lets the
+    // Freshdesk side resolve a site for hosts whose brands aren't in the
+    // explicit account mapping (the mapping only covers the GCP host).
+    if (site && host) {
+      creds.hostSites[host] = site;
+    }
+
+    bvSaveCmsCreds(creds);
+  }
+
+  function bvGetCmsCredForSite(site) {
+    if (!site) return null;
+
+    const creds = bvGetCmsCreds();
+    const auth = creds.authorization;
+    const siteEntry = creds.sites[site];
+
+    if (!auth || !auth.value || !siteEntry || !siteEntry.xApiKey) return null;
+    if (Date.now() - Number(auth.capturedAt || 0) > BV_CMS_CRED_MAX_AGE_MS) return null;
+
+    return { xApiKey: siteEntry.xApiKey, authorization: auth.value };
+  }
+
+  function bvGetSiteForCmsHost(host) {
+    return bvGetCmsCreds().hostSites[host] || '';
+  }
+
+  // Diagnostic for "why didn't it jump straight to the account?" - reports
+  // which brands are ready and how fresh the token is, WITHOUT ever
+  // printing the credentials themselves.
+  function bvReportCmsCredStatus() {
+    const creds = bvGetCmsCreds();
+    const auth = creds.authorization;
+    const sites = Object.keys(creds.sites || {});
+
+    if (!auth || !auth.value) {
+      bvNotify('CMS API: no session token captured yet. Open a CMS tab and run one search there, then try again.', { level: 'warn', ttl: 12000 });
+      return;
+    }
+
+    const ageMs = Date.now() - Number(auth.capturedAt || 0);
+    const ageMinutes = Math.round(ageMs / 60000);
+    const stale = ageMs > BV_CMS_CRED_MAX_AGE_MS;
+    const ageText = ageMinutes < 60 ? `${ageMinutes} min` : `${Math.round(ageMinutes / 60)} h`;
+
+    bvNotify(
+      (stale
+        ? `CMS API: token is ${ageText} old and treated as expired - open a CMS tab to refresh it. `
+        : `CMS API: token captured ${ageText} ago (rotates ~12h). `) +
+      (sites.length ? `Brands ready: ${sites.join(', ')}.` : 'No brand keys captured yet.'),
+      { level: stale ? 'warn' : 'info', ttl: 12000 }
+    );
+  }
+
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('CMS API: Check captured credentials', bvReportCmsCredStatus);
+    }
+  } catch (error) {
+    console.warn('[CMS API] Could not register the status menu command.', error);
+  }
+
+  // Runs the same user-search the CMS UI runs, straight from Freshdesk.
+  // onDone(error, { count, users }) - users carry the real account id,
+  // which is what makes opening an account directly possible.
+  function bvCmsUserSearch({ site, searchTerm, limit = 10, onDone }) {
+    const cred = bvGetCmsCredForSite(site);
+    if (!cred) {
+      onDone(new Error('no-cms-credentials'), null);
+      return;
+    }
+
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: BV_CMS_API_URL,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: cred.authorization,
+        xApiKey: cred.xApiKey
+      },
+      data: JSON.stringify({
+        url: '/v2/admin/identity/user-search',
+        method: 'POST',
+        role: 'Customer Support',
+        auth: { site, isServerToken: true },
+        query: { site, totalCount: true },
+        body: { searchTerm, offset: 0, limit, type: 'all' }
+      }),
+      timeout: 12000,
+      onload: function (response) {
+        if (response.status === 401 || response.status === 403) {
+          onDone(new Error('cms-unauthorized'), null);
+          return;
+        }
+        if (response.status < 200 || response.status >= 300) {
+          onDone(new Error('cms-http-' + response.status), null);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(response.responseText || '{}');
+          onDone(null, {
+            count: Number(parsed.count || 0),
+            users: Array.isArray(parsed.users) ? parsed.users : []
+          });
+        } catch (error) {
+          onDone(error, null);
+        }
+      },
+      onerror: function () { onDone(new Error('cms-network-error'), null); },
+      ontimeout: function () { onDone(new Error('cms-timeout'), null); }
+    });
+  }
+
   function freshdeskApiRequest({ method = 'GET', path, body, onDone }) {
     const apiKey = getFreshdeskApiKey();
     if (!apiKey) {
@@ -319,6 +493,127 @@
       onerror: function () { onDone(new Error('network-error'), null); },
       ontimeout: function () { onDone(new Error('timeout'), null); }
     });
+  }
+
+  /* ============================================================
+   * CMS API credential capture (CMS hosts only)
+   * Reads the xApiKey / Authorization headers off the CMS app's own
+   * outgoing API calls so the Freshdesk side can reuse them (see the
+   * long note on bvGetCmsCreds above for why these are captured rather
+   * than hardcoded). Purely passive: every original call is still made,
+   * unmodified, with its own result untouched.
+   * ============================================================ */
+  if (isCMSHost()) {
+    (function () {
+      'use strict';
+
+      // Patching has to happen on the PAGE's own fetch/XMLHttpRequest, not
+      // the userscript sandbox's copies, or the app's requests go straight
+      // past us. unsafeWindow is that real window; fall back to the sandbox
+      // one rather than throwing if it isn't available.
+      const pageWindow = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+
+      if (pageWindow.__bvCmsCredCaptureInstalled) return;
+      pageWindow.__bvCmsCredCaptureInstalled = true;
+
+      function readHeader(headers, name) {
+        if (!headers) return '';
+        const wanted = name.toLowerCase();
+        try {
+          if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+            return headers.get(name) || '';
+          }
+          if (Array.isArray(headers)) {
+            const hit = headers.find(pair => String(pair[0]).toLowerCase() === wanted);
+            return hit ? hit[1] : '';
+          }
+          if (typeof headers === 'object') {
+            const key = Object.keys(headers).find(k => k.toLowerCase() === wanted);
+            return key ? headers[key] : '';
+          }
+        } catch (error) {
+          // Unknown header container - treat as absent.
+        }
+        return '';
+      }
+
+      function siteFromRequestBody(body) {
+        try {
+          const parsed = typeof body === 'string' ? JSON.parse(body) : null;
+          if (!parsed) return '';
+          return (parsed.auth && parsed.auth.site) || (parsed.query && parsed.query.site) || '';
+        } catch (error) {
+          return '';
+        }
+      }
+
+      function capture(url, headers, body) {
+        try {
+          if (!/cms\.api\.viewlift\.com/i.test(String(url || ''))) return;
+
+          const xApiKey = readHeader(headers, 'xApiKey');
+          const authorization = readHeader(headers, 'Authorization');
+          if (!xApiKey && !authorization) return;
+
+          bvRecordCmsCreds({
+            site: siteFromRequestBody(body),
+            xApiKey,
+            authorization,
+            host: location.hostname
+          });
+        } catch (error) {
+          // Capture is best-effort - never let it disturb the real request.
+        }
+      }
+
+      try {
+        const originalFetch = pageWindow.fetch;
+        if (typeof originalFetch === 'function') {
+          pageWindow.fetch = function (input, init) {
+            try {
+              const url = (input && typeof input === 'object' && input.url) ? input.url : input;
+              capture(url, init && init.headers, init && init.body);
+            } catch (error) { /* never block the request */ }
+            return originalFetch.apply(this, arguments);
+          };
+        }
+      } catch (error) {
+        console.warn('[CMS API] Could not observe fetch for credential capture.', error);
+      }
+
+      try {
+        const xhrProto = pageWindow.XMLHttpRequest && pageWindow.XMLHttpRequest.prototype;
+        if (xhrProto) {
+          const originalOpen = xhrProto.open;
+          const originalSetHeader = xhrProto.setRequestHeader;
+          const originalSend = xhrProto.send;
+
+          xhrProto.open = function (method, url) {
+            try {
+              this.__bvUrl = url;
+              this.__bvHeaders = {};
+            } catch (error) { /* ignore */ }
+            return originalOpen.apply(this, arguments);
+          };
+
+          xhrProto.setRequestHeader = function (name, value) {
+            try {
+              if (this.__bvHeaders) this.__bvHeaders[name] = value;
+            } catch (error) { /* ignore */ }
+            return originalSetHeader.apply(this, arguments);
+          };
+
+          xhrProto.send = function (body) {
+            try {
+              capture(this.__bvUrl, this.__bvHeaders, body);
+            } catch (error) { /* never block the request */ }
+            return originalSend.apply(this, arguments);
+          };
+        }
+      } catch (error) {
+        console.warn('[CMS API] Could not observe XHR for credential capture.', error);
+      }
+    })();
   }
 
   (function () {
@@ -8959,24 +9254,49 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return GENERIC_SUPPORT_LOCAL_PART_RE.test(localPart) || PLACEHOLDER_LOCAL_PART_RE.test(localPart);
     }
 
-    function extractBestCustomerEmailFromText(text) {
-        const matches = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
-        const cleaned = matches.map(cleanText).filter(Boolean);
+    // The email regex's TLD part is case-insensitive, so when the scraped
+    // page text runs an address straight into the next label with no
+    // separator ("...@outlook.comContact Info") it swallows that label as
+    // part of the TLD. Real domains are lowercase, so a lowercase->
+    // uppercase transition inside the domain marks where the real address
+    // actually ended.
+    function trimGluedEmailSuffix(email) {
+        const atIndex = String(email).indexOf('@');
+        if (atIndex < 0) return email;
 
-        // Same adjacent-text-with-no-separator problem as
-        // collectAllTicketEmailCandidates below - prefer the shorter,
-        // cleaner match when one candidate is another with extra text
-        // glued onto the front (e.g. a ticket number or name with no
-        // whitespace before the real address).
-        const deduped = cleaned.filter(candidate =>
+        const local = email.slice(0, atIndex);
+        const domain = email.slice(atIndex + 1);
+        const glued = domain.match(/^(.*?[a-z0-9])[A-Z]/);
+
+        if (!glued) return email;
+
+        const trimmedDomain = glued[1];
+        // Only accept the trim if what's left is still a plausible domain.
+        return /\.[a-z]{2,}$/i.test(trimmedDomain) ? `${local}@${trimmedDomain}` : email;
+    }
+
+    // Shared cleanup for every raw regex match: strip glued-on trailing
+    // text, then drop any candidate that is just another candidate with
+    // extra text glued onto the FRONT (a ticket number or name with no
+    // whitespace before the real address).
+    function normalizeEmailMatches(matches) {
+        const cleaned = matches
+            .map(match => trimGluedEmailSuffix(cleanText(match)))
+            .filter(Boolean);
+
+        return cleaned.filter(candidate =>
             !cleaned.some(other =>
                 other !== candidate &&
                 other.length < candidate.length &&
                 candidate.toLowerCase().endsWith(other.toLowerCase())
             )
         );
+    }
 
-        for (const email of deduped) {
+    function extractBestCustomerEmailFromText(text) {
+        const matches = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
+
+        for (const email of normalizeEmailMatches(matches)) {
             if (!isBlockedCmsSearchEmail(email)) {
                 return email;
             }
@@ -9231,21 +9551,19 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             candidates.push(primaryEmail);
         }
 
-        matches.forEach(match => {
-            const email = cleanText(match).toLowerCase();
+        // normalizeEmailMatches strips text glued onto either end of a
+        // match, which the page's separator-less adjacent text nodes
+        // produce constantly (e.g. "350804shaytaylor32@x.com" or
+        // "shaytaylor32@x.comContact Info").
+        normalizeEmailMatches(matches).forEach(match => {
+            const email = match.toLowerCase();
             if (!email || seen.has(email) || isBlockedCmsSearchEmail(email)) return;
             seen.add(email);
             candidates.push(email);
         });
 
-        // The page's own text nodes sometimes render adjacent with no
-        // whitespace between them (a ticket number, a name, or a label
-        // glued directly onto the real address with no separator - e.g.
-        // "350804shaytaylor32@x.com" or "TaylorEmail:shaytaylor32@x.com"),
-        // which the regex above can't tell apart from a genuinely longer
-        // local part. When one candidate is just another, shorter
-        // candidate with extra text glued onto the front, keep only the
-        // shorter/cleaner one.
+        // The primary email is prepended before normalisation, so run the
+        // front-glue check once more across the final list.
         return candidates.filter(candidate =>
             !candidates.some(other =>
                 other !== candidate &&
@@ -9358,11 +9676,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }, 0);
     }
 
-    function openCMSForEmail(email, clientContext) {
-        const cmsUsersURL = getCMSUsersURLForClient(clientContext);
-        const account = getCMSAccountForClient(clientContext);
-        const url = new URL(cmsUsersURL);
-
+    function warnAboutUnroutedBrand(clientContext) {
         const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
         if (unroutedBrand) {
             bvNotify(
@@ -9370,6 +9684,21 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
                 { level: 'warn', ttl: 12000 }
             );
         }
+    }
+
+    // Builds the destination for a given ticket, either the plain search
+    // page (no account id known) or the customer's own account page
+    // (id known via the CMS API). Both go through the same GCP account
+    // switch when one is needed, so a direct account link still lands on
+    // the right organisation instead of an empty page.
+    function buildCMSDestination(clientContext, { email, userId }) {
+        const cmsUsersURL = getCMSUsersURLForClient(clientContext);
+        const account = getCMSAccountForClient(clientContext);
+        const url = new URL(cmsUsersURL);
+
+        const finalPath = userId
+            ? `${url.origin}/users/search/${encodeURIComponent(userId)}`
+            : `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`;
 
         // GCP's classic CMS has no account selector. Route through the
         // existing v5 selector when the ticket identifies the account.
@@ -9379,21 +9708,153 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             try {
                 GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
                     key: account,
-                    returnUrl: `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`,
+                    returnUrl: finalPath,
                     startedAt: Date.now()
                 }));
             } catch (error) {
                 console.warn('[CMS Search] Could not save the pending account switch.', error);
             }
+            return url.href;
         }
-        // CMS's own /users/search page reads "keyword"/"filter" on load and
-        // runs the real search itself - no DOM fill/click simulation needed.
-        url.searchParams.set('keyword', email);
-        url.searchParams.set('filter', 'all');
 
-        console.log('[CMS Search] Opening CMS for:', email, 'Client context:', clientContext.primary || 'Unknown', 'Destination:', url.href);
+        return finalPath;
+    }
 
-        window.open(url.href, '_blank');
+    // Resolves the CMS API "site" slug for a ticket. The explicit account
+    // mapping already uses the real slugs (confirmed against CMS's own
+    // tenant list: lightning / liv-golf / schn) but only covers the GCP
+    // host; for the others fall back to whichever slug that host was last
+    // seen really using.
+    function resolveCmsSite(clientContext) {
+        const account = getCMSAccountForClient(clientContext);
+        if (account) return account;
+
+        try {
+            return bvGetSiteForCmsHost(new URL(getCMSUsersURLForClient(clientContext)).hostname);
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function openCMSForEmail(email, clientContext, existingTab) {
+        warnAboutUnroutedBrand(clientContext);
+
+        const href = buildCMSDestination(clientContext, { email });
+        console.log('[CMS Search] Opening CMS search for:', email, 'Client:', clientContext.primary || 'Unknown');
+
+        if (existingTab) existingTab.location.href = href;
+        else window.open(href, '_blank');
+    }
+
+    function openCMSAccount(userId, email, clientContext, existingTab) {
+        warnAboutUnroutedBrand(clientContext);
+
+        const href = buildCMSDestination(clientContext, { email, userId });
+        console.log('[CMS Search] Opening CMS account directly for:', email, 'Client:', clientContext.primary || 'Unknown');
+
+        if (existingTab) existingTab.location.href = href;
+        else window.open(href, '_blank');
+    }
+
+    // Walks the ticket's candidate emails through CMS's own user-search
+    // API and reports the FIRST one that actually has an account. This is
+    // what turns "guess which of these addresses is the customer" into
+    // "ask CMS which one really exists" - and yields the account id, which
+    // is what makes opening the account directly possible at all.
+    function findCmsAccountForCandidates(candidates, site, onDone) {
+        let index = 0;
+
+        function tryNext() {
+            if (index >= candidates.length) {
+                onDone(null, null);
+                return;
+            }
+
+            const email = candidates[index];
+            index += 1;
+
+            bvCmsUserSearch({
+                site,
+                searchTerm: email,
+                onDone: function (error, result) {
+                    if (error) {
+                        onDone(error, null);
+                        return;
+                    }
+
+                    const users = (result && result.users) || [];
+                    // Only auto-open on an unambiguous single hit - more than
+                    // one match is exactly the case a human should eyeball.
+                    if (users.length === 1 && users[0] && users[0].id) {
+                        onDone(null, { email, userId: users[0].id });
+                        return;
+                    }
+                    if (users.length > 1) {
+                        onDone(null, { email, userId: '', ambiguous: true });
+                        return;
+                    }
+
+                    tryNext();
+                }
+            });
+        }
+
+        tryNext();
+    }
+
+    function runCmsLookupAndOpen(candidates, clientContext, button) {
+        const primaryEmail = candidates[0];
+        const site = resolveCmsSite(clientContext);
+        const cred = site ? bvGetCmsCredForSite(site) : null;
+
+        // Without usable credentials there is nothing to look up - keep the
+        // previous behaviour exactly (menu when ambiguous, search otherwise).
+        if (!cred) {
+            if (candidates.length > 1) showCmsEmailMenu(button, candidates, clientContext);
+            else openCMSForEmail(primaryEmail, clientContext);
+            return;
+        }
+
+        // The tab has to be opened synchronously inside the click handler or
+        // the popup blocker kills it - the async lookup below just points
+        // this already-granted tab at the right destination once it knows.
+        const tab = window.open('about:blank', '_blank');
+        if (!tab) {
+            bvNotify('CMS: the browser blocked the new tab. Allow pop-ups for Freshdesk and try again.', { level: 'warn', ttl: 9000 });
+            return;
+        }
+
+        findCmsAccountForCandidates(candidates, site, function (error, match) {
+            if (error) {
+                console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
+                if (error.message === 'cms-unauthorized') {
+                    bvNotify('CMS session token expired - open any CMS page once to refresh it, then this will jump straight to accounts again.', { level: 'info', ttl: 9000 });
+                }
+                openCMSForEmail(primaryEmail, clientContext, tab);
+                return;
+            }
+
+            if (match && match.userId) {
+                if (match.email !== primaryEmail) {
+                    bvNotify(`CMS: the account is under "${match.email}", not the ticket's "${primaryEmail}".`, { level: 'info', ttl: 12000 });
+                }
+                openCMSAccount(match.userId, match.email, clientContext, tab);
+                return;
+            }
+
+            if (match && match.ambiguous) {
+                bvNotify(`CMS: more than one account matches "${match.email}" - opening the results list to pick.`, { level: 'info', ttl: 9000 });
+                openCMSForEmail(match.email, clientContext, tab);
+                return;
+            }
+
+            bvNotify(
+                `CMS: no account found for ${primaryEmail}` +
+                (candidates.length > 1 ? ` or the ${candidates.length - 1} other email(s) in this ticket` : '') + '.',
+                { level: 'warn', ttl: 10000 }
+            );
+            openCMSForEmail(primaryEmail, clientContext, tab);
+        });
     }
 
     function installHeaderButton() {
@@ -9438,12 +9899,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             const clientContext = getFreshdeskClientContext();
             const candidates = collectAllTicketEmailCandidates(email);
 
-            if (candidates.length > 1) {
-                showCmsEmailMenu(button, candidates, clientContext);
-                return;
-            }
-
-            openCMSForEmail(email, clientContext);
+            // Asks CMS which candidate actually has an account and opens it
+            // directly; silently falls back to the old search-page/menu
+            // behaviour whenever credentials are missing or stale.
+            runCmsLookupAndOpen(candidates, clientContext, button);
         });
 
         insertionPoint.insertAdjacentElement('beforebegin', button);

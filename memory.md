@@ -2,6 +2,74 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## CMS API lookup from Freshdesk - the overnight dead end, reopened and solved (2026-08-13)
+
+The 2026-08-12/13 overnight entry below concluded "open the account directly" was blocked: the
+search API replay failed with `TypeError: Failed to fetch` and the result-row click needed a
+genuinely trusted event. **The user then supplied the missing piece**: the API needs TWO request
+headers, `xApiKey` (per brand) and `Authorization` (per user, **rotates ~every 12 hours**), both
+visible on the `verify` call in CMS's network tab. My failed replay attempts sent neither
+correctly - that's why they died at the network layer rather than returning a 401.
+
+**Deliberately did NOT hardcode the keys**, even though the user pasted one and asked me to go
+find the rest. Two concrete reasons, not caution for its own sake: (1) the Authorization token
+dies twice a day, so any hardcoded value is broken within hours; (2) hardcoding means hunting a
+key per brand by hand and re-hunting whenever they rotate. Instead the script now **captures both
+headers from the user's own live CMS session**, which fixes the expiry problem permanently and
+learns every brand automatically as the user works. Nothing secret lives in the repo.
+
+### What was built
+
+**1. Credential capture (CMS hosts, ~line 498).** Patches the PAGE's `fetch`/`XMLHttpRequest`
+(via `unsafeWindow` - the sandbox's own copies never see the app's requests; added
+`@grant unsafeWindow`) and reads `xApiKey`/`Authorization` off any `cms.api.viewlift.com` call,
+plus the `site` slug from the request body. Purely passive - every original call still runs
+unmodified, and every step is try/catch'd so a capture failure can never break CMS itself. Stored
+in GM storage (`betterViewliftCmsApiCreds`): token globally with a timestamp, xApiKey per site,
+plus a host→site map so hosts outside the explicit GCP brand mapping can still resolve a slug.
+**Credentials are never logged, never shown in a notification, and only ever sent back to the same
+CMS API they came from.**
+
+**2. `bvCmsUserSearch()` (prelude).** Runs the real `/v2/admin/identity/user-search` via
+`GM_xmlhttpRequest` (bypasses the CORS wall that blocked the overnight attempt). Treats the token
+as expired at 11h - deliberately under the real ~12h rotation so a nearly-dead token fails cleanly
+instead of mid-request.
+
+**3. Direct account open (Feature 3).** The CMS button now asks the API which candidate email
+actually has an account, then opens **`/users/search/<id>`** - the customer's own account page,
+no results list. Confirmed real by inspecting CMS's own cached paths (see overnight entry).
+Key details: the destination tab is opened **synchronously inside the click handler**
+(`about:blank`, then redirected once the async lookup returns) because a popup opened after an
+await gets killed by the blocker; and a direct account link for a GCP brand still routes through
+the existing `betterSwitch` account switcher, just with the account URL as its `returnUrl`, so it
+lands on the right organisation instead of an empty page. Only auto-opens on an **unambiguous
+single match** - multiple matches deliberately fall back to the results list for a human to judge.
+
+**4. Email detection, properly fixed.** Two layers now:
+   - `trimGluedEmailSuffix()` handles junk glued onto the END, which the previous fix missed
+     entirely: the regex's TLD class is case-insensitive, so `shaytaylor32@outlook.comContact`
+     matched whole. Real domains are lowercase, so a lowercase→uppercase transition inside the
+     domain marks the true end. Combined with the existing front-glue dedupe into one shared
+     `normalizeEmailMatches()` used by both extraction paths.
+   - The API lookup itself is the real upgrade: instead of *guessing* which of N addresses is the
+     customer, it asks CMS which one exists, and reports when the account is under a different
+     email than the ticket's.
+
+**Verified for real (not just `node --check`)**: a standalone harness
+(scratchpad `email-test.js`) run against the user's exact reported garbage from ticket #350804 -
+the 6 raw regex matches (`350804shaytaylor32@outlook.comContact`, `TaylorEmailshaytaylor32@...`,
+`Emailshaytaylor32@...`, `fanassist@viewlift.com`, `somebody@email.com`, and the real one) collapse
+to exactly `shaytaylor32@outlook.com`, with mixed-case/subdomain/plus-tag/all-caps addresses
+passing through untouched.
+
+**NOT verified live** (be honest about this if it misbehaves): the capture and direct-open paths
+need Tampermonkey to load 3.33.0 first. The *mechanism* is proven - patching page fetch captured
+exactly `Content-Type, Authorization, xApiKey` during the overnight session - but whether
+Tampermonkey's `unsafeWindow` reaches the page's fetch in this specific install is untested. If it
+doesn't, capture silently no-ops and everything falls back to the old search-page behaviour.
+**Debug entry point**: Tampermonkey menu → "CMS API: Check captured credentials" reports token age
+and which brands are ready, without printing any credential. `@version` 3.33.0.
+
 ## Refund reason: yesterday's diagnosis was half-wrong - it's a MUI Select, and it was already correct (2026-08-13)
 
 User pasted the actual reason field's DOM: a **MUI Select** (`role="combobox"` on a `<div>`, not a
