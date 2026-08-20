@@ -2,6 +2,74 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## "SCHN's CMS is slow" - what was measured, and the timing tool built for the rest - 3.48.0 (2026-08-20)
+
+Sebastian reported the SCHN CMS being slow on the initial search. **Everything reachable from
+outside the script measured fast**, so do not start by assuming the account switch:
+
+- The session was **already on `schn`** (`site` cookie), credential capture was working on that
+  route (`__bvCmsCredLastSite` = `schn`, count 2), and clicking the CMS button on a real SCHN
+  ticket (#352184) took the **direct** path - no "Switching CMS account" notice appeared. The v5
+  three-navigation switch was **not** involved.
+- The classic search page `/users/search?keyword=…&filter=all` on `cms-gcp.viewlift.com`:
+  `loadEventEnd` **~0.7s**, its search call `POST cms-gcp.api.viewlift.com/v3.0/invoke`
+  **185-212ms**, starting ~716ms in. **Results on screen at ~0.9s.** Measured twice - with a probe
+  address and with the ticket's real email (2 rows, a real SCHN annual subscriber).
+- The only long-tail request was **our own** `/api/auth/verify` session ping at ~16s. Background,
+  non-blocking - do not mistake it for the search next time.
+
+### What could NOT be measured, and why
+
+- **The account detail route `/users/search/<id>`** - the destination the button actually opens on
+  a single hit. The results table exposes **no href**, and an automation click on the row **does
+  not navigate** (the same trusted-event wall as 2026-08-12's dead end #2). So its cost is still
+  unknown, and it is the prime remaining suspect.
+- **The Freshdesk-side wait.** `LOOKUP_DEADLINE_MS = 3500`: on a prefetch miss the tab paints the
+  placeholder and can burn **3.5s before navigating anywhere**, then ~0.9s for the search page -
+  about 4.4s to results. Invisible from the page.
+
+Sebastian could not say which of the two it is ("no estoy seguro / varían"), which is why the next
+step was tooling rather than a fix.
+
+### The timing tool (use this instead of guessing)
+
+`bvTimingStart/Mark/Report` in the prelude, off by default, toggled by the Tampermonkey menu
+command **"CMS button: toggle timing log"** or by setting
+`document.documentElement.dataset.bvCmsTiming = 'true'` from either page's console (same
+three-channel pattern as the refund debug flag - a sandboxed `window` means the data attribute is
+the only channel DevTools can reach).
+
+**The run is kept in GM storage on purpose**: the journey spans two tabs - the click happens on
+Freshdesk, the arrival on a CMS page - so storage is what lets the CMS side report offsets measured
+from the original click. That is what finally puts a number on the account page.
+
+Marks: `click` → `prefetch-hit`/`prefetch-miss` → `holding-tab-painted` → `lookup-start` →
+`lookup-done` (with the outcome) → `deadline-fired` → `destination-direct` /
+`destination-via-v5-switch` (naming the stored slug, so an unnecessary switch is obvious) →
+`navigate-search-page` / `navigate-account-page`, then on the CMS side
+`cms-page-script-start` → `cms-page-load-event` → `cms-api` per backend call → a
+`console.table` and a TOTAL line at `cms-settled`. Runs older than 2 minutes are ignored so an
+abandoned journey cannot attach itself to the next CMS page.
+
+**Only the email's domain is ever stored or logged**, never the local part - locked down by a test.
+
+### A real gap this exposed, not yet fixed
+
+`bvGetSiteForCmsHost()` reads `hostSites[host]` from the **captured credentials**, which only
+update when the capture module sees an API request carrying a `site`. Nothing reads the live
+`site` cookie on a CMS page load, even though it is free and authoritative. So the stored slug can
+lag the real session, and `buildCMSDestination()` would then take the slow v5 switch path when the
+session is *already* on the right brand. It was NOT the cause today (stored and live both said
+`schn`), which is why it was left alone rather than fixed speculatively - but if
+`destination-via-v5-switch` ever shows up naming a stale slug, that is the fix: record the cookie
+on every CMS page load, exactly as was done for the token.
+
+**Verified**: `node tests/run-all.js` passes; `tests/cms-timing.test.js` adds 29 checks over the
+off-by-default gate, all three toggle channels, cross-tab offsets, the staleness cut-off, the
+report-once-and-clear behaviour, corrupt storage, and the domain-only privacy rule. The live
+measurements above are real. **Not yet done**: an end-to-end run with the flag ON through
+Tampermonkey - that is the next thing to do, and it is what answers the original question.
+
 ## Favourite ticket views cap at 5 SERVER-side - a dead end, do not retry (2026-08-20)
 
 Sebastian asked whether Tampermonkey could raise the 5-favourite limit on Freshdesk ticket

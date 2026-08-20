@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.47.0
+// @version      3.48.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -511,6 +511,173 @@
     }
   } catch (error) {
     console.warn('[CMS API] Could not register the status menu command.', error);
+  }
+  // --- CMS button journey timing ---------------------------------------
+  //
+  // "The SCHN CMS is slow on the initial search" could not be pinned down
+  // from outside the script (measured live 2026-08-20). Everything that was
+  // reachable turned out to be fast: the classic search page paints results
+  // in ~0.9s and its search API answers in ~200ms, and the CMS button took
+  // the direct path, not the v5 account switch. The two remaining suspects
+  // are both invisible from the page:
+  //
+  //   1. the LOOKUP_DEADLINE_MS wait, which burns up to 3.5s in the
+  //      Freshdesk tab before anything is navigated at all, and
+  //   2. the account detail route /users/search/<id>, which browser
+  //      automation cannot even reach - its result rows need a genuinely
+  //      trusted click (see memory.md, dead end #2).
+  //
+  // So the script times itself. The run is kept in GM storage rather than a
+  // variable because the journey spans two tabs - the click happens on
+  // Freshdesk, the arrival happens on a CMS page - and reading it back over
+  // there is the only way to put a number on the account page.
+  const BV_TIMING_FLAG = 'bvCmsTiming';
+  const BV_TIMING_RUN_KEY = 'betterCmsTimingRun';
+  const BV_TIMING_MAX_AGE_MS = 120000;
+
+  function bvTimingEnabled() {
+    // Same three channels as the refund debug flag, for the same reason:
+    // Tampermonkey sandboxes this window, so a data attribute on <html> is
+    // the only one DevTools can reach from the page side.
+    try {
+      if (document.documentElement.dataset[BV_TIMING_FLAG] === 'true') return true;
+    } catch (error) {
+      // No documentElement yet - fall through to the other channels.
+    }
+    if (window[`__${BV_TIMING_FLAG}`] === true) return true;
+    try {
+      return GM_getValue(BV_TIMING_FLAG, false) === true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function bvTimingSetEnabled(value) {
+    const on = value === true;
+    try { GM_setValue(BV_TIMING_FLAG, on); } catch (error) { /* storage optional */ }
+    window[`__${BV_TIMING_FLAG}`] = on;
+    try {
+      if (on) document.documentElement.dataset[BV_TIMING_FLAG] = 'true';
+      else delete document.documentElement.dataset[BV_TIMING_FLAG];
+    } catch (error) {
+      // Non-fatal - the GM value stays the source of truth.
+    }
+  }
+
+  function bvTimingReadRun() {
+    try {
+      const raw = GM_getValue(BV_TIMING_RUN_KEY, '');
+      if (!raw) return null;
+      const run = JSON.parse(raw);
+      if (!run || !run.startedAt || !Array.isArray(run.stages)) return null;
+      // A stale run would otherwise attach the next CMS page it sees to a
+      // click from an hour ago and report a nonsense total.
+      if (Date.now() - Number(run.startedAt) > BV_TIMING_MAX_AGE_MS) return null;
+      return run;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function bvTimingWriteRun(run) {
+    try { GM_setValue(BV_TIMING_RUN_KEY, JSON.stringify(run)); } catch (error) { /* optional */ }
+  }
+
+  function bvTimingClearRun() {
+    try { GM_deleteValue(BV_TIMING_RUN_KEY); } catch (error) { /* optional */ }
+  }
+
+  // Marks are appended to the stored run AND logged as they happen, so a
+  // journey that never arrives (blocked popup, tab closed, switch stranded)
+  // still leaves a readable trail in the Freshdesk console.
+  function bvTimingMark(label, detail) {
+    if (!bvTimingEnabled()) return;
+    const run = bvTimingReadRun();
+    if (!run) return;
+    const at = Date.now() - Number(run.startedAt);
+    run.stages.push({ label, at, detail: detail === undefined ? '' : String(detail) });
+    bvTimingWriteRun(run);
+    console.log(`[BV CMS Timing] +${at}ms ${label}${detail ? ' - ' + detail : ''}`);
+  }
+
+  function bvTimingStart(email, site) {
+    if (!bvTimingEnabled()) return;
+    // The address is the only customer data in this journey, so only its
+    // domain is stored - enough to tell two runs apart, nothing more.
+    const domain = String(email || '').split('@')[1] || '(none)';
+    bvTimingWriteRun({ startedAt: Date.now(), domain, site: site || '(unknown)', stages: [] });
+    console.log(`[BV CMS Timing] run started - site ${site || '(unknown)'}, @${domain}`);
+  }
+
+  function bvTimingReport(finalLabel) {
+    if (!bvTimingEnabled()) return;
+    const opening = bvTimingReadRun();
+    if (!opening) return;
+    bvTimingMark(finalLabel || 'done');
+    const run = bvTimingReadRun();
+    const stages = (run && run.stages) || [];
+    console.log(`[BV CMS Timing] journey for @${opening.domain} (${opening.site})`);
+    try { console.table(stages); } catch (error) { console.log(stages); }
+    const total = stages.length ? stages[stages.length - 1].at : 0;
+    console.log(`[BV CMS Timing] TOTAL click -> ${finalLabel || 'done'}: ${total}ms`);
+    bvTimingClearRun();
+  }
+
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('CMS button: toggle timing log', function () {
+        const next = !bvTimingEnabled();
+        bvTimingSetEnabled(next);
+        bvNotify(
+          next
+            ? 'CMS button timing ON - click the CMS button, then read the console on BOTH tabs (prefix [BV CMS Timing]).'
+            : 'CMS button timing OFF.',
+          { level: 'info', ttl: 9000 }
+        );
+      });
+    }
+  } catch (error) {
+    console.warn('[BV CMS Timing] Could not register the timing menu command.', error);
+  }
+
+  // The other half of the journey: whichever CMS page the button lands on
+  // reports how long it took to get there, and how long that page's own API
+  // calls then took. This is the only way to see the account detail route's
+  // real cost, and it is why the run lives in shared storage.
+  if (isCMSHost()) {
+    (function bvReportCmsArrival() {
+      if (!bvTimingEnabled()) return;
+      if (!bvTimingReadRun()) return;
+
+      bvTimingMark('cms-page-script-start', location.pathname);
+
+      const markLoad = function () {
+        bvTimingMark('cms-page-load-event', `${Math.round(performance.now())}ms into this page`);
+      };
+      if (document.readyState === 'complete') markLoad();
+      else window.addEventListener('load', markLoad, { once: true });
+
+      // Every backend call this page makes is marked rather than trying to
+      // guess which one is "the" search - on the account route there is more
+      // than one, and which of them is slow is exactly the open question.
+      try {
+        const observer = new PerformanceObserver(function (list) {
+          list.getEntries().forEach(function (entry) {
+            if (!/api\.viewlift|\/v3\.0\/invoke|graphql/.test(entry.name)) return;
+            const path = String(entry.name).split('?')[0].split('/').slice(3).join('/');
+            bvTimingMark('cms-api', `${path} ${Math.round(entry.duration)}ms`);
+          });
+        });
+        observer.observe({ type: 'resource', buffered: true });
+      } catch (error) {
+        bvTimingMark('cms-api-observer-failed', String(error && error.message));
+      }
+
+      // One fixed report point, late enough to have caught the page settling.
+      // A journey that redirects again (the v5 account switch) simply keeps
+      // marking on the next page, because the run outlives the navigation.
+      window.setTimeout(function () { bvTimingReport('cms-settled'); }, 8000);
+    })();
   }
 
   // Runs the same user-search the CMS UI runs, straight from Freshdesk.
@@ -10280,8 +10447,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             // captured credentials record which brand this host last really
             // used, so that check costs nothing.
             if (bvGetSiteForCmsHost(url.hostname) === account) {
+                bvTimingMark('destination-direct', `${account} - session already on this brand`);
                 return finalPath;
             }
+
+            bvTimingMark(
+                'destination-via-v5-switch',
+                `wanted ${account}, stored slug for this host is "${bvGetSiteForCmsHost(url.hostname) || '(none)'}"`
+            );
 
             url.pathname = '/v5/overview';
             url.searchParams.set('betterSwitch', account);
@@ -10320,6 +10493,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         warnAboutUnroutedBrand(clientContext);
 
         const href = buildCMSDestination(clientContext, { email });
+        bvTimingMark('navigate-search-page', existingTab ? 'reusing the holding tab' : 'new tab');
         console.log('[CMS Search] Opening CMS search for:', email, 'Client:', clientContext.primary || 'Unknown');
 
         if (existingTab) existingTab.location.href = href;
@@ -10330,6 +10504,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         warnAboutUnroutedBrand(clientContext);
 
         const href = buildCMSDestination(clientContext, { email, userId });
+        bvTimingMark('navigate-account-page', existingTab ? 'reusing the holding tab' : 'new tab');
         console.log('[CMS Search] Opening CMS account directly for:', email, 'Client:', clientContext.primary || 'Unknown');
 
         if (existingTab) existingTab.location.href = href;
@@ -10427,9 +10602,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const site = resolveCmsSite(clientContext);
         const cred = site ? bvGetCmsCredForSite(site) : null;
 
+        bvTimingStart(email, site);
+        bvTimingMark('click', cred ? 'credentials ready' : 'no usable credentials');
+
         // No usable credentials - fall back to the plain search page.
         if (!cred) {
             openCMSForEmail(email, clientContext);
+            bvTimingReport('freshdesk-side-done');
             return;
         }
 
@@ -10437,6 +10616,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // the real destination straight from the click.
         const prefetched = readPrefetch(email, site);
         if (prefetched) {
+            bvTimingMark('prefetch-hit', `${prefetched.users.length} user(s) - no holding tab needed`);
             const users = prefetched.users;
             if (users.length === 1 && users[0] && users[0].id) {
                 openCMSAccount(users[0].id, email, clientContext);
@@ -10451,6 +10631,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return;
         }
 
+        bvTimingMark('prefetch-miss', 'holding tab + live lookup');
+
         // The tab has to be opened synchronously inside the click handler or
         // the popup blocker kills it - the async lookup below just points
         // this already-granted tab at the right destination once it knows.
@@ -10461,6 +10643,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         }
 
         showLookupPlaceholder(tab, email);
+        bvTimingMark('holding-tab-painted');
 
         // Whichever of the lookup and the deadline lands first wins; the
         // other becomes a no-op. Without this the tab could be navigated
@@ -10484,15 +10667,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // they can work with immediately.
         deadline = window.setTimeout(function () {
             settle(function () {
+                bvTimingMark('deadline-fired', `lookup did not answer within ${LOOKUP_DEADLINE_MS}ms`);
                 console.warn('[CMS Search] Lookup exceeded the deadline - opening the search page instead.');
                 openCMSForEmail(email, clientContext, tab);
             });
         }, LOOKUP_DEADLINE_MS);
 
+        bvTimingMark('lookup-start');
         bvCmsUserSearch({
             site,
             searchTerm: email,
             onDone: function (error, result) {
+                bvTimingMark(
+                    'lookup-done',
+                    error
+                        ? `error: ${error.message}`
+                        : `${((result && result.users) || []).length} user(s)`
+                );
                 if (error) {
                     settle(function () {
                         console.warn('[CMS Search] API lookup failed, falling back to the search page.', error.message);
