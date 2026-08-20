@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.46.0
+// @version      3.47.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9695,8 +9695,49 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return chunks;
     }
 
+    // The breadcrumb at the top of a ticket page is NOT ticket data - it is the
+    // name of the saved view the agent arrived from ([data-test-title="main-title"]
+    // wraps an anchor pointing at /a/tickets). Brand detection used to read it as
+    // its highest-priority signal, which only ever looked correct because the views
+    // happened to be named after single brands ("Altitude", "MSN", "SCHN"). Rename
+    // one to "ALTITUDE + LIV + MSN" and every ticket opened from it resolves to
+    // whichever brand getCMSKeyFromClientText tests first - MSN - so the CMS button
+    // opens the wrong CMS entirely. Read live on ticket #352179 (2026-08-20): all
+    // four resolving primary chunks were the view name and nothing else. The view
+    // name is now excluded on ticket pages, from primary AND fallback.
+    function isTicketDetailPage() {
+        return /^\/a\/tickets\/\d+/.test(location.pathname);
+    }
+
+    function getViewNameChrome() {
+        if (!isTicketDetailPage()) return '';
+
+        const holder = document.querySelector(
+            '[data-test-title="main-title"], .header-primary .breadcrumb-title'
+        );
+
+        return holder ? cleanText(holder.innerText || holder.textContent || '') : '';
+    }
+
+    // The ticket subject moved into shadow DOM (the ticket-details custom element),
+    // so every ticket-subject selector below now matches nothing - confirmed live.
+    // document.title is the one place it stays readable, and it is genuine ticket
+    // data, so it leads the primary chunks.
+    function getTicketSubjectFromTitle() {
+        const title = cleanText(document.title || '');
+
+        if (!title) return '';
+
+        return cleanText(
+            title
+                .replace(/\s*:\s*ViewLift\s*$/i, '')
+                .replace(/^\[#\d+\]\s*/, '')
+        );
+    }
+
     function getFreshdeskClientContext() {
         const primaryChunks = [];
+        const viewNameChrome = getViewNameChrome();
         const preferredSelectors = [
             '[data-test-title="main-title"] a',
             '[data-test-title="main-title"]',
@@ -9709,7 +9750,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             '[aria-label*="client" i]',
             '[name*="client" i]',
             'a[href^="mailto:"]'
-        ];
+        ].filter(selector => !(viewNameChrome && /main-title|breadcrumb-title/.test(selector)));
+
+        addClientContextText(primaryChunks, getTicketSubjectFromTitle());
 
         for (const selector of preferredSelectors) {
             const elements = Array.from(document.querySelectorAll(selector));
@@ -9740,14 +9783,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
             const text = cleanText(item.innerText || item.textContent || '');
 
+            if (viewNameChrome && text && viewNameChrome.includes(text)) continue;
+
             if (text && !/^\d+$/.test(text)) {
                 addClientContextText(primaryChunks, text);
             }
         }
 
+        const rawFallback = cleanText(document.body ? document.body.innerText : '');
+
+        // split/join rather than a regex: view names contain "+" and friends.
+        const fallback = viewNameChrome
+            ? cleanText(rawFallback.split(viewNameChrome).join(' '))
+            : rawFallback;
+
         return {
             primary: primaryChunks.join(' | '),
-            fallback: cleanText(document.body ? document.body.innerText : '')
+            fallback
         };
     }
 
@@ -9755,6 +9807,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         const normalized = cleanText(clientText).toLowerCase();
 
         if (!normalized) return '';
+
+        // A brand's own support address is unambiguous where the loose word tokens
+        // below are not - "MSN" turns up in view names, signatures and quoted
+        // threads. altitudeplus.com is what settles #352179: the ticket was
+        // addressed to customersupport@altitudeplus.com while the surrounding page
+        // text still said MSN. Checked before the token passes for that reason.
+        const brandDomains = [
+            [/monumentalsportsnetwork\.com/, 'msn'],
+            [/altitudeplus\.com/, 'standard'],
+            [/dirtvision\.com/, 'standard'],
+            [/livgolfplus\.com/, 'gcp'],
+            [/spacecityhn\.com/, 'gcp']
+        ];
+
+        for (const [pattern, key] of brandDomains) {
+            if (pattern.test(normalized)) return key;
+        }
 
         if (/\bmsn\b|\bmonumental\s+sports\s+network\b/i.test(normalized)) {
             return 'msn';

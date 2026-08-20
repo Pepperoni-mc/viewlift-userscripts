@@ -2,6 +2,73 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The CMS button was routing by VIEW NAME, not by ticket - 3.47.0 (2026-08-20)
+
+**Read this before touching brand detection.** It explains a bug that looked new but had
+been latent since the feature was written, and it retires the idea that
+`getFreshdeskClientContext()` reads ticket data.
+
+Sebastian: on ticket #352179 (an Altitude ticket) the CMS button opened **MSN's** CMS. He had
+just renamed his Freshdesk ticket views, combining brands - one is now
+`ALTITUDE + LIV + MSN`.
+
+Read live on that ticket. `primary` had exactly four chunks that resolved, and **all four were
+the string `ALTITUDE + LIV + MSN`**:
+
+```
+[data-test-title="main-title"] a        -> "ALTITUDE + LIV + MSN ... /a/tickets"
+[data-test-title="main-title"]          -> "ALTITUDE + LIV + MSN ..."
+.header-primary .breadcrumb-title a     -> "ALTITUDE + LIV + MSN ... /a/tickets"
+.header-primary .breadcrumb-title       -> "ALTITUDE + LIV + MSN ..."
+```
+
+That breadcrumb is **not the ticket subject** - it is the name of the saved view the agent
+arrived from (the anchor's href is `/a/tickets`). And `document.body.innerText` *starts* with
+it, so `fallback` was poisoned too (index 17). Since `getCMSKeyFromClientText()` tests
+`\bmsn\b` **before** `\baltitude\b`, first-match-wins handed back `msn`.
+
+**So the button had been routing by whichever view the agent was browsing, never by the
+ticket.** It only ever looked right because the views used to be named `Altitude`, `MSN`,
+`SCHN`, `LIV`, `TAMPA` - one brand each, and agents open a brand's tickets from that brand's
+view. An Altitude ticket opened from the SCHN view would always have gone to the wrong CMS.
+Combining the view names just made the latent bug fire every time.
+
+Why nothing else filled the gap: the ticket-subject and Client-Name selectors **matched
+nothing**. Freshdesk moved the ticket body into shadow DOM (`ticket-details`,
+`fw-unified-mfe--contact-info` custom elements), so `[data-test-id*="ticket-subject"]` and the
+`Client Name` label walk both come back empty from the light DOM.
+
+### The fix
+
+- `getViewNameChrome()` + `isTicketDetailPage()`: on `/a/tickets/<digits>` the four
+  breadcrumb/main-title selectors are filtered out of `preferredSelectors`, the breadcrumb loop
+  skips the view-name item, and the view name is **split/join'd out of `fallback`** (split/join,
+  not a regex - view names contain `+`). Off a ticket page the selectors still apply, so
+  contact/company pages are unchanged.
+- `getTicketSubjectFromTitle()`: `document.title` is the one place the subject is still readable
+  (`[#352179] Altitude+ cancellation : ViewLift`). It now **leads** the primary chunks.
+- **Brand support domains are matched before the loose word tokens** in
+  `getCMSKeyFromClientText()`: `monumentalsportsnetwork.com`→msn, `altitudeplus.com`→standard,
+  `dirtvision.com`→standard, `livgolfplus.com`→gcp, `spacecityhn.com`→gcp. A brand's own support
+  inbox is unambiguous where `\bmsn\b` is not, and it is what settles this ticket - it was
+  addressed to `customersupport@altitudeplus.com`.
+
+With the view name gone, `primary` on #352179 becomes
+`Altitude+ cancellation | Client Name Altitude B2C` - real ticket data - and the
+`[data-test-id*="client"]` selector starts contributing again.
+
+**Verified**: `node tests/run-all.js` passes, and the new `tests/brand-routing.test.js`
+(12 checks, fake DOM built from the shape read off the live page) was **mutation-tested**: put
+the four selectors back and 3 checks fail, including the exact `.../users/search` host flip to
+MSN. Live: the patched logic was replayed in the real page's console on #352179 and resolved
+`standard` → `cms.viewlift.com`. **Not** live-confirmed through Tampermonkey itself - that
+needs the browser to fetch 3.47.0 first (check
+`document.documentElement.dataset.betterViewliftInstalled`).
+
+**Pattern worth keeping**: navigation chrome is not record data. Anything read out of a
+breadcrumb, tab title, sidebar or list header describes where the agent *is*, not what they are
+looking at.
+
 ## THE root cause: `view: window` threw, so no synthetic click ever fired - 3.46.0 (2026-08-14)
 
 **Read this before touching any click-simulation code in this repo.** It explains a whole class of
