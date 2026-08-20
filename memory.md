@@ -2,6 +2,48 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Favourite ticket views cap at 5 SERVER-side - a dead end, do not retry (2026-08-20)
+
+Sebastian asked whether Tampermonkey could raise the 5-favourite limit on Freshdesk ticket
+views. **It cannot.** Measured, not assumed - and cheaply, so don't spend a session on it again.
+
+The client cap is real but is not the only one:
+
+- `fw-tickets-mfe/components/assets/index-BJHHaCiB.js` holds
+  `const ae = {filterLimit: 5, yellow: "#FFAB00", ...}`, and the star renders as
+  `disabled: a.favourite ? false : (favCount >= 5)`.
+- The sidebar does **not** cap rendering - it is a plain
+  `if (d.favourite) favourites.primary.push(d)` with no slice - so 6 stored favourites *would*
+  all be drawn. That was the encouraging part.
+- The Ember header has its own copy of the toggle in the **light DOM**:
+  `input[data-test-id="filter-favourite"]` inside `label.star-toggle` (gains
+  `cursor-disabled`). Reachable from a userscript without touching shadow DOM - worth knowing
+  for other purposes. Clearing its `disabled` and clicking does nothing; Ember's action guards
+  again.
+
+**And then the backend refuses anyway.** The API is
+`POST`/`DELETE /api/_/ticket_filters/<id>/favourite` (headers `X-CSRF-Token`,
+`X-Requested-With`, `Content-Type`; the CSRF token appears nowhere in the DOM or cookies, it
+has to be lifted off the app's own XHRs). Driven directly, the 5th favourite returns
+`200 {"data":{"user_id":...,"filter_id":...}}` and the 6th returns:
+
+```
+400 {"code":"max_filter_fav_limit_reached","message":"Maximum no of favourites allowed - 5"}
+```
+
+So patching `filterLimit` - even if a userscript could reach a cross-origin ES module's
+module-scoped const, which it cannot - would only move the failure from a greyed-out star to a
+400. **No client-side change can raise this.**
+
+Left clean: the test added one favourite and removed it, ending on Sebastian's original four
+(`TAMPA + DIRT`, `ALTITUDE + LIV + MSN`, `SCHN Raj view`, `SCHN`).
+
+**The only viable route** if he still wants more than five quick-access views: Better Viewlift
+renders its **own** section in the left nav (or in the unified toolbar) from a GM-storage list of
+filter ids, each linking to `/a/tickets/filters/<id>`. Unlimited, orderable, and it never
+touches Freshdesk's own favourites. Ticket counts would need `/api/_/tickets?filter=<id>&only=count`
+per entry if he wants the `(26)` badges too. Not built yet - offered, awaiting his call.
+
 ## The CMS button was routing by VIEW NAME, not by ticket - 3.47.0 (2026-08-20)
 
 **Read this before touching brand detection.** It explains a bug that looked new but had
