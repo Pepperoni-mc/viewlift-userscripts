@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.48.0
+// @version      3.49.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7010,6 +7010,10 @@ if (isCMSHost()) {
                 queue.push({
                     dataUrl: snapshotDataUrl,
                     ticketUrl,
+                    // The CMS page the shot was taken on. A screenshot alone
+                    // doesn't say which account it belongs to, so the Freshdesk
+                    // side pastes this as a clickable link under the image.
+                    sourceUrl: location.href,
                     createdAt: Date.now()
                 });
 
@@ -8263,6 +8267,47 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return false;
   }
 
+  // Whatever sits in GM storage is treated as untrusted input here - it ends
+  // up as an href in the agent's note - so only http(s) URLs on a real CMS
+  // host are accepted. Older queued entries have no sourceUrl at all and just
+  // paste the image as before.
+  function toSafeCmsUrl(value) {
+    const raw = cleanText(value);
+    if (!raw) return '';
+
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      if (!isCMSHost(url.hostname)) return '';
+      return url.href;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function appendSourceLink(editor, sourceUrl) {
+    const safeUrl = toSafeCmsUrl(sourceUrl);
+    if (!safeUrl) return false;
+
+    // Built as DOM nodes and appended, never by rewriting innerHTML: Froala
+    // swaps its own placeholder <img> for the uploaded one asynchronously, and
+    // re-serialising the editor mid-upload would drop the image just pasted.
+    const paragraph = document.createElement('p');
+    paragraph.appendChild(document.createTextNode('CMS: '));
+
+    const anchor = document.createElement('a');
+    anchor.href = safeUrl;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.textContent = safeUrl;
+    paragraph.appendChild(anchor);
+
+    editor.appendChild(paragraph);
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
   async function pasteSnapshot(snapshot) {
     const dataUrl = cleanText(snapshot && snapshot.dataUrl);
     if (!/^data:image\/png;base64,/i.test(dataUrl)) throw new Error('Invalid queued PNG.');
@@ -8294,6 +8339,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }));
       editor.dispatchEvent(new Event('change', { bubbles: true }));
     }
+
+    // Appended last, so it lands under the image on both paste paths.
+    appendSourceLink(editor, snapshot && snapshot.sourceUrl);
 
     return true;
   }

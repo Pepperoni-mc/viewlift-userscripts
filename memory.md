@@ -2,6 +2,48 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The pasted CMS screenshot now carries its own link - 3.49.0 (2026-08-21)
+
+Sebastian: when the CMS screenshot gets pasted into the Freshdesk note, paste the CMS link under
+it too. A bare screenshot doesn't say which account it belongs to, and nobody reading the note
+later can get back to that page.
+
+The URL has to be recorded on the **CMS tab, at capture time** - the Freshdesk tab has no way to
+know which page the shot came from. So `captureRealTabSnapshot()` now queues
+`sourceUrl: location.href` alongside `dataUrl`/`ticketUrl`/`createdAt`, and the Freshdesk consumer
+appends the link after the image.
+
+**Two things in `pasteSnapshot()` worth not undoing:**
+
+- **`toSafeCmsUrl()` treats the stored value as untrusted.** It crossed tabs through GM storage and
+  ends up as an `href` in the agent's note, so only `http:`/`https:` on a host that passes
+  `isCMSHost()` becomes a link - `javascript:`, `data:`, relative paths, and look-alike hosts like
+  `cms.viewlift.com.evil.example` all return `''` and the note is left untouched.
+- **The paragraph is built as DOM nodes and `appendChild`'d, never by rewriting `innerHTML`.**
+  Froala swaps its own placeholder `<img>` for the uploaded one asynchronously; re-serialising the
+  editor mid-upload would drop the image that was just pasted. Appending is also what puts the link
+  *below* the image on both paste paths (the real ClipboardEvent one and the innerHTML fallback), so
+  the call sits at the very end of `pasteSnapshot()`.
+
+The query string is deliberately **kept** (`/users/search?keyword=<email>&filter=all`) - stripping it
+would make the link land on an empty search instead of the same rows. That means the customer's
+address can appear in the link text, which is fine here (a private note on that customer's own
+ticket) but is the opposite of the timing tool's domain-only rule - don't "fix" one to match the
+other.
+
+An older queued snapshot from before this version has no `sourceUrl` and just pastes the image, as
+it always did.
+
+**Verified**: `node tests/run-all.js` passes. New `tests/snapshot-source-link.test.js` - 31 checks
+over URL acceptance/rejection, the appended paragraph's shape, the `noopener noreferrer` target, the
+input/change events, the no-op paths, and source-level guards on the queue payload and the call
+site - and it was **mutation-tested**: blanking `sourceUrl` fails 1 check, dropping the
+`isCMSHost()` guard fails 2, and switching the append to `innerHTML` fails immediately.
+**Simulated only, not live-confirmed** - the real Froala editor hasn't seen this yet, so the next
+capture on a live ticket is what confirms Freshdesk keeps the anchor when the note is submitted
+(it sanitises pasted HTML; if the link comes through as plain text that is still readable, just
+not clickable).
+
 ## "SCHN's CMS is slow" - what was measured, and the timing tool built for the rest - 3.48.0 (2026-08-20)
 
 Sebastian reported the SCHN CMS being slow on the initial search. **Everything reachable from
