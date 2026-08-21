@@ -2,6 +2,98 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Copy the whole case - and the discovery that Freshdesk's REST API needs no key - 3.50.0 (2026-08-21)
+
+Sebastian asked for a button that copies **everything** about a case to the clipboard, explicitly
+including the conversations Freshdesk collapses behind
+`<button data-test-button="load-more">+11 conversations</button>`.
+
+### The finding that decided the design (read this before touching anything Freshdesk-data related)
+
+**`fetch('/api/v2/...', {credentials: 'same-origin'})` from a Freshdesk page is authenticated by
+the session cookie alone.** No API key, no `X-CSRF-Token`. Confirmed live on ticket #352184:
+`/api/v2/tickets/<id>?include=requester`, `/api/v2/tickets/<id>/conversations?per_page=100`,
+`/api/v2/ticket_fields`, `/api/v2/agents`, `/api/v2/groups/<id>` all returned 200 with
+`x-ratelimit-remaining` around 4000.
+
+That retires DOM scraping for this whole class of problem. `/tickets/<id>/conversations` returns
+the collapsed messages too - **59 on a ticket whose page rendered a handful** (#352259 showed
+"+56 conversations"). The load-more button never needs to be clicked.
+
+The existing `freshdeskApiRequest()` + `BV_FRESHDESK_API_KEY_KEY` path (Basic Auth, prelude line
+~735) is now the *second* try, not the first: the session works with zero setup, the key only
+matters if a session is ever refused for API calls.
+
+### Shapes worth knowing (all read live, all handled in code)
+
+- `/api/v2/ticket_fields` returns **status choices as `{id: [agentLabel, customerLabel]}` and
+  priority as `{label: id}`** - the same endpoint, two inverted shapes.
+  `choicesToIdLabelMap()` normalizes both. This account has ~19 custom statuses
+  (`8 = Waiting on Development`), so hardcoding Freshdesk's defaults would have been wrong.
+- Custom fields come back keyed `cf_*` with their labels in the same payload
+  (`cf_product => Brand`, `cf_platform => Platform`, 13 of them; most cases fill two).
+- `per_page` caps at 100 - `/api/v2/agents` returned **exactly** 100, which is the tell that a
+  paging loop is mandatory, not optional.
+- The **ticket description is NOT in `/conversations`** - it is `ticket.description_text`, so it
+  has to be prepended as message 1 or every copy silently loses the customer's first message.
+- Message direction is `private` / `incoming`, **not** `source`: real private notes came back with
+  `source: 2` and customer mails with `source: 0`.
+- Conversation authors are ids: agents resolve from `/api/v2/agents`, the customer from
+  `include=requester`, and anyone else (a CC'd third party) falls back to `from_email`.
+
+### The feature
+
+Feature 10 (`window.__bvCopyFullCase`) + a 📋 button in Feature 8's toolbar, after the `$` one.
+Output is fixed-shape plain text: a header block (status/priority/type/source/group/agent/tags/
+dates/requester/to/cc + the custom fields that are filled), then every message as
+`--- N · CUSTOMER|AGENT REPLY|PRIVATE NOTE · author · YYYY-MM-DD HH:mm ---` with attachment lines,
+then a trailer counting the messages.
+
+- **Only the conversations may fail the copy.** Field labels and agent names are wrapped in
+  `.catch()` so a narrower-permission 403 degrades to raw ids/addresses instead of throwing the
+  case back to the DOM fallback and losing every collapsed message. This was a real hole in the
+  first draft, caught reviewing it, not by the tests.
+- **`GM_setClipboard`, not `navigator.clipboard`** - the copy happens after several awaited
+  fetches, by which point Chrome has dropped the click's user activation and the async clipboard
+  API rejects.
+- **`bvNotify` no longer paints toasts** (they were removed per request, it is console-only now),
+  so the button itself is the feedback: ⏳ while working, ✅ / ⚠️ for 1.4s after.
+- Timestamps are local but deliberately **not** `toLocaleString()` - this text gets pasted and
+  forwarded, so the shape must not change with the reader.
+- The DOM fallback still exists for "no API at all": it clicks the load-more block until it stops
+  reappearing, then reads `.ticket-details__item` through a text walker that **skips our own
+  injected UI** (Feature 5's email chips would otherwise be copied back into the case as
+  duplicated addresses) - and it labels itself in the output as read-off-the-page.
+
+### Freshdesk DOM notes gathered along the way
+
+Conversations are still Ember light DOM: `.ticket-details__item` per message
+(`[data-test-id="ticket-description"]` for the first one, `.rich-editor` is the reply box and has
+to be filtered out), `.ticket_note[data-note-id]` for the body,
+`[data-test-conversation="conversation-text"]`, `.conversation-header` for author/time. The
+right-hand panels are shadow DOM: `ticket-details` and `fw-unified-mfe--contact-info` (that one
+holds the contact name + email).
+
+### Verified
+
+`node tests/run-all.js` passes. New `tests/copy-case.test.js` - 75 checks over both choice shapes,
+custom-field labelling and skipping, author/kind resolution, timestamp shape, attachment sizes,
+the full report layout, the paging loop (including that `/page=(\d+)/` matches inside
+`per_page=100` - the stub bug that hid a real one), the MAX_PAGES ceiling, the degrade-not-abort
+rules, and the fallback text walker. **Mutation-tested**: dropping the description block, paging
+only the first page, ignoring `private`, letting our chips leak into the text, mis-reading the
+status shape, removing the `.catch()` on agent names, and swallowing a conversations failure each
+fail the specific checks that name them.
+
+**Not live-confirmed through Tampermonkey.** The API calls, every payload shape above, and the
+59-vs-handful conversation count are real, read from live tickets. The button itself has not been
+clicked once: the browser still had 3.49.0 loaded (`@updateURL` points at GitHub raw and
+Tampermonkey had not re-checked), and the automation tab was a background tab - which is also why
+the unified toolbar was absent there: **Feature 8's `scheduleInstall` returns early while
+`document.visibilityState === 'hidden'`**, so the toolbar only mounts once the tab is visible.
+Remaining to confirm on a real click: the 📋 button renders in the toolbar, `GM_setClipboard`
+lands the text, and the ✅ state shows.
+
 ## The pasted CMS screenshot now carries its own link - 3.49.0 (2026-08-21)
 
 Sebastian: when the CMS screenshot gets pasted into the Freshdesk note, paste the CMS link under

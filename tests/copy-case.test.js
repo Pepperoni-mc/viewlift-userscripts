@@ -75,9 +75,11 @@ const sandbox = `
   ${extractFunction(/function buildReport/, 'buildReport')}
   ${extractFunction(/async function pagedList/, 'pagedList')}
   ${extractFunction(/function readTextSkippingOurUi/, 'readTextSkippingOurUi')}
+  ${extractFunction(/async function collectViaApi/, 'collectViaApi')}
   module.exports = {
     formatWhen, choicesToIdLabelMap, buildFieldLabels, authorFor, kindFor,
-    attachmentLines, buildReport, pagedList, readTextSkippingOurUi, PER_PAGE, MAX_PAGES
+    attachmentLines, buildReport, pagedList, readTextSkippingOurUi, collectViaApi,
+    PER_PAGE, MAX_PAGES
   };
 `;
 
@@ -88,12 +90,20 @@ function load(options) {
   const settings = options || {};
   const mod = { exports: {} };
 
-  new Function('module', 'location', 'GM_info', 'htmlToText', 'api', sandbox)(
+  const args = [
+    'module', 'location', 'GM_info', 'htmlToText', 'api',
+    'getFieldLabels', 'getAgentNames', 'getGroupName'
+  ];
+
+  new Function(...args, sandbox)(
     mod,
     { origin: 'https://viewlift.freshdesk.com' },
     { script: { version: '9.9.9' } },
     html => (html ? '(html body)' : ''),
-    settings.api || (() => { throw new Error('api() should not be called here'); })
+    settings.api || (() => { throw new Error('api() should not be called here'); }),
+    settings.getFieldLabels || (async () => ({ status: {}, priority: {}, custom: {} })),
+    settings.getAgentNames || (async () => ({})),
+    settings.getGroupName || (async () => 'A Group')
   );
 
   return mod.exports;
@@ -356,6 +366,68 @@ async function asyncChecks() {
   {
     const api = load({ api: async () => [] });
     check('an empty first page yields nothing', (await api.pagedList('/x')).length, 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // A broken lookup must not cost the whole case. Everything except the
+  // conversations themselves is decoration - degrade, do not abort, or the
+  // copy falls back to the page and silently loses every collapsed message.
+  // ---------------------------------------------------------------------------
+  {
+    const paths = [];
+    const api = load({
+      api: async (path) => {
+        paths.push(path);
+        if (/\/tickets\/7\?/.test(path)) {
+          return {
+            id: 7, subject: 'Broken lookups', status: 8, priority: 3, group_id: 5,
+            responder_id: 42, description_text: 'first message', custom_fields: {},
+            requester: { id: 1, name: 'Cust' }
+          };
+        }
+        if (/conversations/.test(path)) {
+          return [{ user_id: 42, incoming: false, private: false, body_text: 'reply', created_at: '2026-08-20T11:00:00Z' }];
+        }
+        throw new Error('unexpected path ' + path);
+      },
+      getFieldLabels: async () => { throw new Error('403'); },
+      getAgentNames: async () => { throw new Error('403'); },
+      getGroupName: async () => ''
+    });
+
+    // Caught rather than awaited bare: without the .catch()es in the source
+    // this rejects, and a crashed run reports worse than a named FAIL.
+    let report = '';
+    let aborted = null;
+    try {
+      report = await api.collectViaApi('7');
+    } catch (error) {
+      aborted = String(error && error.message || error);
+    }
+
+    check('a decoration lookup that 403s does not abort the copy', aborted, null);
+    check('a failed label lookup still produces a report', report.indexOf('TICKET #7 — Broken lookups') !== -1, true);
+    check('the conversation survived it', report.indexOf('reply') !== -1, true);
+    check('the description survived it', report.indexOf('first message') !== -1, true);
+    check('an unresolved status degrades to the raw id', /^Status:\s+8$/m.test(report), true);
+    check('an unresolved priority degrades to the raw id', /^Priority:\s+3$/m.test(report), true);
+    check('an unresolved author degrades rather than blanking', /· Unknown ·/.test(report), true);
+    check('both messages are still numbered', (report.match(/^--- \d+ · /gm) || []).length, 2);
+  }
+
+  {
+    // The conversations, on the other hand, ARE the feature: if they cannot be
+    // read there is nothing worth copying and the caller has to know.
+    const api = load({
+      api: async (path) => {
+        if (/conversations/.test(path)) throw new Error('HTTP 500');
+        return { id: 8, subject: 's', custom_fields: {}, requester: {} };
+      }
+    });
+
+    let threw = false;
+    try { await api.collectViaApi('8'); } catch (error) { threw = true; }
+    check('an unreadable conversation list fails loudly, so the DOM fallback runs', threw, true);
   }
 
   // ---------------------------------------------------------------------------

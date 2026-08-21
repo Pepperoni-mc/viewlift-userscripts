@@ -8802,9 +8802,20 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   async function collectViaApi(ticketId) {
     const ticket = await api('/api/v2/tickets/' + ticketId + '?include=requester');
+
+    // Only the conversations are allowed to fail the whole thing - they ARE
+    // the feature. A label or agent-name lookup that 403s (narrower API
+    // permissions than the ticket read) must degrade to raw ids, not throw
+    // the case back to the DOM fallback and lose every collapsed message.
     const [labels, agentNames, conversations] = await Promise.all([
-      getFieldLabels(),
-      getAgentNames(),
+      getFieldLabels().catch(error => {
+        console.warn('[Copy case] Field labels unavailable - falling back to raw ids.', error);
+        return { status: {}, priority: {}, custom: {} };
+      }),
+      getAgentNames().catch(error => {
+        console.warn('[Copy case] Agent names unavailable - falling back to addresses.', error);
+        return {};
+      }),
       pagedList('/api/v2/tickets/' + ticketId + '/conversations')
     ]);
 
