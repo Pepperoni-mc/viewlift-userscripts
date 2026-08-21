@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.49.0
+// @version      3.50.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7692,6 +7692,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
+  const COPY_CASE_ID = 'better-freshdesk-copy-case';
   const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
 
@@ -7770,7 +7771,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         50% { opacity: .35; }
       }
 
-      #${REFUND_TOGGLE_ID} {
+      #${REFUND_TOGGLE_ID}, #${COPY_CASE_ID} {
         display: inline-flex !important;
         align-items: center !important;
         justify-content: center !important;
@@ -7797,6 +7798,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       #${REFUND_TOGGLE_ID}:active {
         background: #11543b !important;
         border-color: #11543b !important;
+      }
+
+      #${COPY_CASE_ID} {
+        border-color: #2f5f8f !important;
+        background: #2f5f8f !important;
+        font-size: 15px !important;
+      }
+
+      #${COPY_CASE_ID}:hover {
+        background: #274e75 !important;
+        border-color: #274e75 !important;
+      }
+
+      #${COPY_CASE_ID}:disabled {
+        opacity: .7 !important;
+        cursor: default !important;
       }
 
       #${BRAND_ID} {
@@ -8083,6 +8100,40 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
     }
 
+    let copyCase = document.getElementById(COPY_CASE_ID);
+    if (!copyCase) {
+      copyCase = makeButton(
+        COPY_CASE_ID,
+        '📋',
+        'Copy the whole case (every message, including the collapsed ones)'
+      );
+      copyCase.addEventListener('click', async event => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (copyCase.disabled) return;
+        if (typeof window.__bvCopyFullCase !== 'function') return;
+
+        // The copy takes a couple of API round-trips, and bvNotify only
+        // reaches the console now that the toasts are gone - so the button
+        // itself has to be the feedback.
+        const idle = copyCase.textContent;
+        copyCase.disabled = true;
+        copyCase.textContent = '⏳';
+
+        let copied = '';
+        try {
+          copied = await window.__bvCopyFullCase();
+        } catch (error) {
+          console.error('[Better ViewLift] Copy case failed.', error);
+        }
+
+        copyCase.disabled = false;
+        copyCase.textContent = copied ? '✅' : '⚠️';
+        window.setTimeout(() => { copyCase.textContent = idle; }, 1400);
+      });
+    }
+
     let cmsSessionDot = document.getElementById(CMS_SESSION_DOT_ID);
     if (!cmsSessionDot) {
       cmsSessionDot = document.createElement('span');
@@ -8106,7 +8157,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.getElementById('better-freshdesk-generate-toggle')?.remove();
     document.getElementById('better-freshdesk-generate-panel')?.remove();
 
-    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle, copyCase].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -8404,6 +8455,510 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   init();
 })();
 }
+
+/* ============================================================
+ * Feature 10: Copy the whole case to the clipboard
+ *
+ * The point is EVERYTHING, including the conversations Freshdesk hides
+ * behind its "+11 conversations" block. Scraping the DOM for those means
+ * clicking that block until it stops appearing and hoping Ember re-renders
+ * in time - and even then it only ever yields what the page decided to
+ * render.
+ *
+ * Freshdesk's own v2 REST API answers with nothing but the session cookie
+ * (confirmed live 2026-08-21 from a ticket page: no API key, no CSRF token,
+ * ~4000 calls/h left on the budget), and /tickets/<id>/conversations returns
+ * the collapsed messages too - 59 on a ticket whose UI showed a handful. So
+ * the API is the real path; the saved API key is the second try, and reading
+ * the page is the last resort.
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+  const FIELDS_CACHE_KEY = 'betterFreshdeskTicketFieldLabels';
+  const AGENTS_CACHE_KEY = 'betterFreshdeskAgentNames';
+  const GROUPS_CACHE_KEY = 'betterFreshdeskGroupNames';
+  // Field labels, agent names and group names change on the order of never; a
+  // page reload should not cost three extra API calls.
+  const LOOKUP_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+  const PER_PAGE = 100;
+  // 100 messages a page, so this is a 2000-message ceiling - far past any real
+  // ticket, and there purely so a paging bug cannot loop forever.
+  const MAX_PAGES = 20;
+
+  const SOURCE_LABELS = {
+    1: 'Email', 2: 'Portal', 3: 'Phone', 4: 'Forum', 5: 'Twitter', 6: 'Facebook',
+    7: 'Chat', 8: 'MobiHelp', 9: 'Feedback Widget', 10: 'Outbound Email',
+    11: 'Ecommerce', 12: 'Bot', 13: 'WhatsApp'
+  };
+
+  function cleanText(value) {
+    return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function getTicketId() {
+    const match = location.pathname.match(/\/a\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  // Local time, fixed shape. Deliberately not toLocaleString(): this text gets
+  // pasted into notes and handed to other people, and a format that changes
+  // with whoever is reading it is worse than one that is always the same.
+  function formatWhen(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    const pad = number => String(number).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+      ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+
+  function htmlToText(html) {
+    if (!html) return '';
+
+    const holder = document.createElement('div');
+    holder.innerHTML = String(html);
+    holder.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+    holder.querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6').forEach(block => {
+      block.appendChild(document.createTextNode('\n'));
+    });
+
+    // textContent, not innerText: the node is detached, so it has no layout and
+    // innerText would come back empty.
+    return (holder.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function normalizeBody(entry) {
+    const text = String((entry && entry.body_text) || '').trim();
+    return text || htmlToText(entry && entry.body);
+  }
+
+  function apiViaSession(path) {
+    return fetch(path, {
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    }).then(response => {
+      if (!response.ok) throw new Error('HTTP ' + response.status + ' for ' + path);
+      return response.json();
+    });
+  }
+
+  function apiViaSavedKey(path) {
+    return new Promise((resolve, reject) => {
+      freshdeskApiRequest({
+        path,
+        onDone: (error, data) => (error ? reject(error) : resolve(data))
+      });
+    });
+  }
+
+  // The session cookie is enough on a ticket page, so this needs no setup at
+  // all. The saved API key (Freshdesk: Set API Key) is only a second try for
+  // the case where the session is not accepted for API calls.
+  async function api(path) {
+    try {
+      return await apiViaSession(path);
+    } catch (error) {
+      if (!getFreshdeskApiKey()) throw error;
+      return apiViaSavedKey(path);
+    }
+  }
+
+  // Only the reduced map is cached, never the raw payload: the agent list comes
+  // back with everyone's email, phone and signature attached, and none of that
+  // needs to sit in GM storage to turn an id into a name.
+  async function cachedMap(key, build) {
+    try {
+      const hit = GM_getValue(key, null);
+      if (hit && hit.map && Date.now() - Number(hit.at || 0) < LOOKUP_CACHE_TTL_MS) return hit.map;
+    } catch (error) { /* storage unavailable - just rebuild */ }
+
+    const map = await build();
+
+    try {
+      GM_setValue(key, { at: Date.now(), map });
+    } catch (error) { /* storage unavailable - the map is still usable now */ }
+
+    return map;
+  }
+
+  async function pagedList(path) {
+    const all = [];
+
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const separator = path.indexOf('?') === -1 ? '?' : '&';
+      const batch = await api(path + separator + 'per_page=' + PER_PAGE + '&page=' + page);
+      if (!Array.isArray(batch) || !batch.length) break;
+
+      all.push.apply(all, batch);
+      if (batch.length < PER_PAGE) break;
+    }
+
+    return all;
+  }
+
+  // status choices arrive as {id: [label, customerFacingLabel]}, priority as
+  // {label: id} - same endpoint, two different shapes. Normalize both to
+  // {id: label} instead of special-casing at the call site.
+  function choicesToIdLabelMap(choices) {
+    const map = {};
+    if (!choices || typeof choices !== 'object') return map;
+
+    Object.keys(choices).forEach(key => {
+      const value = choices[key];
+      if (Array.isArray(value)) map[String(key)] = String(value[0]);
+      else if (typeof value === 'number' || /^\d+$/.test(String(value))) map[String(value)] = String(key);
+      else map[String(key)] = String(value);
+    });
+
+    return map;
+  }
+
+  function buildFieldLabels(fields) {
+    const list = Array.isArray(fields) ? fields : [];
+    const byName = name => list.find(field => field && field.name === name) || {};
+    const custom = {};
+
+    list.filter(field => field && /^cf_/.test(String(field.name))).forEach(field => {
+      custom[field.name] = String(field.label || field.name);
+    });
+
+    return {
+      status: choicesToIdLabelMap(byName('status').choices),
+      priority: choicesToIdLabelMap(byName('priority').choices),
+      custom
+    };
+  }
+
+  function getFieldLabels() {
+    return cachedMap(FIELDS_CACHE_KEY, async () => buildFieldLabels(await api('/api/v2/ticket_fields')));
+  }
+
+  function getAgentNames() {
+    return cachedMap(AGENTS_CACHE_KEY, async () => {
+      const agents = await pagedList('/api/v2/agents');
+      const map = {};
+
+      agents.forEach(agent => {
+        const name = cleanText(agent && agent.contact && agent.contact.name);
+        if (agent && agent.id && name) map[String(agent.id)] = name;
+      });
+
+      return map;
+    });
+  }
+
+  // Group names accumulate one id at a time rather than listing every group:
+  // a case only ever has one, and the whole list is a bigger call for no gain.
+  async function getGroupName(groupId) {
+    if (!groupId) return '';
+
+    let cache = null;
+    try {
+      cache = GM_getValue(GROUPS_CACHE_KEY, null);
+    } catch (error) { /* storage unavailable */ }
+
+    const fresh = Boolean(cache && Date.now() - Number(cache.at || 0) < LOOKUP_CACHE_TTL_MS);
+    const map = (fresh && cache.map) || {};
+    if (map[String(groupId)]) return map[String(groupId)];
+
+    try {
+      const group = await api('/api/v2/groups/' + groupId);
+      const name = cleanText(group && group.name);
+      if (!name) return '';
+
+      map[String(groupId)] = name;
+      try {
+        GM_setValue(GROUPS_CACHE_KEY, { at: fresh ? Number(cache.at) : Date.now(), map });
+      } catch (error) { /* storage unavailable */ }
+
+      return name;
+    } catch (error) {
+      // A missing group name is not worth failing the whole copy over.
+      return '';
+    }
+  }
+
+  function authorFor(entry, context) {
+    const names = (context && context.agentNames) || {};
+    const requester = (context && context.requester) || {};
+    const userId = String((entry && entry.user_id) || '');
+
+    if (userId && names[userId]) return names[userId];
+    if (userId && String(requester.id || '') === userId) {
+      return requester.name || requester.email || 'Requester';
+    }
+
+    return cleanText(entry && entry.from_email) || 'Unknown';
+  }
+
+  // private/incoming, not `source`: a note and an agent's email reply can both
+  // carry source values that say nothing about who is talking to whom.
+  function kindFor(entry) {
+    if (entry && entry.private) return 'PRIVATE NOTE';
+    if (entry && entry.incoming) return 'CUSTOMER';
+    return 'AGENT REPLY';
+  }
+
+  function attachmentLines(entry) {
+    return ((entry && entry.attachments) || []).map(attachment => {
+      const size = Number(attachment && attachment.size);
+      const sizeText = Number.isFinite(size) && size > 0
+        ? ' (' + Math.max(1, Math.round(size / 1024)) + ' KB)'
+        : '';
+      return '   [attachment] ' + cleanText(attachment && attachment.name) + sizeText;
+    });
+  }
+
+  function buildMessageBlock(index, kind, author, when, body, extras) {
+    const head = '--- ' + index + ' · ' + kind + ' · ' + author + (when ? ' · ' + when : '') + ' ---';
+    return [head, body || '(no text)'].concat(extras || []).join('\n');
+  }
+
+  function buildReport(data) {
+    const ticket = (data && data.ticket) || {};
+    const labels = (data && data.labels) || { status: {}, priority: {}, custom: {} };
+    const requester = (data && data.requester) || {};
+    const conversations = (data && data.conversations) || [];
+    const context = { agentNames: (data && data.agentNames) || {}, requester };
+
+    const header = [];
+    const field = (label, value) => {
+      const text = Array.isArray(value) ? value.filter(Boolean).join(', ') : cleanText(value);
+      if (text) header.push((label + ':').padEnd(12) + text);
+    };
+
+    field('Status', labels.status[String(ticket.status)] || ticket.status);
+    field('Priority', labels.priority[String(ticket.priority)] || ticket.priority);
+    field('Type', ticket.type);
+    field('Source', SOURCE_LABELS[ticket.source] || ticket.source);
+    field('Group', data && data.groupName);
+    field('Agent', data && data.agentName);
+    field('Tags', ticket.tags);
+    field('Created', formatWhen(ticket.created_at));
+    field('Updated', formatWhen(ticket.updated_at));
+    field('Due by', formatWhen(ticket.due_by));
+    field('Requester', [requester.name, requester.email ? '<' + requester.email + '>' : '']
+      .filter(Boolean).join(' '));
+    field('Phone', requester.phone || requester.mobile);
+    field('To', ticket.to_emails);
+    field('CC', ticket.cc_emails);
+
+    // Only the custom fields that were actually filled in - this account has
+    // 13 of them and most cases use two.
+    Object.keys(ticket.custom_fields || {}).forEach(name => {
+      const value = ticket.custom_fields[name];
+      if (value === null || value === undefined || value === '' || value === false) return;
+      field(labels.custom[name] || name.replace(/^cf_/, ''), String(value));
+    });
+
+    // The description is not part of /conversations - it is the ticket's own
+    // first message, so it has to be prepended by hand.
+    const messages = [buildMessageBlock(
+      1,
+      'CUSTOMER',
+      requester.name || requester.email || 'Requester',
+      formatWhen(ticket.created_at),
+      normalizeBody({ body_text: ticket.description_text, body: ticket.description }),
+      attachmentLines(ticket)
+    )];
+
+    conversations.forEach((entry, index) => {
+      messages.push(buildMessageBlock(
+        index + 2,
+        kindFor(entry),
+        authorFor(entry, context),
+        formatWhen(entry.created_at),
+        normalizeBody(entry),
+        attachmentLines(entry)
+      ));
+    });
+
+    const rule = '='.repeat(62);
+    let version = '';
+    try {
+      version = (GM_info && GM_info.script && GM_info.script.version) || '';
+    } catch (error) { /* GM_info unavailable */ }
+
+    return [
+      rule,
+      'TICKET #' + ticket.id + ' — ' + (cleanText(ticket.subject) || '(no subject)'),
+      location.origin + '/a/tickets/' + ticket.id,
+      rule,
+      header.join('\n'),
+      '',
+      messages.join('\n\n'),
+      '',
+      rule,
+      messages.length + ' message' + (messages.length === 1 ? '' : 's') +
+        ' · copied ' + formatWhen(new Date().toISOString()) +
+        (version ? ' · Better Viewlift ' + version : '')
+    ].join('\n');
+  }
+
+  async function collectViaApi(ticketId) {
+    const ticket = await api('/api/v2/tickets/' + ticketId + '?include=requester');
+    const [labels, agentNames, conversations] = await Promise.all([
+      getFieldLabels(),
+      getAgentNames(),
+      pagedList('/api/v2/tickets/' + ticketId + '/conversations')
+    ]);
+
+    return buildReport({
+      ticket,
+      requester: ticket.requester || {},
+      labels,
+      agentNames,
+      conversations,
+      groupName: await getGroupName(ticket.group_id),
+      agentName: agentNames[String(ticket.responder_id)] || ''
+    });
+  }
+
+  /* ---------- fallback: whatever the page itself is showing ---------- */
+
+  function isVisible(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  const BLOCK_TAGS = /^(?:DIV|P|LI|TR|BR|H1|H2|H3|H4|H5|H6|SECTION|ARTICLE)$/;
+  const OUR_UI_ID = /^(?:better-freshdesk|better-viewlift|tm-viewlift|refund-capture)/;
+  const OUR_UI_CLASS = /^better-freshdesk-/;
+
+  // A text walker rather than innerText on a clone: our own injected chips and
+  // panels have to come out (they would otherwise show up as duplicated emails
+  // inside the copied case), and a detached clone has no layout, so its
+  // innerText is always ''.
+  function readTextSkippingOurUi(root) {
+    const parts = [];
+
+    const walk = node => {
+      if (!node) return;
+      if (node.nodeType === 3) { parts.push(node.nodeValue || ''); return; }
+      if (node.nodeType !== 1 && node.nodeType !== 11) return;
+      if (node.tagName === 'STYLE' || node.tagName === 'SCRIPT') return;
+      if (node.id && OUR_UI_ID.test(node.id)) return;
+      if (node.classList && Array.from(node.classList).some(name => OUR_UI_CLASS.test(name))) return;
+
+      Array.from(node.childNodes).forEach(walk);
+      if (node.tagName && BLOCK_TAGS.test(node.tagName)) parts.push('\n');
+    };
+
+    walk(root);
+    return parts.join('').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Each click loads one more page of collapsed messages, so this keeps going
+  // until the block stops coming back. Ember guards some of its own controls
+  // against synthetic clicks (see memory.md on the favourites star), which is
+  // exactly why this is the fallback and not the main path.
+  async function expandHiddenConversations() {
+    let clicked = 0;
+
+    for (let round = 0; round < 12; round++) {
+      const blocks = Array.from(document.querySelectorAll('[data-test-button="load-more"]')).filter(isVisible);
+      if (!blocks.length) break;
+
+      blocks.forEach(block => {
+        try { block.click(); clicked++; } catch (error) { /* guarded - nothing to do */ }
+      });
+
+      await new Promise(resolve => window.setTimeout(resolve, 700));
+    }
+
+    return clicked;
+  }
+
+  async function collectViaDom(ticketId) {
+    await expandHiddenConversations();
+
+    const messages = Array.from(document.querySelectorAll('.ticket-details__item'))
+      .filter(item => !item.classList.contains('rich-editor'))
+      .map(readTextSkippingOurUi)
+      .filter(Boolean)
+      .map((text, index) => '--- ' + (index + 1) + ' ---\n' + text);
+
+    const properties = readTextSkippingOurUi(document.querySelector('.ticket-properties-wrapper'));
+    const contactHost = document.querySelector('fw-unified-mfe--contact-info');
+    const contact = contactHost && contactHost.shadowRoot
+      ? readTextSkippingOurUi(contactHost.shadowRoot)
+      : '';
+
+    const rule = '='.repeat(62);
+
+    return [
+      rule,
+      'TICKET #' + ticketId + ' — ' + cleanText(document.title),
+      location.origin + '/a/tickets/' + ticketId,
+      rule,
+      'READ OFF THE PAGE - the Freshdesk API was unreachable, so anything the',
+      'page had not rendered is missing from this copy.',
+      '',
+      contact ? 'CONTACT\n' + contact + '\n' : '',
+      properties ? 'PROPERTIES\n' + properties + '\n' : '',
+      messages.join('\n\n')
+    ].filter(Boolean).join('\n');
+  }
+
+  function copyToClipboard(text) {
+    // GM_setClipboard, not navigator.clipboard: this runs after several awaited
+    // fetches, by which point Chrome has dropped the click's user activation
+    // and the async clipboard API would reject.
+    try {
+      GM_setClipboard(text, 'text');
+      return true;
+    } catch (error) {
+      try {
+        navigator.clipboard.writeText(text);
+        return true;
+      } catch (fallbackError) {
+        console.error('[Copy case] No clipboard channel worked.', error, fallbackError);
+        return false;
+      }
+    }
+  }
+
+  async function copyFullCase() {
+    const ticketId = getTicketId();
+    if (!ticketId) {
+      bvNotify('Open a ticket first - there is no case to copy here.', { level: 'warn' });
+      return '';
+    }
+
+    let report = '';
+    let viaApi = true;
+
+    try {
+      report = await collectViaApi(ticketId);
+    } catch (error) {
+      console.warn('[Copy case] The Freshdesk API path failed - reading the page instead.', error);
+      viaApi = false;
+      report = await collectViaDom(ticketId);
+    }
+
+    if (!copyToClipboard(report)) return '';
+
+    const messageCount = (report.match(/^--- \d+ /gm) || []).length;
+    bvNotify(
+      viaApi
+        ? 'Case #' + ticketId + ' copied - ' + messageCount + ' messages, the collapsed ones included.'
+        : 'Case #' + ticketId + ' copied from the page only (API unreachable) - may be incomplete.',
+      { level: viaApi ? 'info' : 'warn' }
+    );
+
+    return report;
+  }
+
+  // Feature 8 owns the toolbar button; this is the hook it calls, and it is
+  // also how the copy can be triggered from the console for testing.
+  window.__bvCopyFullCase = copyFullCase;
+})();
 
 /* ============================================================
  * Feature 9b: Compact Freshdesk Conversation Images
