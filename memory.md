@@ -36,11 +36,25 @@ position/shape/z-index, and all three click outcomes (working → tick → rever
 empty-result case). **Mutation-tested**: dropping the isConnected guard, moving `right` to 20px,
 removing the ticket-route guard, and always showing ✅ each fail the checks that name them.
 
-**Position confirmed live** on ticket #352003: the same CSS injected into the real page rendered
-the circle 12px to the left of the `$` float, identical 52×52, `sameBaseline: true`, and a zoomed
-screenshot shows the two side by side. The button itself still has not been clicked through
-Tampermonkey - the browser had 3.49.0 in that tab and 3.50.0 after Sebastian's forced update, so
-3.51.0 needs one more update check before the real click can be confirmed.
+**LIVE-CONFIRMED end to end** on ticket #352003 with 3.51.0 loaded in Tampermonkey: the launcher
+rendered at `{x:1144, y:559, 52x52}` against the refund float's `{x:1208, y:559, 52x52}` - a 12px
+gap on the same baseline - the handler ran through `⏳ (disabled)` → `✅` → `📋`, and the console
+reported `Case #352003 copied - 16 messages, the collapsed ones included`. That number is the
+proof the API path did the work: the page had **one** message rendered and a "+12 conversations"
+block, and 16 = the 15 conversations the API returned plus the description.
+
+**Two automation notes for next time, both cost a while to figure out:**
+
+- `computer left_click` does **not** reach a background tab. Three clicks at the right
+  screenshot coordinates produced no `click` event at all (verified with a capturing listener on
+  `document`), even though `document.elementFromPoint` confirmed the button was the topmost
+  element there. What works instead: `element.click()` from the page console. Tampermonkey's
+  sandbox isolates `window`, **not** DOM nodes, so a listener the userscript attached to an
+  element fires from a page-context click - that is how the real handler was exercised without a
+  real mouse.
+- `navigator.clipboard.readText()` in an unfocused tab **hangs rather than rejecting**, and it
+  took the whole `Runtime.evaluate` down with it (CDP timeout after 45s). Do not try to read the
+  clipboard back for verification; read the `bvNotify` console line instead.
 
 ## Copy the whole case - and the discovery that Freshdesk's REST API needs no key - 3.50.0 (2026-08-21)
 
