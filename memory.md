@@ -2,6 +2,93 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The refund sheets have THREE layouts, and the client chip was missing - 3.53.0 (2026-08-22)
+
+Two reports, one session. The second one turned out to explain a mystery from the day before.
+
+### The client chip: the toolbar never retried its install
+
+Sebastian: "no me está poniendo el tag de cada cliente... el que sale a la par del botón". The chip
+(`#better-freshdesk-case-brand`) lives inside Feature 8's unified toolbar, and **the toolbar was not
+there at all**.
+
+Measured on ticket #352003 with 3.52.0 loaded: `section#mainactionbar`, `.reply-bar-top` and
+`.page-actions__left` all present, the toolbar's own `<style>` tag present - so `installToolbar()`
+had run - and no toolbar element. The single pass from `init()` happens before Freshdesk draws the
+action bar, so it returns early; and **every retry after it was skipped**, because
+`scheduleInstall` opened with `if (document.visibilityState === 'hidden') return;`. A ticket loaded
+in a background tab therefore never got a toolbar, and `window.addEventListener('focus')` did not
+reliably cover switching to it later.
+
+Fixed by deleting that early return (installToolbar is idempotent and cheap) and adding a
+`visibilitychange` listener. **`detectBrand()` was never the problem** - replayed on that ticket it
+resolved SCHN correctly from `document.title` + the mailto/properties text. Do not go looking there.
+
+### The refund log: three column orders, not two
+
+Sebastian: "cada sheet del excel para el refund log tiene formato distinto dependiendo del client".
+Correct, and worse than it looked. All 11 client tabs live in one sheet
+(`1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM`), and their headers, read tab by tab, come in
+**three** shapes:
+
+- `... Refunder | Comments | Date/Week of` - tbl, altitude, rootsport, livgolf, dirt, lnp
+- `... Refunder | Date/Week of | Comments` - msn, vgk, chsn, fox
+- `... Refunder | Date/Week of` (no Comments at all) - **schn**
+
+The code modelled two of these with two unrelated ad-hoc rules: `REFUND_SHEET_DATE_FIRST`
+(msn/vgk/chsn/fox), used only by the open-the-sheet button, and
+`shouldAddBlankColumnBetweenRefunderAndDate()` (schn/livgolf), used only by the copy-row button. So
+**schn was wrong in both paths** - a blank went into "Date/Week of" and the date landed a column
+further right - and the same client could get two different rows depending on which button was
+pressed.
+
+Both are gone. There is now one table, `REFUND_SHEETS`, holding each tab's `gid` and its real
+column order as field names, and one `buildRefundRow(sheetKey)` that both buttons call.
+`refundSheetUrl()` builds the URL from the gid, which also retires eleven copies of the same
+100-character spreadsheet URL.
+
+Note: the altitude and livgolf tabs have **no header text in column A** (it is still the email
+column). Do not "fix" that by shifting the layout.
+
+### Landing on the next free row
+
+The open-the-sheet button used to open at `&range=B1048576` and leave the agent to press Ctrl+Up
+then ArrowDown. It now asks the sheet how long the tab is and opens `&range=A<next>` directly, so
+the only thing left to do is Ctrl+V.
+
+**The query is `select count(B)`, not the sheet contents** - the answer is a single number, so no
+customer data leaves the sheet just to place a cursor. Row 1 is the header, so the first free row is
+**count + 2**; verified against the tbl tab (count 101, data ending on row 102, 103 empty). Any
+failure - offline, timeout, blocked, unparsable - reports 0 and the old landing spot is used, so the
+button never does nothing. `@connect docs.google.com` is new in the header, and the tab is opened
+with `GM_openInTab` because the count is fetched first and the click is no longer a fresh gesture by
+then.
+
+### Verified
+
+`node tests/run-all.js` passes. New `tests/refund-sheet-layout.test.js`, 46 checks, and its core is
+a **fixture of the real header row of all 11 tabs**: each client's encoded layout is compared
+against the headers actually read off the sheet, so a re-ordered tab shows up as a named failure.
+Plus the three shapes spelled out, the defaults (tag `yes`, refunder `Sebastian`, today's date), the
+per-client URL, and every failure path of the row-count fetch. **Mutation-tested**: putting schn
+back on the old wrong layout fails 4 checks, flipping msn fails 3, and `count + 1` instead of
+`count + 2` fails 2.
+
+**Not live-confirmed**: the row-count fetch and the "opens on row N" behaviour have not run through
+Tampermonkey yet - 3.52.0 was the loaded version while this was written. The header data and the
+count arithmetic are real, read from the live sheet.
+
+### Still open from the Case helper work
+
+- **Cowork cannot take a big paste.** The two Case helper sessions are Cowork
+  (`/cowork/<id>`), which 3.52.0's URL validator still rejects - unfixed. Worse, on Cowork the
+  synthetic `ClipboardEvent` does nothing and `execCommand('insertText')` is the only way in, and it
+  **froze the renderer for over 40 seconds on a 172k-character case** (the text did land; clearing
+  it afterwards took another 12s). The classic `/new` composer took the same paste instantly. So
+  Cowork needs either an attachment-style path, a much smaller payload, or chunked insertion -
+  Sebastian's "todo sin cortar" was chosen before this was known and needs revisiting.
+- Esteban's session URL is still unknown.
+
 ## The Case helper sessions are COWORK sessions, not chats - open thread (2026-08-21)
 
 Paused mid-verification. Read this before touching Feature 10/11 again.

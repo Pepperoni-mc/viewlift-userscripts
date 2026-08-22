@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.52.0
+// @version      3.53.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -31,6 +31,7 @@
 // @connect      viewlift.com
 // @connect      viewlift.freshdesk.com
 // @connect      monumentalsportsnetwork.com
+// @connect      docs.google.com
 // ==/UserScript==
 
 (function () {
@@ -1010,21 +1011,39 @@
     syncPing: 'Refund Cross Tab Sync Ping'
   };
 
-  const REFUND_SHEET_URLS = {
-    tbl: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=469886271#gid=469886271',
-    schn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=273386395#gid=273386395',
-    altitude: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=716064238#gid=716064238',
-    msn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=291960457#gid=291960457',
-    vgk: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1160085053#gid=1160085053',
-    chsn: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1893212316#gid=1893212316',
-    fox: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=1677210455#gid=1677210455',
-    rootsport: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=285382536#gid=285382536',
-    livgolf: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=133679065#gid=133679065',
-    dirt: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=735614001#gid=735614001',
-    lnp: 'https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/edit?gid=0#gid=0'
+  const REFUND_SHEET_ID = '1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM';
+
+  // Every client tab starts with the same eight columns and then diverges.
+  // Read off the live sheet on 2026-08-22, tab by tab - there are THREE
+  // shapes, not two, and the old code had schn in the wrong one, so its
+  // date landed a column to the right of "Date/Week of".
+  const REFUND_ROW_BASE = [
+    'email', 'freshdesk', 'cms', 'payment', 'reason', 'tag', 'amount', 'refunder'
+  ];
+
+  const REFUND_LAYOUT_COMMENTS_DATE = REFUND_ROW_BASE.concat(['comments', 'date']);
+  const REFUND_LAYOUT_DATE_COMMENTS = REFUND_ROW_BASE.concat(['date', 'comments']);
+  const REFUND_LAYOUT_DATE_ONLY = REFUND_ROW_BASE.concat(['date']);
+
+  const REFUND_SHEETS = {
+    tbl:       { gid: '469886271',  columns: REFUND_LAYOUT_COMMENTS_DATE },
+    schn:      { gid: '273386395',  columns: REFUND_LAYOUT_DATE_ONLY },
+    altitude:  { gid: '716064238',  columns: REFUND_LAYOUT_COMMENTS_DATE },
+    msn:       { gid: '291960457',  columns: REFUND_LAYOUT_DATE_COMMENTS },
+    vgk:       { gid: '1160085053', columns: REFUND_LAYOUT_DATE_COMMENTS },
+    chsn:      { gid: '1893212316', columns: REFUND_LAYOUT_DATE_COMMENTS },
+    fox:       { gid: '1677210455', columns: REFUND_LAYOUT_DATE_COMMENTS },
+    rootsport: { gid: '285382536',  columns: REFUND_LAYOUT_COMMENTS_DATE },
+    livgolf:   { gid: '133679065',  columns: REFUND_LAYOUT_COMMENTS_DATE },
+    dirt:      { gid: '735614001',  columns: REFUND_LAYOUT_COMMENTS_DATE },
+    lnp:       { gid: '0',          columns: REFUND_LAYOUT_COMMENTS_DATE }
   };
 
-  const REFUND_SHEET_DATE_FIRST = new Set(['msn', 'vgk', 'chsn', 'fox']);
+  function refundSheetUrl(sheetKey) {
+    const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
+    return 'https://docs.google.com/spreadsheets/d/' + REFUND_SHEET_ID +
+      '/edit?gid=' + sheet.gid + '#gid=' + sheet.gid;
+  }
 
   const BLOCKED_EMAILS = [
     'sc-appsupport@spacecityhn.com',
@@ -2002,21 +2021,73 @@
     return '';
   }
 
-  function shouldAddBlankColumnBetweenRefunderAndDate() {
-    const clientKey = getRefundClientKey();
+  // Values by field name, so the row can be laid out in whatever order the
+  // client tab actually uses.
+  function readRefundFields() {
+    const value = id => document.getElementById(id)?.value || '';
 
-    return clientKey === 'schn' || clientKey === 'livgolf';
+    return {
+      email: value('refund-email'),
+      freshdesk: value('refund-freshdesk'),
+      cms: value('refund-cms'),
+      payment: value('refund-payment'),
+      reason: value('refund-reason'),
+      tag: value('refund-tag') || 'yes',
+      amount: value('refund-amount'),
+      refunder: value('refund-refunder') || 'Sebastian',
+      date: value('refund-date') || getTodayShortDate(),
+      // Never filled in by the tool - it is there so the columns after it
+      // line up with the sheet.
+      comments: ''
+    };
+  }
+
+  function buildRefundRow(sheetKey) {
+    const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
+    const fields = readRefundFields();
+    return sheet.columns.map(name => fields[name] ?? '');
   }
 
   function getRefundSheetKey() {
     const detected = detectRefundClientKeyFromText(getRefundClientContextText());
-    if (detected && REFUND_SHEET_URLS[detected]) {
+    if (detected && REFUND_SHEETS[detected]) {
       forceSet(STORAGE_KEYS.client, detected);
       return detected;
     }
 
     const stored = safeGet(STORAGE_KEYS.client, '').toLowerCase();
-    return REFUND_SHEET_URLS[stored] ? stored : 'tbl';
+    return REFUND_SHEETS[stored] ? stored : 'tbl';
+  }
+
+  // How many records the client tab already holds, so the sheet can be
+  // opened ON the next empty row instead of at the bottom of the column
+  // with a Ctrl+Up to follow.
+  //
+  // `select count(B)` rather than the sheet contents on purpose: the answer
+  // is a single number, so no customer data leaves the sheet to work out
+  // where to put the cursor. Row 1 is the header, so the first free row is
+  // count + 2 (verified against the tbl tab: count 101, data ends at 102).
+  function fetchNextRefundRow(sheetKey, onDone) {
+    const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
+    const url = 'https://docs.google.com/spreadsheets/d/' + REFUND_SHEET_ID +
+      '/gviz/tq?tqx=out:csv&gid=' + sheet.gid + '&tq=' + encodeURIComponent('select count(B)');
+
+    try {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        timeout: 8000,
+        onload: function (response) {
+          const match = String(response.responseText || '').match(/"(\d+)"\s*$/);
+          onDone(match ? Number(match[1]) + 2 : 0);
+        },
+        onerror: function () { onDone(0); },
+        ontimeout: function () { onDone(0); }
+      });
+    } catch (error) {
+      console.warn('[Refund] Could not ask the sheet how long it is.', error);
+      onDone(0);
+    }
   }
 
   function getRefundSheetRow() {
@@ -2028,41 +2099,34 @@
       safeDelete(STORAGE_KEYS.payment);
     }
 
-    const base = [
-      document.getElementById('refund-email')?.value || '',
-      document.getElementById('refund-freshdesk')?.value || '',
-      document.getElementById('refund-cms')?.value || '',
-      document.getElementById('refund-payment')?.value || '',
-      document.getElementById('refund-reason')?.value || '',
-      document.getElementById('refund-tag')?.value || 'yes',
-      document.getElementById('refund-amount')?.value || '',
-      document.getElementById('refund-refunder')?.value || 'Sebastian'
-    ];
-    const date = document.getElementById('refund-date')?.value || getTodayShortDate();
     const sheetKey = getRefundSheetKey();
-
-    return {
-      sheetKey,
-      row: REFUND_SHEET_DATE_FIRST.has(sheetKey)
-        ? base.concat(date, '')
-        : base.concat('', date)
-    };
+    return { sheetKey, row: buildRefundRow(sheetKey) };
   }
 
   function copyForRefundSheet() {
     const result = getRefundSheetRow();
-    const sheetUrl = REFUND_SHEET_URLS[result.sheetKey] || REFUND_SHEET_URLS.tbl;
+    const sheetUrl = refundSheetUrl(result.sheetKey);
+    const client = result.sheetKey.toUpperCase();
 
     GM_setClipboard(result.row.join('\t'));
-    // Open at the bottom of the stable Freshdesk ID column. From there,
-    // Ctrl+Up reaches the last non-empty record even when rows are blank.
-    const opened = window.open(`${sheetUrl}&range=B1048576`, '_blank', 'noopener');
-    setStatus(
-      opened
-        ? `Copied for ${result.sheetKey.toUpperCase()} sheet. In column B, press Ctrl+Up, ArrowDown, then Ctrl+V.`
-        : 'Copied. In column B, press Ctrl+Up, ArrowDown, then Ctrl+V.'
-    );
     markAllFieldStates();
+    setStatus('Copied for ' + client + '. Finding the next free row...');
+
+    // GM_openInTab rather than window.open: the row count is fetched first,
+    // so by the time the tab is opened the click that started this is no
+    // longer a fresh user gesture and a popup blocker would eat it.
+    fetchNextRefundRow(result.sheetKey, function (nextRow) {
+      if (nextRow) {
+        GM_openInTab(sheetUrl + '&range=A' + nextRow, { active: true, insert: true });
+        setStatus('Copied for ' + client + '. Opened row ' + nextRow + ' - just press Ctrl+V.');
+        return;
+      }
+
+      // Could not read the length (offline, or the sheet moved): fall back to
+      // the old landing spot, which needs Ctrl+Up + ArrowDown by hand.
+      GM_openInTab(sheetUrl + '&range=B1048576', { active: true, insert: true });
+      setStatus('Copied for ' + client + '. Row count unavailable - in column B press Ctrl+Up, ArrowDown, then Ctrl+V.');
+    });
   }
 
   function markFieldState(field) {
@@ -2253,25 +2317,12 @@
       safeDelete(STORAGE_KEYS.payment);
     }
 
-    const row = [
-      document.getElementById('refund-email').value,
-      document.getElementById('refund-freshdesk').value,
-      document.getElementById('refund-cms').value,
-      document.getElementById('refund-payment').value,
-      document.getElementById('refund-reason').value,
-      document.getElementById('refund-tag').value,
-      document.getElementById('refund-amount').value,
-      document.getElementById('refund-refunder').value
-    ];
-
-    if (shouldAddBlankColumnBetweenRefunderAndDate()) {
-      row.push('');
-    }
-
-    row.push(document.getElementById('refund-date').value);
-
-    GM_setClipboard(row.join('\t'));
-    setStatus('Copied to clipboard.');
+    // Same builder as the "open the sheet" button. These two used to lay the
+    // row out by different rules - one keyed on schn/livgolf, the other on a
+    // date-first set - so the same client could get two different rows.
+    const sheetKey = getRefundSheetKey();
+    GM_setClipboard(buildRefundRow(sheetKey).join('\t'));
+    setStatus('Copied for the ' + sheetKey.toUpperCase() + ' sheet layout.');
     markAllFieldStates();
 
     window.setTimeout(function () {
@@ -8153,7 +8204,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     let timer = null;
     const scheduleInstall = () => {
-      if (document.visibilityState === 'hidden') return;
+      // No visibility check here any more. It used to skip the whole pass
+      // while the tab was hidden, which meant a ticket opened in a
+      // background tab NEVER got a toolbar: the one pass at init() runs
+      // before Freshdesk has drawn the action bar, and every retry after
+      // it was skipped. The client chip lives in this toolbar, so the
+      // visible symptom was "no me pone el tag de cada cliente".
+      // installToolbar() is idempotent and cheap, so just let it run.
       const toolbar = document.getElementById(TOOLBAR_ID);
       // Re-verify the toolbar is still inside the CURRENT action bar, not just
       // "somewhere in the document" - Ember can replace the whole action bar
@@ -8170,6 +8227,13 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     onRouteChange(scheduleInstall);
     window.addEventListener('focus', () => window.setTimeout(installToolbar, 100));
+
+    // focus alone was not enough: switching to a tab that was loaded in the
+    // background is a visibilitychange, and that is exactly the case that
+    // used to come up empty.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') window.setTimeout(installToolbar, 100);
+    });
   }
 
   init();
