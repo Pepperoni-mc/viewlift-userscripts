@@ -2,6 +2,95 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Send the case straight into a Case helper chat - 3.52.0 (2026-08-21)
+
+Sebastian asked for a second button: open Claude in Chrome, open the Case helper project, ask the
+first time whether this is the Esteban chat or the Sebastian chat, then paste the case and send it.
+
+### What is impossible here, established before building anything
+
+**A userscript cannot touch Claude in Chrome's side panel - not even while it is open.** Opening a
+side panel is something only the owning extension can do (`chrome.sidePanel`, off its own action or
+command); page JS has no API for it, and a synthetic `KeyboardEvent` does not fire browser or
+extension commands. And the panel is a `chrome-extension://` document, so its DOM is unreachable
+from the page no matter what it is showing. Sebastian asked specifically "pero si ya lo tengo
+abierto sí puedes?" - no: being open does not move the origin boundary.
+
+What the panel *can* do is read the active tab, which is the seed of an alternative that was
+offered and declined for now: have the button drop the full case into the Freshdesk page itself so
+the panel sees the collapsed messages too. Worth remembering if the tab flow ever annoys him.
+
+### The shape that works
+
+Producer (Freshdesk) → GM storage → consumer (claude.ai). Same pattern as the CMS snapshot queue,
+now across two different hosts, which is why `@match https://claude.ai/*` and `@grant GM_openInTab`
+are new in the header.
+
+- A second float, 🧠 at `right: 148px`, one slot left of 📋. Left click sends, **right click
+  reopens the chat picker**.
+- The two chat URLs are **not hardcoded**: the picker has a field per session, pasted once and kept
+  in GM storage (`betterFreshdeskCaseHelperSessions`), so this survives the chats being replaced.
+  `toSafeClaudeUrl()` validates them the same way the CMS snapshot link is validated - https,
+  claude.ai, and a path that is really `/chat/<id>`, `/project/<id>` or `/new`.
+- The case is **also always copied to the clipboard**, so every failure mode downgrades to "press
+  Ctrl+V" instead of "the case is gone".
+
+### claude.ai, read live on 2026-08-21
+
+- Composer: `div[contenteditable="true"][data-testid="chat-input"]` (TipTap/ProseMirror).
+  Send: `button[data-testid="chat-input-send"]`. Use the test ids, never the Tailwind classes
+  beside them.
+- **`send.disabled` is the whole gate**: true while the composer is empty, false once it has text.
+  It is also how the app says "still streaming the previous answer", so waiting for it to be
+  enabled covers both cases and there is never a reason to click send blind.
+- Both a synthetic `ClipboardEvent('paste')` with a `DataTransfer` **and**
+  `document.execCommand('insertText')` land text in the editor, so the code tries the paste and
+  falls back to insertText. Both turn single newlines into paragraphs - cosmetic only.
+- **A 172k-character paste goes in as plain text**, not as a "pasted text" attachment (measured).
+  So "send the whole case, uncut" - what Sebastian chose - works as-is. Untested: whether claude.ai
+  refuses to *send* a message that large, and a long-running chat can still hit its own context
+  limit.
+
+### Two rules in the consumer worth not undoing
+
+- **At most once.** The queue entry is removed *before* anything is pasted. A missed case is
+  recoverable (it is on the clipboard); a case posted twice into someone's chat is not.
+- **A draft in the composer belongs to the agent.** If there is already text, the case is appended
+  but **not** sent - it says so in the console and waits for a human Enter.
+
+Each entry carries the chat it was queued for and is matched on `location.pathname`, which is what
+keeps a case meant for one session out of the other one's chat, and entries older than 3 minutes
+are purged rather than delivered.
+
+### The hazard that adding a @match created
+
+`@match https://claude.ai/*` means every feature in this file now loads there too, and **three had
+no host guard at all** - Feature 1 (the refund capture panel, which would have drawn its floating
+panel over claude.ai), the refunder-preference patch, and Feature 3 (the Freshdesk CMS button).
+They now each start with
+`if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;`. **Any future
+`@match` needs this audit again** - `awk` over the file for `(function () {` and check the first
+lines of each for a guard.
+
+### Verified
+
+`node tests/run-all.js` passes. `tests/copy-case.test.js` grew to 132 checks (URL validation, the
+session store surviving a corrupt value, both floats installing once and disappearing off a ticket)
+and the new `tests/case-to-claude.test.js` adds 43 (taking the right case once, leaving another
+chat's case alone, the TTL purge, paste → send, the insertText fallback, both-paths-failed,
+draft-not-clobbered, no composer, send stuck disabled). **Mutation-tested**: peeking instead of
+taking, ignoring the target chat, ignoring the TTL, sending over a draft, and clicking send without
+checking `disabled` each fail the checks that name them.
+
+A caution learned the hard way in this session: the mutation loop timed out mid-run and **left a
+mutated script on disk**, which then looked like a mysterious test failure. Restore the pristine
+copy first when a test starts failing for no reason.
+
+**Not live-confirmed yet.** Everything above about claude.ai's DOM is real, measured in the page,
+but 3.52.0 has not run through Tampermonkey: the browser had 3.51.0 loaded. Pending on a real run:
+that the script loads on claude.ai and injects nothing else there, that the picker saves a URL, and
+one end-to-end send into a real chat.
+
 ## The copy-case button is a float, not a toolbar control - 3.51.0 (2026-08-21)
 
 3.50.0 put the 📋 button in Feature 8's unified toolbar, next to the `$`. Sebastian updated,

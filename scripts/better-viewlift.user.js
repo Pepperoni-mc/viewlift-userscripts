@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.51.0
+// @version      3.52.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9,6 +9,7 @@
 // @match        https://cms-gcp.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
 // @match        https://cms.monumentalsportsnetwork.com/*
+// @match        https://claude.ai/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @run-at       document-idle
@@ -21,6 +22,7 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @grant        GM_openInTab
 // @grant        unsafeWindow
 // @connect      cms.viewlift.com
 // @connect      cms-gcp.viewlift.com
@@ -185,6 +187,10 @@
   const BV_CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
   const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
   const BV_CMS_KEEP_ALIVE_STATUS_KEY = 'betterViewliftCmsSessionStatus';
+  // Freshdesk queues a case here, the claude.ai side takes it. Two tabs, two
+  // different hosts, one script - same shape as the CMS snapshot queue.
+  const BV_CASE_TO_CLAUDE_KEY = 'betterFreshdeskCaseToClaude';
+  const BV_CASE_TO_CLAUDE_TTL_MS = 3 * 60 * 1000;
 
   // Diagnostic channel for things worth knowing about (CMS session dying,
   // a lookup falling back to a worse method). Routed to the console -
@@ -977,6 +983,10 @@
 (function () {
   'use strict';
 
+  // claude.ai is a matched host now (Feature 11 delivers cases into a chat
+  // there), and this feature has no business running on it. Guarding here
+  // rather than at the @match keeps the one script.
+  if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   if (window.__refundCaptureToolEnhancedInstalled) {
     return;
   }
@@ -3043,6 +3053,10 @@
 (function () {
   'use strict';
 
+  // claude.ai is a matched host now (Feature 11 delivers cases into a chat
+  // there), and this feature has no business running on it. Guarding here
+  // rather than at the @match keeps the one script.
+  if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   const REFUNDER_PREF_KEY = 'Better CMS Preferred Refunder';
   const REFUNDER_SELECT_ID = 'refund-refunder';
   const VALID_REFUNDERS = ['Sebastian', 'Eric', 'Esteban'];
@@ -8431,6 +8445,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
   const LAUNCHER_ID = 'better-freshdesk-copy-case';
+  const CLAUDE_LAUNCHER_ID = 'better-freshdesk-case-to-claude';
+  const PICKER_ID = 'better-freshdesk-case-helper-picker';
+  const SESSIONS_KEY = 'betterFreshdeskCaseHelperSessions';
+
+  // Two chats inside the Case helper project. The URLs are not hardcoded:
+  // each is pasted once into the picker and kept in GM storage, so this
+  // keeps working when the chats are replaced.
+  const SESSIONS = [
+    { key: 'esteban', label: 'Sesión de Esteban' },
+    { key: 'sebastian', label: 'Sesión de Sebastian' }
+  ];
   const LAUNCHER_STYLE_ID = 'better-freshdesk-copy-case-style';
   const FIELDS_CACHE_KEY = 'betterFreshdeskTicketFieldLabels';
   const AGENTS_CACHE_KEY = 'betterFreshdeskAgentNames';
@@ -8889,6 +8914,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
   }
 
+  // Shared by both launchers: the clipboard one and the send-to-Claude one.
+  async function collectCase(ticketId) {
+    try {
+      return { report: await collectViaApi(ticketId), viaApi: true };
+    } catch (error) {
+      console.warn('[Copy case] The Freshdesk API path failed - reading the page instead.', error);
+      return { report: await collectViaDom(ticketId), viaApi: false };
+    }
+  }
+
   async function copyFullCase() {
     const ticketId = getTicketId();
     if (!ticketId) {
@@ -8896,16 +8931,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return '';
     }
 
-    let report = '';
-    let viaApi = true;
-
-    try {
-      report = await collectViaApi(ticketId);
-    } catch (error) {
-      console.warn('[Copy case] The Freshdesk API path failed - reading the page instead.', error);
-      viaApi = false;
-      report = await collectViaDom(ticketId);
-    }
+    const { report, viaApi } = await collectCase(ticketId);
 
     if (!copyToClipboard(report)) return '';
 
@@ -8920,7 +8946,180 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return report;
   }
 
-  /* ---------- the floating launcher ---------- */
+  /* ---------- Case helper: which chat, and sending to it ---------- */
+
+  function readSessions() {
+    try {
+      const stored = GM_getValue(SESSIONS_KEY, null);
+      if (stored && typeof stored === 'object') {
+        return { chosen: String(stored.chosen || ''), urls: Object.assign({}, stored.urls) };
+      }
+    } catch (error) { /* storage unavailable */ }
+
+    return { chosen: '', urls: {} };
+  }
+
+  function writeSessions(state) {
+    try {
+      GM_setValue(SESSIONS_KEY, state);
+    } catch (error) {
+      console.warn('[Case helper] Could not save the chat choice.', error);
+    }
+  }
+
+  // The stored URL is typed by hand and later opened in a tab, so it is
+  // validated the same way the CMS snapshot link is: https, claude.ai, and a
+  // path that is actually a chat or a project.
+  function toSafeClaudeUrl(value) {
+    const raw = cleanText(value);
+    if (!raw) return '';
+
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'https:') return '';
+      if (url.hostname !== 'claude.ai' && url.hostname !== 'www.claude.ai') return '';
+      if (url.pathname !== '/new' && !/^\/(?:chat|project)\/[^/]+/.test(url.pathname)) return '';
+      return url.href;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function closeSessionPicker() {
+    const picker = document.getElementById(PICKER_ID);
+    if (picker) picker.remove();
+  }
+
+  function openSessionPicker(onChosen) {
+    closeSessionPicker();
+    addLauncherStyles();
+
+    const state = readSessions();
+
+    const overlay = document.createElement('div');
+    overlay.id = PICKER_ID;
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) closeSessionPicker();
+    });
+
+    const card = document.createElement('div');
+    card.className = 'bv-case-helper-card';
+
+    const title = document.createElement('div');
+    title.className = 'bv-case-helper-title';
+    title.textContent = 'Case helper: ¿a qué chat mando el caso?';
+    card.appendChild(title);
+
+    const hint = document.createElement('div');
+    hint.className = 'bv-case-helper-hint';
+    hint.textContent = 'La URL se pega una vez y queda guardada. Click derecho en el botón para volver aquí.';
+    card.appendChild(hint);
+
+    SESSIONS.forEach(session => {
+      const row = document.createElement('div');
+      row.className = 'bv-case-helper-row';
+
+      const label = document.createElement('div');
+      label.className = 'bv-case-helper-label';
+      label.textContent = session.label + (state.chosen === session.key ? ' · actual' : '');
+      row.appendChild(label);
+
+      const input = document.createElement('input');
+      input.type = 'url';
+      input.spellcheck = false;
+      input.placeholder = 'https://claude.ai/chat/...';
+      input.value = state.urls[session.key] || '';
+      row.appendChild(input);
+
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.textContent = 'Guardar y enviar';
+      use.addEventListener('click', () => {
+        const url = toSafeClaudeUrl(input.value);
+        if (!url) {
+          input.dataset.invalid = 'yes';
+          hint.textContent = 'Esa no parece una URL de chat de claude.ai (https://claude.ai/chat/...).';
+          return;
+        }
+
+        const next = readSessions();
+        next.urls[session.key] = url;
+        next.chosen = session.key;
+        writeSessions(next);
+        closeSessionPicker();
+        if (typeof onChosen === 'function') onChosen();
+      });
+      row.appendChild(use);
+
+      card.appendChild(row);
+    });
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  // At most three, and each one carries the chat it is meant for: the
+  // claude.ai side must never paste a case into the wrong chat just because
+  // that tab happened to open first.
+  function queueCaseForClaude(entry) {
+    try {
+      const existing = GM_getValue(BV_CASE_TO_CLAUDE_KEY, null);
+      const queue = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+      queue.push(entry);
+      GM_setValue(BV_CASE_TO_CLAUDE_KEY, queue.slice(-3));
+      return true;
+    } catch (error) {
+      console.error('[Case helper] Could not queue the case for claude.ai.', error);
+      return false;
+    }
+  }
+
+  async function sendCaseToClaude() {
+    const ticketId = getTicketId();
+    if (!ticketId) {
+      bvNotify('Open a ticket first - there is no case to send.', { level: 'warn' });
+      return false;
+    }
+
+    const state = readSessions();
+    const targetUrl = toSafeClaudeUrl(state.urls[state.chosen]);
+    if (!targetUrl) {
+      openSessionPicker(sendCaseToClaude);
+      return false;
+    }
+
+    const { report, viaApi } = await collectCase(ticketId);
+
+    // Also on the clipboard, always: if claude.ai ever renames its composer
+    // and the paste fails, Ctrl+V still gets the job done.
+    copyToClipboard(report);
+
+    if (!queueCaseForClaude({
+      ticketId,
+      report,
+      targetUrl,
+      session: state.chosen,
+      createdAt: Date.now()
+    })) return false;
+
+    try {
+      GM_openInTab(targetUrl, { active: true, insert: true });
+    } catch (error) {
+      console.error('[Case helper] Could not open the chat tab.', error);
+      return false;
+    }
+
+    const messageCount = (report.match(/^--- \d+ /gm) || []).length;
+    bvNotify(
+      'Case #' + ticketId + ' (' + messageCount + ' messages' +
+        (viaApi ? '' : ', read off the page') + ') sent to the ' + state.chosen + ' chat.',
+      { level: 'info' }
+    );
+
+    return true;
+  }
+
+  /* ---------- the floating launchers ---------- */
 
   function isTicketPage() {
     return /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
@@ -8963,12 +9162,126 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         transition: background 140ms ease, transform 140ms ease !important;
       }
 
+      /* One more 52px + 12px gap along, so the row reads
+         [case to Claude] [copy case] [refund]. */
+      #${CLAUDE_LAUNCHER_ID} { right: 148px !important; background: #a8492c !important; }
+      #${CLAUDE_LAUNCHER_ID}:hover { background: #8f3d25 !important; }
+
       #${LAUNCHER_ID}:hover { background: #274e75 !important; }
-      #${LAUNCHER_ID}:active { transform: scale(.94) !important; }
-      #${LAUNCHER_ID}:disabled { opacity: .75 !important; cursor: default !important; }
+
+      #${LAUNCHER_ID}:active,
+      #${CLAUDE_LAUNCHER_ID}:active { transform: scale(.94) !important; }
+
+      #${LAUNCHER_ID}:disabled,
+      #${CLAUDE_LAUNCHER_ID}:disabled { opacity: .75 !important; cursor: default !important; }
+
+      #${PICKER_ID} {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 1000002 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        background: rgba(15, 23, 42, .38) !important;
+        font-family: Arial, sans-serif !important;
+      }
+
+      #${PICKER_ID} .bv-case-helper-card {
+        width: 460px !important;
+        max-width: calc(100vw - 32px) !important;
+        padding: 18px !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        box-shadow: 0 22px 55px rgba(15, 23, 42, .32) !important;
+        color: #17324d !important;
+      }
+
+      #${PICKER_ID} .bv-case-helper-title {
+        font: 700 14px/1.3 Arial, sans-serif !important;
+        margin-bottom: 6px !important;
+      }
+
+      #${PICKER_ID} .bv-case-helper-hint {
+        font: 400 12px/1.45 Arial, sans-serif !important;
+        color: #5a6c7d !important;
+        margin-bottom: 14px !important;
+      }
+
+      #${PICKER_ID} .bv-case-helper-row {
+        display: grid !important;
+        grid-template-columns: 1fr auto !important;
+        gap: 6px 8px !important;
+        margin-bottom: 14px !important;
+      }
+
+      #${PICKER_ID} .bv-case-helper-label {
+        grid-column: 1 / -1 !important;
+        font: 700 12px/1.2 Arial, sans-serif !important;
+      }
+
+      #${PICKER_ID} input {
+        padding: 8px 10px !important;
+        border: 1px solid #d5dbe1 !important;
+        border-radius: 7px !important;
+        font: 400 12px/1.2 Arial, sans-serif !important;
+        color: #17324d !important;
+        background: #ffffff !important;
+      }
+
+      #${PICKER_ID} input[data-invalid="yes"] { border-color: #dc2626 !important; }
+
+      #${PICKER_ID} button {
+        padding: 8px 12px !important;
+        border: none !important;
+        border-radius: 7px !important;
+        background: #2f5f8f !important;
+        color: #ffffff !important;
+        font: 700 12px/1.2 Arial, sans-serif !important;
+        cursor: pointer !important;
+      }
+
+      #${PICKER_ID} button:hover { background: #274e75 !important; }
     `;
 
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  async function onClaudeLauncherClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const button = document.getElementById(CLAUDE_LAUNCHER_ID);
+    if (!button || button.disabled) return;
+
+    const state = readSessions();
+    if (!toSafeClaudeUrl(state.urls[state.chosen])) {
+      // First run: nothing chosen yet, so ask instead of guessing.
+      openSessionPicker(sendCaseToClaude);
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = '⏳';
+
+    let sent = false;
+    try {
+      sent = await sendCaseToClaude();
+    } catch (error) {
+      console.error('[Case helper] Sending the case failed.', error);
+    }
+
+    button.disabled = false;
+    button.textContent = sent ? '✅' : '⚠️';
+    window.setTimeout(() => {
+      const current = document.getElementById(CLAUDE_LAUNCHER_ID);
+      if (current) current.textContent = '🧠';
+    }, 1400);
+  }
+
+  function onClaudeLauncherContextMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    openSessionPicker(sendCaseToClaude);
   }
 
   async function onLauncherClick(event) {
@@ -8998,28 +9311,55 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }, 1400);
   }
 
-  function installLauncher() {
-    const existing = document.getElementById(LAUNCHER_ID);
+  // The handlers are reached through arrows on purpose: this table is built
+  // while the module is still being defined.
+  const LAUNCHERS = [
+    {
+      id: CLAUDE_LAUNCHER_ID,
+      glyph: '🧠',
+      title: 'Send the whole case to the Case helper chat (right-click to change chat)',
+      ariaLabel: 'Send the whole case to a Case helper chat',
+      click: event => onClaudeLauncherClick(event),
+      contextMenu: event => onClaudeLauncherContextMenu(event)
+    },
+    {
+      id: LAUNCHER_ID,
+      glyph: '📋',
+      title: 'Copy the whole case (every message, including the collapsed ones)',
+      ariaLabel: 'Copy the whole case to the clipboard',
+      click: event => onLauncherClick(event)
+    }
+  ];
 
+  function installLauncher() {
     if (!isTicketPage()) {
-      if (existing) existing.remove();
+      LAUNCHERS.forEach(spec => {
+        const stale = document.getElementById(spec.id);
+        if (stale) stale.remove();
+      });
+      closeSessionPicker();
       return;
     }
 
-    if (existing && existing.isConnected) return;
     if (!document.body) return;
 
     addLauncherStyles();
 
-    const button = document.createElement('button');
-    button.id = LAUNCHER_ID;
-    button.type = 'button';
-    button.textContent = '📋';
-    button.title = 'Copy the whole case (every message, including the collapsed ones)';
-    button.setAttribute('aria-label', 'Copy the whole case to the clipboard');
-    button.addEventListener('click', onLauncherClick);
+    LAUNCHERS.forEach(spec => {
+      const existing = document.getElementById(spec.id);
+      if (existing && existing.isConnected) return;
 
-    document.body.appendChild(button);
+      const button = document.createElement('button');
+      button.id = spec.id;
+      button.type = 'button';
+      button.textContent = spec.glyph;
+      button.title = spec.title;
+      button.setAttribute('aria-label', spec.ariaLabel);
+      button.addEventListener('click', spec.click);
+      if (spec.contextMenu) button.addEventListener('contextmenu', spec.contextMenu);
+
+      document.body.appendChild(button);
+    });
   }
 
   onRouteChange(installLauncher);
@@ -10451,6 +10791,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
 (function () {
     'use strict';
+
+    // See the note in Feature 1: claude.ai is a matched host now.
+    if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
 
     const CMS_USERS_URLS = {
         standard: 'https://cms.viewlift.com/users/search',
@@ -12167,4 +12510,213 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     });
 })();
   })();
+
+/* ============================================================
+ * Feature 11: deliver a queued case into a Case helper chat
+ *
+ * The Freshdesk side (Feature 10) collects the case, queues it and opens the
+ * chosen chat in a tab. This is the other end: it takes the case meant for
+ * THIS chat, writes it into the composer and sends it.
+ *
+ * Why a tab and not Claude in Chrome's side panel: the panel is a separate
+ * chrome-extension:// document. A userscript cannot open it (only the
+ * extension itself can), and cannot read or type into it even while it is
+ * open - the origin boundary does not care that it is visible. Verified
+ * 2026-08-21 before building this.
+ * ============================================================ */
+
+if (location.hostname === 'claude.ai' || location.hostname === 'www.claude.ai') {
+
+(function () {
+  'use strict';
+
+  // Both read live off claude.ai on 2026-08-21. data-testid rather than the
+  // Tailwind classes next to them, which are generated and change constantly.
+  const EDITOR_SELECTOR = 'div[contenteditable="true"][data-testid="chat-input"]';
+  const SEND_SELECTOR = 'button[data-testid="chat-input-send"]';
+  const EDITOR_WAIT_MS = 20000;
+  const SEND_WAIT_MS = 15000;
+  const SETTLE_MS = 400;
+
+  function readQueue() {
+    try {
+      let value = GM_getValue(BV_CASE_TO_CLAUDE_KEY, null);
+      if (typeof value === 'string') value = JSON.parse(value);
+      if (!value) return [];
+      return Array.isArray(value) ? value : [value];
+    } catch (error) {
+      console.warn('[Case helper] Could not read the queued case.', error);
+      return [];
+    }
+  }
+
+  function writeQueue(queue) {
+    try {
+      if (queue.length) GM_setValue(BV_CASE_TO_CLAUDE_KEY, queue);
+      else GM_deleteValue(BV_CASE_TO_CLAUDE_KEY);
+    } catch (error) {
+      console.warn('[Case helper] Could not update the case queue.', error);
+    }
+  }
+
+  function pathOf(url) {
+    try {
+      return new URL(url).pathname;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  // TAKEN, not peeked: the entry is removed before anything is pasted, so a
+  // case can be missed but never posted twice. A miss is recoverable - the
+  // Freshdesk side always leaves the same text on the clipboard, so Ctrl+V
+  // finishes the job. A duplicate post into a chat is not recoverable.
+  function takeCaseForThisPage() {
+    const queue = readQueue();
+    const now = Date.now();
+    const fresh = entry => entry && now - Number(entry.createdAt || 0) < BV_CASE_TO_CLAUDE_TTL_MS;
+
+    const index = queue.findIndex(entry =>
+      fresh(entry) && entry.report && pathOf(entry.targetUrl) === location.pathname
+    );
+
+    if (index === -1) {
+      // Still worth dropping anything stale, so a case queued for a tab that
+      // was never opened cannot surface hours later in an unrelated chat.
+      const kept = queue.filter(fresh);
+      if (kept.length !== queue.length) writeQueue(kept);
+      return null;
+    }
+
+    const entry = queue[index];
+    queue.splice(index, 1);
+    writeQueue(queue.filter(fresh));
+    return entry;
+  }
+
+  function waitFor(test, timeoutMs) {
+    return new Promise(resolve => {
+      const started = Date.now();
+
+      const tick = () => {
+        let found = null;
+        try {
+          found = test();
+        } catch (error) {
+          found = null;
+        }
+
+        if (found) { resolve(found); return; }
+        if (Date.now() - started > timeoutMs) { resolve(null); return; }
+        window.setTimeout(tick, 200);
+      };
+
+      tick();
+    });
+  }
+
+  function editorText(editor) {
+    return String(editor.innerText || '').replace(/\u00a0/g, ' ').trim();
+  }
+
+  function settle() {
+    return new Promise(resolve => window.setTimeout(resolve, SETTLE_MS));
+  }
+
+  async function deliver() {
+    const entry = takeCaseForThisPage();
+    if (!entry) return;
+
+    const editor = await waitFor(() => document.querySelector(EDITOR_SELECTOR), EDITOR_WAIT_MS);
+    if (!editor) {
+      console.warn(
+        '[Case helper] The chat composer never appeared. The case is still on the clipboard - Ctrl+V.'
+      );
+      return;
+    }
+
+    // A draft already in the box is the agent's own writing, not ours.
+    const draft = editorText(editor);
+
+    editor.focus();
+    try {
+      const transfer = new DataTransfer();
+      transfer.setData('text/plain', entry.report);
+      editor.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: transfer
+      }));
+    } catch (error) {
+      console.warn('[Case helper] The paste event failed - falling back to insertText.', error);
+    }
+
+    await settle();
+
+    if (editorText(editor) === draft) {
+      // ProseMirror ignored the synthetic paste - one more way in.
+      try {
+        editor.focus();
+        document.execCommand('insertText', false, entry.report);
+      } catch (error) {
+        console.warn('[Case helper] insertText failed too.', error);
+      }
+      await settle();
+    }
+
+    if (editorText(editor) === draft) {
+      console.error(
+        '[Case helper] Nothing landed in the composer - claude.ai may have renamed it. ' +
+        'The case is on the clipboard, paste it with Ctrl+V.'
+      );
+      return;
+    }
+
+    if (draft) {
+      console.warn(
+        '[Case helper] There was already a draft in this chat, so the case was appended but NOT ' +
+        'sent - review it and press Enter yourself.'
+      );
+      return;
+    }
+
+    // Waiting for the button to be ENABLED covers both a composer that has
+    // not registered the text yet and a chat that is still streaming an
+    // earlier answer.
+    const send = await waitFor(() => {
+      const button = document.querySelector(SEND_SELECTOR);
+      return button && !button.disabled ? button : null;
+    }, SEND_WAIT_MS);
+
+    if (!send) {
+      console.warn(
+        '[Case helper] The send button never became clickable. The case is written in the ' +
+        'composer - press Enter yourself.'
+      );
+      return;
+    }
+
+    send.click();
+    console.info('[Case helper] Case #' + entry.ticketId + ' sent to the ' + entry.session + ' chat.');
+  }
+
+  // The route bus, because a tab opened at /chat/<id> gets there only after
+  // the SPA settles - the first pass usually runs before the path is right.
+  onRouteChange(() => { deliver(); });
+
+  // And a direct nudge, for a chat tab that is already open when the button
+  // is clicked on the Freshdesk side.
+  try {
+    if (typeof GM_addValueChangeListener === 'function') {
+      GM_addValueChangeListener(BV_CASE_TO_CLAUDE_KEY, function (_name, _oldValue, _newValue, remote) {
+        if (remote) deliver();
+      });
+    }
+  } catch (error) {
+    console.warn('[Case helper] Could not subscribe to queued cases.', error);
+  }
+})();
+
+}
+
 })();

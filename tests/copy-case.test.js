@@ -77,6 +77,15 @@ const sandbox = `
   ${extractFunction(/function readTextSkippingOurUi/, 'readTextSkippingOurUi')}
   ${extractFunction(/async function collectViaApi/, 'collectViaApi')}
   ${extractConst(/const LAUNCHER_ID = [^\n]+/, 'LAUNCHER_ID')}
+  ${extractConst(/const CLAUDE_LAUNCHER_ID = [^\n]+/, 'CLAUDE_LAUNCHER_ID')}
+  ${extractConst(/const PICKER_ID = [^\n]+/, 'PICKER_ID')}
+  ${extractConst(/const SESSIONS_KEY = [^\n]+/, 'SESSIONS_KEY')}
+  ${extractConst(/const SESSIONS = \[[\s\S]*?\];/, 'SESSIONS')}
+  ${extractFunction(/function readSessions/, 'readSessions')}
+  ${extractFunction(/function writeSessions/, 'writeSessions')}
+  ${extractFunction(/function toSafeClaudeUrl/, 'toSafeClaudeUrl')}
+  ${extractFunction(/function closeSessionPicker/, 'closeSessionPicker')}
+  ${extractConst(/const LAUNCHERS = \[[\s\S]*?\n  \];/, 'LAUNCHERS')}
   ${extractConst(/const LAUNCHER_STYLE_ID = [^\n]+/, 'LAUNCHER_STYLE_ID')}
   ${extractFunction(/function isTicketPage/, 'isTicketPage')}
   ${extractFunction(/function addLauncherStyles/, 'addLauncherStyles')}
@@ -84,6 +93,7 @@ const sandbox = `
   ${extractFunction(/function installLauncher/, 'installLauncher')}
   module.exports = {
     isTicketPage, installLauncher, onLauncherClick, LAUNCHER_ID,
+    readSessions, writeSessions, toSafeClaudeUrl, CLAUDE_LAUNCHER_ID, SESSIONS,
     formatWhen, choicesToIdLabelMap, buildFieldLabels, authorFor, kindFor,
     attachmentLines, buildReport, pagedList, readTextSkippingOurUi, collectViaApi,
     PER_PAGE, MAX_PAGES
@@ -95,12 +105,13 @@ const sandbox = `
 // every payload below sets body_text, which is what the live API returns.
 function load(options) {
   const settings = options || {};
+  const store = settings.store || new Map();
   const mod = { exports: {} };
 
   const args = [
     'module', 'location', 'GM_info', 'htmlToText', 'api',
     'getFieldLabels', 'getAgentNames', 'getGroupName', 'document', 'window',
-    'copyFullCase'
+    'copyFullCase', 'GM_getValue', 'GM_setValue'
   ];
 
   new Function(...args, sandbox)(
@@ -114,7 +125,9 @@ function load(options) {
     settings.getGroupName || (async () => 'A Group'),
     settings.document || null,
     settings.window || { setTimeout: () => 0 },
-    settings.copyFullCase || (async () => 'a report')
+    settings.copyFullCase || (async () => 'a report'),
+    (key, fallback) => (store.has(key) ? store.get(key) : fallback),
+    (key, value) => store.set(key, value)
   );
 
   return mod.exports;
@@ -647,6 +660,94 @@ async function asyncChecks() {
     await api.onLauncherClick({ preventDefault() {}, stopPropagation() {} });
 
     check('an empty result warns too', button.textContent, '\u26A0\uFE0F');
+  }
+  // ---------------------------------------------------------------------------
+  // Case helper: which chat the case gets sent to. The stored URL is typed by
+  // hand and then opened in a tab, so it gets the same treatment as the CMS
+  // snapshot link - validated, not trusted.
+  // ---------------------------------------------------------------------------
+  {
+    const api = load({});
+
+    check(
+      'a chat URL in the project is accepted',
+      api.toSafeClaudeUrl('https://claude.ai/chat/2f8e1c4a-0000-4444-8888-abcdefabcdef'),
+      'https://claude.ai/chat/2f8e1c4a-0000-4444-8888-abcdefabcdef'
+    );
+    check(
+      'a project URL is accepted too - it opens a new chat in the project',
+      /^https:\/\/claude\.ai\/project\//.test(api.toSafeClaudeUrl('https://claude.ai/project/abc123')),
+      true
+    );
+    check('www is accepted', Boolean(api.toSafeClaudeUrl('https://www.claude.ai/chat/abc')), true);
+    check('/new is accepted', Boolean(api.toSafeClaudeUrl('https://claude.ai/new')), true);
+    check('a look-alike host is rejected', api.toSafeClaudeUrl('https://claude.ai.evil.example/chat/abc'), '');
+    check('another host is rejected', api.toSafeClaudeUrl('https://chatgpt.com/c/abc'), '');
+    check('http is rejected', api.toSafeClaudeUrl('http://claude.ai/chat/abc'), '');
+    check('javascript: is rejected', api.toSafeClaudeUrl('javascript:alert(1)'), '');
+    check('the settings page is not a chat', api.toSafeClaudeUrl('https://claude.ai/settings/profile'), '');
+    check('the bare root is not a chat', api.toSafeClaudeUrl('https://claude.ai/'), '');
+    check('a relative path is rejected', api.toSafeClaudeUrl('/chat/abc'), '');
+    check('empty input is rejected', api.toSafeClaudeUrl(''), '');
+  }
+
+  {
+    // The choice survives a reload, and a corrupt value reads as "nothing
+    // chosen" rather than throwing on the click path.
+    const store = new Map();
+    const api = load({ store });
+
+    check('nothing is chosen to begin with', api.readSessions().chosen, '');
+
+    api.writeSessions({ chosen: 'esteban', urls: { esteban: 'https://claude.ai/chat/a' } });
+    check('the chosen session is remembered', api.readSessions().chosen, 'esteban');
+    check('and its URL with it', api.readSessions().urls.esteban, 'https://claude.ai/chat/a');
+    check('the other session stays unset', api.readSessions().urls.sebastian, undefined);
+
+    store.set('betterFreshdeskCaseHelperSessions', 'not an object');
+    check('a corrupt store reads as nothing chosen', api.readSessions().chosen, '');
+    check('and as no URLs', Object.keys(api.readSessions().urls).length, 0);
+
+    check('both sessions are offered', api.SESSIONS.map(entry => entry.key).join(','), 'esteban,sebastian');
+  }
+
+  {
+    // Both floats, in a readable row: [Case helper] [copy] [refund].
+    const dom = fakeDom();
+    const api = load({ document: dom.doc, location: { pathname: '/a/tickets/352003', origin: 'x' } });
+
+    api.installLauncher();
+    api.installLauncher();
+
+    const copy = dom.byId.get('better-freshdesk-copy-case');
+    const claude = dom.byId.get('better-freshdesk-case-to-claude');
+    check('the copy float is there', Boolean(copy), true);
+    check('the Case helper float is there too', Boolean(claude), true);
+    check('and neither is duplicated by a second pass', dom.appended.filter(n => n.tagName === 'BUTTON').length, 2);
+    check('the Case helper one shows the brain', claude && claude.textContent, '\u{1F9E0}');
+    check('right-click is wired, so the chat can be changed', typeof (claude && claude.listeners.contextmenu), 'function');
+    check('its tooltip says how', /right-click/i.test((claude && claude.title) || ''), true);
+
+    const css = dom.styles[0].textContent;
+    check('it sits one slot further left, clear of the copy float', /right: 148px/.test(css), true);
+    check('and is coloured differently', /#a8492c/.test(css), true);
+
+    api.installLauncher();
+    check('still just the two', dom.appended.filter(n => n.tagName === 'BUTTON').length, 2);
+  }
+
+  {
+    // Off a ticket, both go away.
+    const dom = fakeDom();
+    const where = { pathname: '/a/tickets/1', origin: 'x' };
+    const api = load({ document: dom.doc, location: where });
+
+    api.installLauncher();
+    where.pathname = '/a/tickets/filters/all_tickets';
+    api.installLauncher();
+
+    check('the copy float is gone', dom.byId.get('better-freshdesk-copy-case'), undefined);
+    check('and the Case helper float with it', dom.byId.get('better-freshdesk-case-to-claude'), undefined);
   }
 }
 
