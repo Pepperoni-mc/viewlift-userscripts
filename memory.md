@@ -66,7 +66,7 @@ then.
 
 ### Verified
 
-`node tests/run-all.js` passes. New `tests/refund-sheet-layout.test.js`, 46 checks, and its core is
+`node tests/run-all.js` passes. New `tests/refund-sheet-layout.test.js`, 48 checks, and its core is
 a **fixture of the real header row of all 11 tabs**: each client's encoded layout is compared
 against the headers actually read off the sheet, so a re-ordered tab shows up as a named failure.
 Plus the three shapes spelled out, the defaults (tag `yes`, refunder `Sebastian`, today's date), the
