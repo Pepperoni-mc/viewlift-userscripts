@@ -2,6 +2,48 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The Case helper sessions are COWORK sessions, not chats - open thread (2026-08-21)
+
+Paused mid-verification. Read this before touching Feature 10/11 again.
+
+Sebastian's session URL is `https://claude.ai/cowork/cse_01PfZTMrkUr6JFk3NUiTFPAS` (tab title
+"Sesión de Sebastian"; the sidebar also lists "Sesión de Esteban", both under the Case Helper
+project). So the two targets are **Cowork sessions on a `/cowork/<id>` path**, not `/chat/<id>`.
+
+**This is a bug in 3.52.0 as shipped**: `toSafeClaudeUrl()` only accepts `/chat/`, `/project/` and
+`/new`, so it would **reject the real URL** and the picker would keep saying "esa no parece una URL
+de chat". First thing to fix: accept `/cowork/<id>`, with a test.
+
+### Cowork's composer differs from the classic chat - measured live
+
+| | classic `/new` | `/cowork/<id>` |
+|---|---|---|
+| composer | `div[contenteditable="true"][data-testid="chat-input"]` | **same** |
+| synthetic `ClipboardEvent('paste')` | works | **does nothing** |
+| `document.execCommand('insertText')` | works | works |
+| send button | present but `disabled` while empty | **does not exist at all** until the composer has text |
+
+So on Cowork the delivery only lands through the insertText fallback, and the send button has to be
+waited for rather than found. Feature 11 already does both - it tries paste, compares the editor
+text, falls back to insertText, and polls for a send button that exists AND is enabled - so the
+consumer needs no change for Cowork. That was luck as much as design; do not "simplify" either
+fallback away.
+
+### Still to do
+
+1. Accept `/cowork/<id>` in `toSafeClaudeUrl()` + a check for it (and keep rejecting look-alike
+   hosts).
+2. Confirm `execCommand('insertText')` survives a ~170k-character case in Cowork, and how long it
+   takes. On the classic chat a 172k paste went in fine as plain text; the insertText path at that
+   size is **unmeasured** - this was the test that was about to run when the session paused.
+3. Esteban's session URL is still unknown (only Sebastian's was given). The picker asks for each
+   one, so this is not a blocker, just untested.
+4. Force a Tampermonkey update to 3.52.0+ and run it end to end: the script loads on claude.ai and
+   injects nothing else there, the picker saves the URL, and one real send.
+
+Nothing was left in Sebastian's composer - the probes cleared it and the big-payload test never
+ran.
+
 ## Send the case straight into a Case helper chat - 3.52.0 (2026-08-21)
 
 Sebastian asked for a second button: open Claude in Chrome, open the Case helper project, ask the
