@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.53.0
+// @version      3.54.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8105,6 +8105,23 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
   }
 
+  // querySelector finds the Reply button at ANY depth, but insertBefore()
+  // demands a DIRECT child of the container - and Freshdesk nested that
+  // button inside .reply-bar-wrapper-top. The result was an uncaught
+  // NotFoundError on every single install pass, so the toolbar was never
+  // created and the client chip inside it never appeared. Insert next to the
+  // button in ITS OWN parent, which is also where it visually belongs.
+  function insertToolbarBefore(actionBar, toolbar) {
+    const reply = actionBar.querySelector('button[data-test-email-action="reply"]');
+
+    if (reply && reply.parentElement && actionBar.contains(reply)) {
+      reply.parentElement.insertBefore(toolbar, reply);
+      return;
+    }
+
+    actionBar.insertBefore(toolbar, actionBar.firstElementChild || null);
+  }
+
   function installToolbar() {
     addStyles();
     const actionBar = getActionBarWithFallback();
@@ -8114,8 +8131,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (!toolbar) {
       toolbar = document.createElement('div');
       toolbar.id = TOOLBAR_ID;
-      const reply = actionBar.querySelector('button[data-test-email-action="reply"]');
-      actionBar.insertBefore(toolbar, reply || actionBar.firstElementChild || null);
+      insertToolbarBefore(actionBar, toolbar);
     }
 
     let brand = document.getElementById(BRAND_ID);
@@ -8216,9 +8232,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       // "somewhere in the document" - Ember can replace the whole action bar
       // subtree, which would leave a stale toolbar node connected but orphaned
       // from the bar the user actually sees.
+      //
+      // contains(), not a strict parent match: the toolbar is inserted beside
+      // the Reply button, which lives one level down inside the bar, so
+      // requiring it to be a direct child would report "misplaced" forever.
+      const bar = getActionBar();
       if (
         toolbar &&
-        toolbar.parentElement === getActionBar() &&
+        bar &&
+        bar.contains(toolbar) &&
         document.getElementById(BRAND_ID)
       ) return;
       window.clearTimeout(timer);

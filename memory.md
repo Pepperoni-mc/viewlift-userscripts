@@ -2,6 +2,53 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The client chip: the real cause was an uncaught insertBefore - 3.54.0 (2026-08-22)
+
+3.53.0's visibility fix was necessary but **not the cause**, and the chip still did not appear.
+Caught live on ticket #352003 by listening for `error` on the page while the route bus ticked:
+
+```
+Uncaught NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which
+the new node is to be inserted is not a child of this node.
+```
+
+Three times in seven seconds - once per install pass, every pass, silently, since whenever
+Freshdesk last re-nested its action bar.
+
+`installToolbar()` did:
+
+```js
+const reply = actionBar.querySelector('button[data-test-email-action="reply"]');
+actionBar.insertBefore(toolbar, reply || actionBar.firstElementChild || null);
+```
+
+`querySelector` matches at **any depth**; `insertBefore` demands a **direct child**. Freshdesk nests
+the Reply button inside `.page-actions__left.reply-bar-wrapper-top`, so the reference node was a
+grandchild and the call threw before the toolbar was ever appended. Everything inside the toolbar -
+the brand chip, the CMS session dot, the refund toggle - was collateral. This is also why the 📋
+button was invisible in 3.50.0 when it still lived in the toolbar, and why the refund panel was
+still floating loose (`mountRefundPanel` is the line after the throw).
+
+Now `insertToolbarBefore()` inserts the toolbar into the Reply button's **own parent**, right before
+it - which is where it visually belongs anyway - and falls back to the front of the bar when there
+is no Reply button (Feature 6 removes it on some pages) or the bar is empty. `scheduleInstall`'s
+placement check had to become `bar.contains(toolbar)` instead of `toolbar.parentElement === bar`, or
+it would report the toolbar misplaced forever and reinstall on every tick.
+
+**The lesson worth keeping**: a throw inside a function called from a timer or a route-change
+listener is invisible in normal use - no toast, nothing on screen, and the feature just quietly does
+not exist. When a whole feature is missing rather than misbehaving, attach an `error` listener from
+the page console and let the retry loop run for a few seconds before reading any code.
+
+`detectBrand()` was never at fault - replayed on that ticket it resolved SCHN correctly.
+
+**Verified**: `node tests/run-all.js` passes. New `tests/toolbar-placement.test.js`, 16 checks over
+the real nested shape, deeper nesting, a direct-child Reply button, no Reply button, an empty bar,
+and a Reply button outside the bar. Its fake `insertBefore` **enforces the direct-child rule and
+throws like a browser**, which is what lets it tell the old code from the new: restoring the
+original two lines fails the first two checks. **Not yet live-confirmed** - the browser had 3.53.0
+while this was written.
+
 ## The refund sheets have THREE layouts, and the client chip was missing - 3.53.0 (2026-08-22)
 
 Two reports, one session. The second one turned out to explain a mystery from the day before.
