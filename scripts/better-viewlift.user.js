@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.54.0
+// @version      3.55.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -1981,7 +1981,6 @@
     const values = [
       location.href,
       document.title,
-      safeGet(STORAGE_KEYS.client, ''),
       safeGet(STORAGE_KEYS.email, ''),
       safeGet(STORAGE_KEYS.activeEmail, ''),
       safeGet(STORAGE_KEYS.cms, ''),
@@ -9221,11 +9220,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const style = document.createElement('style');
     style.id = LAUNCHER_STYLE_ID;
     style.textContent = `
-      #${LAUNCHER_ID} {
+      #${LAUNCHER_ID}, #${CLAUDE_LAUNCHER_ID} {
         position: fixed !important;
-        /* The refund panel's own float is right:20px/bottom:20px and 52px
-           wide when minimized, so this sits one 12px gap to its left and
-           matches its shape. */
+        /* 20px from the corner, then one 52px + 12px step per button. The
+           refund panel used to float here too, which is where these
+           measurements come from; it now mounts inline under the toolbar,
+           so the corner is theirs. */
         right: 84px !important;
         bottom: 20px !important;
         width: 52px !important;

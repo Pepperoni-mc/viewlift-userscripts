@@ -730,6 +730,15 @@ async function asyncChecks() {
 
     const css = dom.styles[0].textContent;
     check('it sits one slot further left, clear of the copy float', /right: 148px/.test(css), true);
+    // The gap this closes: the base rule named only the copy button, so the
+    // Case helper one rendered as a bare inline <button> at the bottom of the
+    // page. Both ids have to be in the rule that makes them floats.
+    check(
+      'both floats are in the rule that positions them',
+      css.indexOf('#better-freshdesk-copy-case, #better-freshdesk-case-to-claude {') !== -1 &&
+        /position: fixed/.test(css),
+      true
+    );
     check('and is coloured differently', /#a8492c/.test(css), true);
 
     api.installLauncher();

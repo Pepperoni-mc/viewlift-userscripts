@@ -2,6 +2,72 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Live test day: the chip works, and it exposed two more bugs - 3.55.0 (2026-08-22)
+
+3.54.0's `insertBefore` fix is **confirmed live** on ticket #352003: no errors on the page, the
+toolbar sits inside the action bar immediately before the Reply button, all six controls present,
+and the chip reads `SCHN` / `data-brand="SCHN"` / "Case client: SCHN". In a **hidden** tab, which is
+the harder case.
+
+Fixing it surfaced two things that had been hidden behind it.
+
+### 1. The refund panel is not a corner float any more
+
+`mountRefundPanel()` is the line right after the old throw, so it had never run. Now that it does,
+`#refund-capture-panel` is moved **into the toolbar** as the inline panel it was designed to be
+(absolute, under the toolbar, opened by the `$` button). The bottom-right `$` circle is gone.
+
+Which means the 📋 and 🧠 floats no longer sit "beside the refund float" - they own that corner
+alone now. Their coordinates (right 84 / 148, bottom 20) are unchanged and still fine, but the
+reason written next to them was stale and has been corrected. Worth asking Sebastian whether he
+wants them moved into the corner properly (20 / 84) now that nothing else is there.
+
+### 2. The 🧠 float had no CSS at all
+
+Rendered as a bare inline `<button>`: `position: static`, 31x23px, at the bottom of the page. The
+base rule that makes these buttons floats named only `#${LAUNCHER_ID}`; the Case helper button had
+its own follow-up rule with just `right` and `background`, which inherits nothing. Both ids are in
+the base rule now.
+
+**The test had checked `right: 148px` and the colour and passed happily** - it never checked that the
+button was positioned at all. A rendered box is the only thing that catches this class of bug; there
+is now a check that both ids appear in the `position: fixed` rule.
+
+### 3. The refund client detector was reading its own answer back in
+
+The live run said **"Copied for LIVGOLF. Opened row 167"** on a **SCHN** ticket, with the chip on the
+same page reading SCHN.
+
+`getRefundClientContextText()` included `safeGet(STORAGE_KEYS.client, '')` - the panel's own stored
+client - in the text handed to `detectRefundClientKeyFromText()`, and **livgolf is the first rule
+tested**. So one LIV Golf refund put "livgolf" in storage, which put it in the context, which matched
+first, which stored it again. Every ticket after that was LIVGOLF forever, and would have been filed
+in the wrong client's tab of the refund log.
+
+The stored key is out of the context. The page evidence stays (title, mailto addresses, the brand
+chip, the captured email/CMS URL), and `getRefundSheetKey()` still has its own **explicit** stored
+fallback for when detection genuinely finds nothing - that part is deliberate and is not the same
+thing as feeding it back in as evidence.
+
+**This is the third time this exact shape has bitten this project**: 3.47.0 (the CMS button routing
+by the saved view name), and now this. Anything that is not record data - navigation chrome, a
+cache, our own previous output - must not be an input to detection.
+
+### Also confirmed live in the refund flow
+
+`select count(B)` → open at `&range=A<next>` works end to end: the status line read "Opened row 167 -
+just press Ctrl+V" and the tab opened there. The row-count arithmetic and the per-client tab are
+real. What is still **not** live-confirmed is the row landing in the right columns for schn (the
+layout fix) - that needs an actual paste, which means writing to the production log.
+
+### Verified
+
+`node tests/run-all.js` passes. New `tests/refund-client-detection.test.js` (19 checks) with the
+live situation as its centrepiece: a SCHN page plus `livgolf` in storage must detect schn, and the
+mirror case so the fix is not just "livgolf can never win". **Mutation-tested**: putting the stored
+key back in the context fails 3 checks; naming only one id in the float rule fails the new CSS
+check; restoring the old `insertBefore` fails 2 placement checks.
+
 ## The client chip: the real cause was an uncaught insertBefore - 3.54.0 (2026-08-22)
 
 3.53.0's visibility fix was necessary but **not the cause**, and the chip still did not appear.
