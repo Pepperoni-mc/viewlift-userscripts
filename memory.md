@@ -30,7 +30,7 @@ No action bar, no visibility condition.
 - The button remains the only feedback (bvNotify is console-only): ⏳ + disabled while working,
   ✅ or ⚠️ for 1.4s, then back to 📋.
 
-**Verified**: `node tests/run-all.js` passes; `tests/copy-case.test.js` is now 100 checks, the new
+**Verified**: `node tests/run-all.js` passes; `tests/copy-case.test.js` is now 102 checks, the new
 ones covering install-once under repeated route changes, the removal off a ticket route, the
 position/shape/z-index, and all three click outcomes (working → tick → revert, thrown, and the
 empty-result case). **Mutation-tested**: dropping the isConnected guard, moving `right` to 20px,
