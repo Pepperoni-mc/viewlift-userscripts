@@ -76,7 +76,14 @@ const sandbox = `
   ${extractFunction(/async function pagedList/, 'pagedList')}
   ${extractFunction(/function readTextSkippingOurUi/, 'readTextSkippingOurUi')}
   ${extractFunction(/async function collectViaApi/, 'collectViaApi')}
+  ${extractConst(/const LAUNCHER_ID = [^\n]+/, 'LAUNCHER_ID')}
+  ${extractConst(/const LAUNCHER_STYLE_ID = [^\n]+/, 'LAUNCHER_STYLE_ID')}
+  ${extractFunction(/function isTicketPage/, 'isTicketPage')}
+  ${extractFunction(/function addLauncherStyles/, 'addLauncherStyles')}
+  ${extractFunction(/async function onLauncherClick/, 'onLauncherClick')}
+  ${extractFunction(/function installLauncher/, 'installLauncher')}
   module.exports = {
+    isTicketPage, installLauncher, onLauncherClick, LAUNCHER_ID,
     formatWhen, choicesToIdLabelMap, buildFieldLabels, authorFor, kindFor,
     attachmentLines, buildReport, pagedList, readTextSkippingOurUi, collectViaApi,
     PER_PAGE, MAX_PAGES
@@ -92,18 +99,22 @@ function load(options) {
 
   const args = [
     'module', 'location', 'GM_info', 'htmlToText', 'api',
-    'getFieldLabels', 'getAgentNames', 'getGroupName'
+    'getFieldLabels', 'getAgentNames', 'getGroupName', 'document', 'window',
+    'copyFullCase'
   ];
 
   new Function(...args, sandbox)(
     mod,
-    { origin: 'https://viewlift.freshdesk.com' },
+    settings.location || { origin: 'https://viewlift.freshdesk.com' },
     { script: { version: '9.9.9' } },
     html => (html ? '(html body)' : ''),
     settings.api || (() => { throw new Error('api() should not be called here'); }),
     settings.getFieldLabels || (async () => ({ status: {}, priority: {}, custom: {} })),
     settings.getAgentNames || (async () => ({})),
-    settings.getGroupName || (async () => 'A Group')
+    settings.getGroupName || (async () => 'A Group'),
+    settings.document || null,
+    settings.window || { setTimeout: () => 0 },
+    settings.copyFullCase || (async () => 'a report')
   );
 
   return mod.exports;
@@ -450,6 +461,50 @@ async function asyncChecks() {
     return { nodeType: 3, nodeValue: value };
   }
 
+  // Enough of a document for installLauncher/addLauncherStyles: an id only
+  // resolves once something has actually been appended, which is what makes
+  // the install-once checks below mean anything.
+  function fakeDom() {
+    const byId = new Map();
+    const appended = [];
+    const styles = [];
+
+    const make = tag => ({
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      type: '',
+      title: '',
+      textContent: '',
+      disabled: false,
+      isConnected: false,
+      attrs: {},
+      listeners: {},
+      classList: [],
+      childNodes: [],
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(type, handler) { this.listeners[type] = handler; },
+      appendChild(node) {
+        node.isConnected = true;
+        appended.push(node);
+        if (node.id) byId.set(node.id, node);
+        if (node.tagName === 'STYLE') styles.push(node);
+        return node;
+      },
+      remove() { this.isConnected = false; byId.delete(this.id); }
+    });
+
+    const doc = {
+      body: make('body'),
+      head: make('head'),
+      documentElement: make('html'),
+      createElement: make,
+      getElementById: id => byId.get(id) || null
+    };
+
+    return { doc, byId, appended, styles };
+  }
+
   {
     const api = load();
 
@@ -471,6 +526,127 @@ async function asyncChecks() {
     check('stylesheet text is not copied', read.indexOf('color:red'), -1);
     check('block elements become line breaks', read, 'Customer says hello\nand then this');
     check('a missing root reads as empty', api.readTextSkippingOurUi(null), '');
+  }
+
+  // ---------------------------------------------------------------------------
+  // The floating launcher. It installs from onRouteChange, which fires on every
+  // mutation burst and on a 5s tick, so "install exactly once" is the whole
+  // game - and it has to sit beside the refund panel's float, not on top of it.
+  // ---------------------------------------------------------------------------
+  {
+    const dom = fakeDom();
+    const where = { pathname: '/a/tickets/352003', origin: 'https://viewlift.freshdesk.com' };
+    const api = load({ document: dom.doc, location: where });
+
+    api.installLauncher();
+    api.installLauncher();
+    api.installLauncher();
+
+    const button = dom.byId.get('better-freshdesk-copy-case');
+    check('the launcher is added', Boolean(button), true);
+    check(
+      'repeated route-change passes do not stack copies of it',
+      dom.appended.filter(node => node.id === 'better-freshdesk-copy-case').length,
+      1
+    );
+    check('nor copies of its stylesheet', dom.styles.length, 1);
+    check('it is a real button, not a div', button && button.tagName, 'BUTTON');
+    check('type=button, so it cannot submit anything', button && button.type, 'button');
+    check('it shows the clipboard glyph', button && button.textContent, '\u{1F4CB}');
+    check('it says what it does on hover', /every message/.test((button && button.title) || ''), true);
+    check('and to a screen reader', Boolean(button && button.attrs['aria-label']), true);
+    check('it is wired to a click handler', typeof (button && button.listeners.click), 'function');
+
+    const css = dom.styles[0].textContent;
+    check('it floats rather than sitting in a container', /position: fixed/.test(css), true);
+    check('one 12px gap left of the refund float (20 + 52 + 12)', /right: 84px/.test(css), true);
+    check('sharing its baseline', /bottom: 20px/.test(css), true);
+    check('and its round 52px shape', /border-radius: 999px/.test(css) && /width: 52px/.test(css), true);
+    check('it sits one layer under the refund panel rather than fighting it', /z-index: 999998/.test(css), true);
+  }
+
+  {
+    // Off a ticket there is no case to copy, and a leftover button would copy
+    // whichever one was open before.
+    const dom = fakeDom();
+    const where = { pathname: '/a/tickets/352003', origin: 'x' };
+    const api = load({ document: dom.doc, location: where });
+
+    api.installLauncher();
+    check('present on a ticket', Boolean(dom.byId.get('better-freshdesk-copy-case')), true);
+
+    where.pathname = '/a/tickets/filters/all_tickets';
+    api.installLauncher();
+    check('removed again on the ticket list', dom.byId.get('better-freshdesk-copy-case'), undefined);
+
+    check('the list page is not mistaken for a ticket', api.isTicketPage(), false);
+    where.pathname = '/a/tickets/352003/notes';
+    check('a sub-route of a ticket still counts', api.isTicketPage(), true);
+    where.pathname = '/a/contacts/9';
+    check('a contact page does not', api.isTicketPage(), false);
+  }
+
+  {
+    const dom = fakeDom();
+    const where = { pathname: '/a/tickets/352003', origin: 'x' };
+    const timeouts = [];
+    let seenWhileWorking = '';
+
+    const api = load({
+      document: dom.doc,
+      location: where,
+      window: { setTimeout: (fn) => { timeouts.push(fn); return timeouts.length; } },
+      copyFullCase: async () => {
+        const live = dom.byId.get('better-freshdesk-copy-case');
+        seenWhileWorking = live.textContent + (live.disabled ? ':disabled' : ':enabled');
+        return 'a report';
+      }
+    });
+
+    api.installLauncher();
+    const button = dom.byId.get('better-freshdesk-copy-case');
+    const noop = { preventDefault() {}, stopPropagation() {} };
+
+    await api.onLauncherClick(noop);
+    check('it shows it is working, and cannot be double-clicked', seenWhileWorking, '\u23F3:disabled');
+    check('a successful copy ticks', button.textContent, '\u2705');
+    check('and it is clickable again', button.disabled, false);
+    check('the tick is scheduled to revert', timeouts.length, 1);
+    timeouts[0]();
+    check('back to the clipboard glyph', button.textContent, '\u{1F4CB}');
+  }
+
+  {
+    // A failed copy must not look like a successful one.
+    const dom = fakeDom();
+    const api = load({
+      document: dom.doc,
+      location: { pathname: '/a/tickets/1', origin: 'x' },
+      copyFullCase: async () => { throw new Error('HTTP 500'); }
+    });
+
+    api.installLauncher();
+    const button = dom.byId.get('better-freshdesk-copy-case');
+    await api.onLauncherClick({ preventDefault() {}, stopPropagation() {} });
+
+    check('a thrown copy warns instead of ticking', button.textContent, '\u26A0\uFE0F');
+    check('and the button is usable again', button.disabled, false);
+  }
+
+  {
+    // copyFullCase returns '' when it could not reach the clipboard.
+    const dom = fakeDom();
+    const api = load({
+      document: dom.doc,
+      location: { pathname: '/a/tickets/1', origin: 'x' },
+      copyFullCase: async () => ''
+    });
+
+    api.installLauncher();
+    const button = dom.byId.get('better-freshdesk-copy-case');
+    await api.onLauncherClick({ preventDefault() {}, stopPropagation() {} });
+
+    check('an empty result warns too', button.textContent, '\u26A0\uFE0F');
   }
 }
 

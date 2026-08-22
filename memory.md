@@ -2,6 +2,46 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The copy-case button is a float, not a toolbar control - 3.51.0 (2026-08-21)
+
+3.50.0 put the 📋 button in Feature 8's unified toolbar, next to the `$`. Sebastian updated,
+looked for it and asked "¿dónde está el botón?" - then asked for it floating beside the refund
+capture float instead.
+
+**Why it was missing, and why the toolbar was the wrong home for it:** `installToolbar()` only
+runs when its action-bar container exists, and `scheduleInstall` returns early while
+`document.visibilityState === 'hidden'`. Two independent ways to end up with no button. On the
+live page the refund panel was still parented to `<body>` as its own 52px float
+(`#refund-capture-panel`, `position: fixed; right: 20px; bottom: 20px; z-index: 999999`,
+`.is-minimized` making it a circle) - which is itself the tell that `mountRefundPanel()` had not
+run either, because that would have moved it into the toolbar.
+
+So Feature 10 now installs its own launcher: a 52px round button appended to `<body>` at
+`right: 84px; bottom: 20px` - one 12px gap left of the refund float, same size, same baseline.
+No action bar, no visibility condition.
+
+- `z-index: 999998`, deliberately **one under** the refund panel: when that panel is expanded to
+  its full 372px it should cover this button rather than fight it for the same corner.
+- Installed from `onRouteChange`, which fires on every mutation burst and on a 5s tick, so
+  `installLauncher()` is idempotent (`existing && existing.isConnected` → return) and removes
+  itself off a ticket route. A stacking bug here would add a button every few seconds.
+- Feature 8 now also deletes a stale `#better-freshdesk-copy-case` left inside the toolbar by
+  3.50.0, the same way it cleans up the other retired controls.
+- The button remains the only feedback (bvNotify is console-only): ⏳ + disabled while working,
+  ✅ or ⚠️ for 1.4s, then back to 📋.
+
+**Verified**: `node tests/run-all.js` passes; `tests/copy-case.test.js` is now 100 checks, the new
+ones covering install-once under repeated route changes, the removal off a ticket route, the
+position/shape/z-index, and all three click outcomes (working → tick → revert, thrown, and the
+empty-result case). **Mutation-tested**: dropping the isConnected guard, moving `right` to 20px,
+removing the ticket-route guard, and always showing ✅ each fail the checks that name them.
+
+**Position confirmed live** on ticket #352003: the same CSS injected into the real page rendered
+the circle 12px to the left of the `$` float, identical 52×52, `sameBaseline: true`, and a zoomed
+screenshot shows the two side by side. The button itself still has not been clicked through
+Tampermonkey - the browser had 3.49.0 in that tab and 3.50.0 after Sebastian's forced update, so
+3.51.0 needs one more update check before the real click can be confirmed.
+
 ## Copy the whole case - and the discovery that Freshdesk's REST API needs no key - 3.50.0 (2026-08-21)
 
 Sebastian asked for a button that copies **everything** about a case to the clipboard, explicitly

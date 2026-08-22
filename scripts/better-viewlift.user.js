@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.50.0
+// @version      3.51.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7692,7 +7692,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
-  const COPY_CASE_ID = 'better-freshdesk-copy-case';
   const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
 
@@ -7771,7 +7770,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         50% { opacity: .35; }
       }
 
-      #${REFUND_TOGGLE_ID}, #${COPY_CASE_ID} {
+      #${REFUND_TOGGLE_ID} {
         display: inline-flex !important;
         align-items: center !important;
         justify-content: center !important;
@@ -7798,22 +7797,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       #${REFUND_TOGGLE_ID}:active {
         background: #11543b !important;
         border-color: #11543b !important;
-      }
-
-      #${COPY_CASE_ID} {
-        border-color: #2f5f8f !important;
-        background: #2f5f8f !important;
-        font-size: 15px !important;
-      }
-
-      #${COPY_CASE_ID}:hover {
-        background: #274e75 !important;
-        border-color: #274e75 !important;
-      }
-
-      #${COPY_CASE_ID}:disabled {
-        opacity: .7 !important;
-        cursor: default !important;
       }
 
       #${BRAND_ID} {
@@ -8100,40 +8083,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       });
     }
 
-    let copyCase = document.getElementById(COPY_CASE_ID);
-    if (!copyCase) {
-      copyCase = makeButton(
-        COPY_CASE_ID,
-        '📋',
-        'Copy the whole case (every message, including the collapsed ones)'
-      );
-      copyCase.addEventListener('click', async event => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (copyCase.disabled) return;
-        if (typeof window.__bvCopyFullCase !== 'function') return;
-
-        // The copy takes a couple of API round-trips, and bvNotify only
-        // reaches the console now that the toasts are gone - so the button
-        // itself has to be the feedback.
-        const idle = copyCase.textContent;
-        copyCase.disabled = true;
-        copyCase.textContent = '⏳';
-
-        let copied = '';
-        try {
-          copied = await window.__bvCopyFullCase();
-        } catch (error) {
-          console.error('[Better ViewLift] Copy case failed.', error);
-        }
-
-        copyCase.disabled = false;
-        copyCase.textContent = copied ? '✅' : '⚠️';
-        window.setTimeout(() => { copyCase.textContent = idle; }, 1400);
-      });
-    }
-
     let cmsSessionDot = document.getElementById(CMS_SESSION_DOT_ID);
     if (!cmsSessionDot) {
       cmsSessionDot = document.createElement('span');
@@ -8156,8 +8105,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     document.getElementById('better-freshdesk-refund-launcher')?.remove();
     document.getElementById('better-freshdesk-generate-toggle')?.remove();
     document.getElementById('better-freshdesk-generate-panel')?.remove();
+    if (document.getElementById(TOOLBAR_ID)?.querySelector('#better-freshdesk-copy-case')) {
+      document.getElementById('better-freshdesk-copy-case').remove();
+    }
 
-    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle, copyCase].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -8478,6 +8430,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
+  const LAUNCHER_ID = 'better-freshdesk-copy-case';
+  const LAUNCHER_STYLE_ID = 'better-freshdesk-copy-case-style';
   const FIELDS_CACHE_KEY = 'betterFreshdeskTicketFieldLabels';
   const AGENTS_CACHE_KEY = 'betterFreshdeskAgentNames';
   const GROUPS_CACHE_KEY = 'betterFreshdeskGroupNames';
@@ -8966,8 +8920,112 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return report;
   }
 
-  // Feature 8 owns the toolbar button; this is the hook it calls, and it is
-  // also how the copy can be triggered from the console for testing.
+  /* ---------- the floating launcher ---------- */
+
+  function isTicketPage() {
+    return /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
+  }
+
+  // Deliberately NOT in Feature 8's unified toolbar, where this button started:
+  // that toolbar only mounts once its action-bar container exists AND the tab
+  // is visible, so the button was missing exactly when it was wanted. A float
+  // parented to <body> has neither dependency.
+  function addLauncherStyles() {
+    if (document.getElementById(LAUNCHER_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = LAUNCHER_STYLE_ID;
+    style.textContent = `
+      #${LAUNCHER_ID} {
+        position: fixed !important;
+        /* The refund panel's own float is right:20px/bottom:20px and 52px
+           wide when minimized, so this sits one 12px gap to its left and
+           matches its shape. */
+        right: 84px !important;
+        bottom: 20px !important;
+        width: 52px !important;
+        height: 52px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0 !important;
+        border: none !important;
+        border-radius: 999px !important;
+        background: #2f5f8f !important;
+        color: #ffffff !important;
+        font-size: 22px !important;
+        line-height: 1 !important;
+        cursor: pointer !important;
+        box-shadow: 0 12px 28px rgba(11, 92, 171, .34) !important;
+        /* One below the refund panel: when that one is expanded to its full
+           372px it should cover this, not fight it for the same corner. */
+        z-index: 999998 !important;
+        transition: background 140ms ease, transform 140ms ease !important;
+      }
+
+      #${LAUNCHER_ID}:hover { background: #274e75 !important; }
+      #${LAUNCHER_ID}:active { transform: scale(.94) !important; }
+      #${LAUNCHER_ID}:disabled { opacity: .75 !important; cursor: default !important; }
+    `;
+
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  async function onLauncherClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const button = document.getElementById(LAUNCHER_ID);
+    if (!button || button.disabled) return;
+
+    // The copy takes a couple of API round-trips, and bvNotify only reaches the
+    // console now that the toasts are gone - so the button is the feedback.
+    button.disabled = true;
+    button.textContent = '⏳';
+
+    let copied = '';
+    try {
+      copied = await copyFullCase();
+    } catch (error) {
+      console.error('[Copy case] Failed.', error);
+    }
+
+    button.disabled = false;
+    button.textContent = copied ? '✅' : '⚠️';
+    window.setTimeout(() => {
+      const current = document.getElementById(LAUNCHER_ID);
+      if (current) current.textContent = '📋';
+    }, 1400);
+  }
+
+  function installLauncher() {
+    const existing = document.getElementById(LAUNCHER_ID);
+
+    if (!isTicketPage()) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    if (existing && existing.isConnected) return;
+    if (!document.body) return;
+
+    addLauncherStyles();
+
+    const button = document.createElement('button');
+    button.id = LAUNCHER_ID;
+    button.type = 'button';
+    button.textContent = '📋';
+    button.title = 'Copy the whole case (every message, including the collapsed ones)';
+    button.setAttribute('aria-label', 'Copy the whole case to the clipboard');
+    button.addEventListener('click', onLauncherClick);
+
+    document.body.appendChild(button);
+  }
+
+  onRouteChange(installLauncher);
+
+  // Also the hook Feature 8's old toolbar button used, and how the copy can be
+  // triggered from the console.
   window.__bvCopyFullCase = copyFullCase;
 })();
 
