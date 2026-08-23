@@ -58,7 +58,7 @@ and the old validator rejected exactly the URL it was given.
 
 ### Verified
 
-`node tests/run-all.js` passes. New `tests/brand-chip.test.js` (39 checks) and a new section in
+`node tests/run-all.js` passes. New `tests/brand-chip.test.js` (25 checks) and a new section in
 `tests/brand-routing.test.js` (15), both driven by the table above, including a check that no brand's
 real name is claimed by another brand's rule - first match wins, so shadowing is a live risk.
 **Mutation-tested**: removing the TBL chip rule, the `\btbl\b` CMS token, the Tampa domain, the SCHN
