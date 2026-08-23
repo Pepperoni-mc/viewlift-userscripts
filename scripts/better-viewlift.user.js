@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.55.0
+// @version      3.56.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7759,12 +7759,19 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const CMS_SESSION_DOT_ID = 'better-freshdesk-cms-session-dot';
   const STYLE_ID = 'better-freshdesk-unified-toolbar-style';
 
+  // Client names as Freshdesk actually stores them in cf_b2b_client_name,
+  // read off the API on 2026-08-22: "TBL B2C", "SCHN+ B2C", "Altitude B2C",
+  // "LivGolf B2C", "DIRTVision B2C", "MSN B2C (Monumental Sports Network)".
+  // Tampa is "TBL" everywhere - the words "tampa" and "lightning" only turn
+  // up in some subjects - which is why matching on them alone left every TBL
+  // ticket reading "CASE".
   const BRAND_RULES = [
+    { label: 'TBL', patterns: [/\btbl\b/i, /tampa\s*bay/i, /tampabaylightning/i, /\blightning\b/i] },
     { label: 'LIV', patterns: [/liv\s*golf/i, /livgolf/i, /livgolfplus\.com/i] },
     { label: 'DIRT', patterns: [/dirtvision/i, /dirt\s*vision/i, /dirtvision\.com/i] },
     { label: 'ALTITUDE', patterns: [/altitude/i, /altitudeplus/i] },
     { label: 'MSN', patterns: [/monumental\s*sports/i, /msn\b/i, /monumentalsportsnetwork/i] },
-    { label: 'SCHN', patterns: [/space\s*city/i, /spacecityhn/i, /sc-appsupport/i] },
+    { label: 'SCHN', patterns: [/\bschn\b/i, /space\s*city/i, /spacecityhn/i, /sc-appsupport/i] },
     { label: 'FOX', patterns: [/fox\s*sports/i, /foxsports/i, /foxsports\.com/i] }
   ];
 
@@ -8532,15 +8539,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   const LAUNCHER_ID = 'better-freshdesk-copy-case';
   const CLAUDE_LAUNCHER_ID = 'better-freshdesk-case-to-claude';
   const PICKER_ID = 'better-freshdesk-case-helper-picker';
-  const SESSIONS_KEY = 'betterFreshdeskCaseHelperSessions';
-
-  // Two chats inside the Case helper project. The URLs are not hardcoded:
-  // each is pasted once into the picker and kept in GM storage, so this
-  // keeps working when the chats are replaced.
-  const SESSIONS = [
-    { key: 'esteban', label: 'Sesión de Esteban' },
-    { key: 'sebastian', label: 'Sesión de Sebastian' }
-  ];
+  const CHAT_KEY = 'betterFreshdeskCaseHelperChat';
+  // Superseded by CHAT_KEY - read once so an existing choice is not lost.
+  const LEGACY_SESSIONS_KEY = 'betterFreshdeskCaseHelperSessions';
   const LAUNCHER_STYLE_ID = 'better-freshdesk-copy-case-style';
   const FIELDS_CACHE_KEY = 'betterFreshdeskTicketFieldLabels';
   const AGENTS_CACHE_KEY = 'betterFreshdeskAgentNames';
@@ -9033,22 +9034,30 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   /* ---------- Case helper: which chat, and sending to it ---------- */
 
-  function readSessions() {
+  // One link, not a set of named sessions: whichever chat the agent wants the
+  // case in, pasted once.
+  function readChatUrl() {
     try {
-      const stored = GM_getValue(SESSIONS_KEY, null);
-      if (stored && typeof stored === 'object') {
-        return { chosen: String(stored.chosen || ''), urls: Object.assign({}, stored.urls) };
+      const stored = GM_getValue(CHAT_KEY, '');
+      if (typeof stored === 'string' && stored) return stored;
+
+      // Carry over the first usable URL from the two-session version.
+      const legacy = GM_getValue(LEGACY_SESSIONS_KEY, null);
+      if (legacy && typeof legacy === 'object' && legacy.urls) {
+        const carried = legacy.urls[legacy.chosen] ||
+          Object.values(legacy.urls).find(Boolean);
+        if (carried) return String(carried);
       }
     } catch (error) { /* storage unavailable */ }
 
-    return { chosen: '', urls: {} };
+    return '';
   }
 
-  function writeSessions(state) {
+  function writeChatUrl(url) {
     try {
-      GM_setValue(SESSIONS_KEY, state);
+      GM_setValue(CHAT_KEY, url);
     } catch (error) {
-      console.warn('[Case helper] Could not save the chat choice.', error);
+      console.warn('[Case helper] Could not save the chat link.', error);
     }
   }
 
@@ -9063,7 +9072,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       const url = new URL(raw);
       if (url.protocol !== 'https:') return '';
       if (url.hostname !== 'claude.ai' && url.hostname !== 'www.claude.ai') return '';
-      if (url.pathname !== '/new' && !/^\/(?:chat|project)\/[^/]+/.test(url.pathname)) return '';
+      // /cowork/<id> is what a Case helper session actually is; /chat and
+      // /project are the classic surfaces and still accepted.
+      if (url.pathname !== '/new' && !/^\/(?:chat|project|cowork)\/[^/]+/.test(url.pathname)) return '';
       return url.href;
     } catch (error) {
       return '';
@@ -9079,8 +9090,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     closeSessionPicker();
     addLauncherStyles();
 
-    const state = readSessions();
-
     const overlay = document.createElement('div');
     overlay.id = PICKER_ID;
     overlay.addEventListener('click', event => {
@@ -9092,52 +9101,46 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     const title = document.createElement('div');
     title.className = 'bv-case-helper-title';
-    title.textContent = 'Case helper: ¿a qué chat mando el caso?';
+    title.textContent = 'Case helper: link del chat';
     card.appendChild(title);
 
     const hint = document.createElement('div');
     hint.className = 'bv-case-helper-hint';
-    hint.textContent = 'La URL se pega una vez y queda guardada. Click derecho en el botón para volver aquí.';
+    hint.textContent = 'Pega el link una vez y queda guardado. Click derecho en el botón para cambiarlo.';
     card.appendChild(hint);
 
-    SESSIONS.forEach(session => {
-      const row = document.createElement('div');
-      row.className = 'bv-case-helper-row';
+    const row = document.createElement('div');
+    row.className = 'bv-case-helper-row';
 
-      const label = document.createElement('div');
-      label.className = 'bv-case-helper-label';
-      label.textContent = session.label + (state.chosen === session.key ? ' · actual' : '');
-      row.appendChild(label);
+    const input = document.createElement('input');
+    input.type = 'url';
+    input.spellcheck = false;
+    input.placeholder = 'https://claude.ai/cowork/...';
+    input.value = readChatUrl();
+    row.appendChild(input);
 
-      const input = document.createElement('input');
-      input.type = 'url';
-      input.spellcheck = false;
-      input.placeholder = 'https://claude.ai/chat/...';
-      input.value = state.urls[session.key] || '';
-      row.appendChild(input);
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.textContent = 'Guardar y enviar';
 
-      const use = document.createElement('button');
-      use.type = 'button';
-      use.textContent = 'Guardar y enviar';
-      use.addEventListener('click', () => {
-        const url = toSafeClaudeUrl(input.value);
-        if (!url) {
-          input.dataset.invalid = 'yes';
-          hint.textContent = 'Esa no parece una URL de chat de claude.ai (https://claude.ai/chat/...).';
-          return;
-        }
+    const save = () => {
+      const url = toSafeClaudeUrl(input.value);
+      if (!url) {
+        input.dataset.invalid = 'yes';
+        hint.textContent = 'Ese link no es de claude.ai, o no es un chat/cowork/project.';
+        return;
+      }
 
-        const next = readSessions();
-        next.urls[session.key] = url;
-        next.chosen = session.key;
-        writeSessions(next);
-        closeSessionPicker();
-        if (typeof onChosen === 'function') onChosen();
-      });
-      row.appendChild(use);
+      writeChatUrl(url);
+      closeSessionPicker();
+      if (typeof onChosen === 'function') onChosen();
+    };
 
-      card.appendChild(row);
-    });
+    use.addEventListener('click', save);
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') save(); });
+    row.appendChild(use);
+
+    card.appendChild(row);
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
@@ -9166,8 +9169,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return false;
     }
 
-    const state = readSessions();
-    const targetUrl = toSafeClaudeUrl(state.urls[state.chosen]);
+    const targetUrl = toSafeClaudeUrl(readChatUrl());
     if (!targetUrl) {
       openSessionPicker(sendCaseToClaude);
       return false;
@@ -9183,7 +9185,6 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       ticketId,
       report,
       targetUrl,
-      session: state.chosen,
       createdAt: Date.now()
     })) return false;
 
@@ -9197,7 +9198,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const messageCount = (report.match(/^--- \d+ /gm) || []).length;
     bvNotify(
       'Case #' + ticketId + ' (' + messageCount + ' messages' +
-        (viaApi ? '' : ', read off the page') + ') sent to the ' + state.chosen + ' chat.',
+        (viaApi ? '' : ', read off the page') + ') sent to the Case helper chat.',
       { level: 'info' }
     );
 
@@ -9339,9 +9340,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const button = document.getElementById(CLAUDE_LAUNCHER_ID);
     if (!button || button.disabled) return;
 
-    const state = readSessions();
-    if (!toSafeClaudeUrl(state.urls[state.chosen])) {
-      // First run: nothing chosen yet, so ask instead of guessing.
+    if (!toSafeClaudeUrl(readChatUrl())) {
+      // First run: no link saved yet, so ask instead of guessing.
       openSessionPicker(sendCaseToClaude);
       return;
     }
@@ -9403,7 +9403,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     {
       id: CLAUDE_LAUNCHER_ID,
       glyph: '🧠',
-      title: 'Send the whole case to the Case helper chat (right-click to change chat)',
+      title: 'Send the whole case to the Case helper chat (right-click to change the link)',
       ariaLabel: 'Send the whole case to a Case helper chat',
       click: event => onClaudeLauncherClick(event),
       contextMenu: event => onClaudeLauncherContextMenu(event)
@@ -11083,10 +11083,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         // text still said MSN. Checked before the token passes for that reason.
         const brandDomains = [
             [/monumentalsportsnetwork\.com/, 'msn'],
+            // The address on real MSN tickets is monumentalsports.com - the
+            // longer form above is what the CMS host is called, not the inbox.
+            [/monumentalsports\.com/, 'msn'],
             [/altitudeplus\.com/, 'standard'],
             [/dirtvision\.com/, 'standard'],
             [/livgolfplus\.com/, 'gcp'],
-            [/spacecityhn\.com/, 'gcp']
+            [/spacecityhn\.com/, 'gcp'],
+            [/tampabaylightning\.com/, 'gcp']
         ];
 
         for (const [pattern, key] of brandDomains) {
@@ -11097,7 +11101,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return 'msn';
         }
 
-        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\b|\bliv\s*golf(?:\s*(?:\+|plus))?\b|\blivgolf(?:\+|plus)?\b|livgolfplus\.com|\blightning\b|\btampa\b|\btampa\s+bay\b/i.test(normalized)) {
+        if (/\bschn\b|\bspace\s+city\s+home\s+network\b|\bliv\b|\bliv\s*golf(?:\s*(?:\+|plus))?\b|\blivgolf(?:\+|plus)?\b|livgolfplus\.com|\blightning\b|\btampa\b|\btampa\s+bay\b|\btbl\b/i.test(normalized)) {
             return 'gcp';
         }
 
@@ -12783,7 +12787,7 @@ if (location.hostname === 'claude.ai' || location.hostname === 'www.claude.ai') 
     }
 
     send.click();
-    console.info('[Case helper] Case #' + entry.ticketId + ' sent to the ' + entry.session + ' chat.');
+    console.info('[Case helper] Case #' + entry.ticketId + ' sent to the Case helper chat.');
   }
 
   // The route bus, because a tab opened at /chat/<id> gets there only after

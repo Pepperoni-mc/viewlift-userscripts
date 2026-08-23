@@ -308,6 +308,42 @@ const altitudeTicket = {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Which CMS instance each client's ticket opens, by the client name Freshdesk
+// actually stores in cf_b2b_client_name and the address the mail arrives on.
+// Both read off the Freshdesk API on 2026-08-22.
+//
+// Tampa was the report that prompted this: its field says "TBL B2C", which
+// contains neither "tampa" nor "lightning", so it matched nothing and fell
+// through to the standard host - the wrong CMS. DIRT is here because it is the
+// opposite case and had to be confirmed rather than assumed.
+// ---------------------------------------------------------------------------
+{
+  const api = load(altitudeTicket);
+  const key = text => api.getCMSKeyFromClientText(text);
+  const host = text => {
+    const url = api.getCMSUsersURLForClient({ primary: text, fallback: '' });
+    return url ? new URL(url).hostname : '';
+  };
+
+  check('"TBL B2C" is the Tampa client name and routes to GCP', key('TBL B2C'), 'gcp');
+  check('and its support domain does too', key('to customersupport@tampabaylightning.com'), 'gcp');
+  check('a subject naming the team as well', key('Re: Your Lightning App Subscription'), 'gcp');
+  check('so a Tampa ticket opens the GCP host', host('Client Name TBL B2C'), 'cms-gcp.viewlift.com');
+  check('and specifically NOT the standard one', host('Client Name TBL B2C') === 'cms.viewlift.com', false);
+
+  check('"DIRTVision B2C" routes to the standard host', key('DIRTVision B2C'), 'standard');
+  check('and its support domain agrees', key('to support@dirtvision.com'), 'standard');
+  check('so DIRT opens the CMS without gcp', host('Client Name DIRTVision B2C'), 'cms.viewlift.com');
+
+  check('"SCHN+ B2C" still routes to GCP', key('SCHN+ B2C'), 'gcp');
+  check('"LivGolf B2C" too', key('LivGolf B2C'), 'gcp');
+  check('"Altitude B2C" stays on the standard host', key('Altitude B2C'), 'standard');
+  check('"MSN B2C (Monumental Sports Network)" goes to the MSN host', key('MSN B2C (Monumental Sports Network)'), 'msn');
+  check('and the address MSN mail really arrives on does too', key('to support@monumentalsports.com'), 'msn');
+  check('which is a third host, not either of the others', host('Client Name MSN B2C'), 'cms.monumentalsportsnetwork.com');
+}
+
 if (failures) {
   console.log(`\n${failures} check(s) FAILED`);
   process.exit(1);

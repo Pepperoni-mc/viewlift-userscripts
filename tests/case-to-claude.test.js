@@ -188,7 +188,6 @@ function entry(overrides) {
     ticketId: '352003',
     report: REPORT,
     targetUrl: 'https://claude.ai/chat/target-chat',
-    session: 'esteban',
     createdAt: Date.now()
   }, overrides || {});
 }

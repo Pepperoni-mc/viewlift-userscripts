@@ -2,6 +2,79 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Tampa was invisible to both detectors, and the Case helper is one link now - 3.56.0 (2026-08-22)
+
+### The client names Freshdesk actually stores
+
+Read off `/api/v2/tickets?per_page=100` (the `cf_b2b_client_name` field) with the support domain each
+brand's mail really arrives on. **This table is the ground truth for every brand detector in this
+file** - guessing at these is what caused all three bugs below.
+
+| client name | support domain | chip | CMS host |
+|---|---|---|---|
+| `TBL B2C` | tampabaylightning.com | TBL | gcp |
+| `SCHN+ B2C` | spacecityhn.com | SCHN | gcp |
+| `LivGolf B2C` | livgolfplus.com | LIV | gcp |
+| `Altitude B2C` | altitudeplus.com | ALTITUDE | standard |
+| `DIRTVision B2C` | dirtvision.com | DIRT | standard |
+| `MSN B2C (Monumental Sports Network)` | **monumentalsports.com** | MSN | msn |
+| `FOX One B2C` | fox.com | (out of scope) | (unrouted) |
+
+Note MSN: the inbox is `monumentalsports.com`, while `monumentalsportsnetwork.com` is the CMS host.
+Only the longer form was in the domain list; both are now.
+
+### Tampa: nothing matched it anywhere
+
+Sebastian: TBL tickets read "CASE" and opened the wrong CMS. Both true, for the same reason - the
+field says **`TBL B2C`**, which contains neither "tampa" nor "lightning":
+
+- Feature 8's `BRAND_RULES` had **no Tampa entry at all**, so the chip could only ever say CASE.
+- `getCMSKeyFromClientText()` matched on `\btampa\b|\blightning\b` but not `\btbl\b`, and had no
+  `tampabaylightning.com` domain, so a TBL ticket resolved to nothing and fell through to the
+  **standard** host. It only ever looked right on the tickets whose subject happened to spell out
+  "Lightning".
+
+Both fixed. **DIRT was already correct** (`dirtvision.com` and `\bdirtvision\b` → standard, the CMS
+without gcp) - verified, not assumed, and now locked down by a test.
+
+### The fixture found a third one: SCHN
+
+Writing the chip test against the real names showed `SCHN+ B2C` also read **CASE** - the SCHN rule
+was `space city` / `spacecityhn` / `sc-appsupport` and never `\bschn\b`. It only looked fine on
+tickets whose page text carried the support address. Added.
+
+The chip still has no rule for VGK, CHSN, ROOTSPORT or LNP; they exist in the refund sheet map but
+have never been reported, so they are left alone deliberately.
+
+### Case helper: one link
+
+Per request, the two named sessions (Esteban / Sebastian) are gone. There is one saved link, and the
+picker is a single field - paste it once, right-click the 🧠 to change it, Enter saves. Anyone who
+had already picked a session keeps it: `readChatUrl()` falls back to the old
+`betterFreshdeskCaseHelperSessions` object once and carries the chosen (or any) URL over.
+
+And **`/cowork/<id>` is accepted now** - the bug recorded yesterday. The real sessions are Cowork,
+and the old validator rejected exactly the URL it was given.
+
+### Verified
+
+`node tests/run-all.js` passes. New `tests/brand-chip.test.js` (39 checks) and a new section in
+`tests/brand-routing.test.js` (15), both driven by the table above, including a check that no brand's
+real name is claimed by another brand's rule - first match wins, so shadowing is a live risk.
+**Mutation-tested**: removing the TBL chip rule, the `\btbl\b` CMS token, the Tampa domain, the SCHN
+token, or `cowork` from the URL validator each fail the checks that name them. The first two had
+**no** coverage before this - the mutation run is what revealed that, not the test run.
+
+**Not live-confirmed**: no TBL ticket has been opened with 3.56.0 loaded. The client names and
+domains are real; the routing is offline-verified.
+
+### One thing to tell Sebastian if he asks again
+
+"El refund tool desapareció?" - no. Now that the toolbar installs, `mountRefundPanel()` finally runs
+and moves `#refund-capture-panel` **into the toolbar** as the inline panel it was always designed to
+be, opened by the `$` button. The corner float is gone because it was never meant to be there; it
+only ever appeared because of the `insertBefore` throw.
+
 ## Live test day: the chip works, and it exposed two more bugs - 3.55.0 (2026-08-22)
 
 3.54.0's `insertBefore` fix is **confirmed live** on ticket #352003: no errors on the page, the
