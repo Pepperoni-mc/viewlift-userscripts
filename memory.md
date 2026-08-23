@@ -65,8 +65,19 @@ real name is claimed by another brand's rule - first match wins, so shadowing is
 token, or `cowork` from the URL validator each fail the checks that name them. The first two had
 **no** coverage before this - the mutation run is what revealed that, not the test run.
 
-**Not live-confirmed**: no TBL ticket has been opened with 3.56.0 loaded. The client names and
-domains are real; the routing is offline-verified.
+**LIVE-CONFIRMED** with 3.56.0 loaded, both ends of the report:
+
+- Tampa ticket #352740: the chip reads `TBL` / "Case client: TBL", and clicking the CMS button
+  opened **`cms-gcp.viewlift.com/users/search?keyword=...`** - the GCP host.
+- DIRTVision ticket #352811: the chip reads `DIRT`, and the CMS button opened
+  **`cms.viewlift.com/users/search?keyword=...`** - the standard host, no gcp, which is what
+  Sebastian said it should be.
+- No page errors on either, the refund toggle is inside the toolbar, and the 🧠 float now measures
+  52x52 `position: fixed` (the CSS gap from 3.55.0 is closed).
+
+Still untested live: the single-link picker. Saving a link there immediately sends the case, which
+posts a real message into the Cowork session, so it needs Sebastian driving it - and on Cowork a
+very large case still freezes the renderer (see the open thread).
 
 ### One thing to tell Sebastian if he asks again
 
