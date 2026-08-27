@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.56.0
+// @version      3.58.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6923,6 +6923,212 @@ if (isCMSHost()) {
         return waitFor(findPaymentHandlerValue, { timeout: timeoutMs, pollMs: 300 })
             .then(result => result || "");
     }
+    /*
+     * Subscription details scraped alongside the screenshot.
+     *
+     * The PNG shows the panel, but a note you can only read as an image is a
+     * note nobody can search, quote or copy a plan name out of. So the same
+     * fields are also lifted as text and pasted under the CMS link.
+     *
+     * Label-driven rather than "read every row in the panel": the app renders
+     * the panel as generic divs, so a structural sweep picks up buttons,
+     * section headings and empty spacers as if they were fields. A known-label
+     * list keeps the note to the fields support actually reads out.
+     */
+    const SUBSCRIPTION_DETAIL_LABELS = [
+        "Plan Name",
+        "Plan Id",
+        "Plan ID",
+        "Subscription Id",
+        "Subscription ID",
+        "Subscription Status",
+        "Status",
+        "Amount",
+        "Currency",
+        "Country",
+        "Channel IDs",
+        "Channel Ids",
+        "Payment Handler",
+        "Payment Method",
+        "Registered On",
+        "Subscription Start Date",
+        "Subscription End Date",
+        "Next Billing Date",
+        "Renewal Date",
+        "Free Trial",
+        "Coupon Code",
+        "TVOD Redemption Code"
+    ];
+
+    const SUBSCRIPTION_DETAIL_MAX_FIELDS = 20;
+    const SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH = 200;
+
+    function isSubscriptionDetailLabel(text) {
+        const normalized = cleanText(text).toLowerCase().replace(/:$/, "");
+        if (!normalized) return "";
+
+        const match = SUBSCRIPTION_DETAIL_LABELS.find(
+            label => label.toLowerCase() === normalized
+        );
+
+        return match || "";
+    }
+
+    // The panel sits inside the same page as the account header, the refund
+    // panel and the site nav - all of which contain words like "Status". So
+    // the scan is scoped to the smallest ancestor of the "Subscription Plans"
+    // heading that actually holds more than one known field.
+    function findSubscriptionPanel() {
+        const heading = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, p, span, div, button, [role='tab']"))
+            .find(element =>
+                !element.closest(`#${WRAPPER_ID}, #refund-capture-panel`) &&
+                cleanText(element.textContent) === "Subscription Plans"
+            );
+
+        if (!heading) return null;
+
+        let node = heading.parentElement;
+
+        for (let depth = 0; node && depth < 8; depth += 1) {
+            const found = new Set();
+
+            node.querySelectorAll("p, span, div, label, td, th, strong, b, h4, h5, h6").forEach(element => {
+                const label = isSubscriptionDetailLabel(element.textContent);
+                if (label) found.add(label);
+            });
+
+            if (found.size >= 2) return node;
+
+            node = node.parentElement;
+        }
+
+        return null;
+    }
+
+    // An editable field's value is what is typed into it. The placeholder
+    // ("Enter TVOD Redemption Code") and whatever picker sits beside it are
+    // chrome, not the field's value, so a node holding a field reads as that
+    // field alone - blank included.
+    function readFieldOrText(node) {
+        if (!node) return null;
+
+        const field = node.matches("input, textarea")
+            ? node
+            : node.querySelector("input, textarea");
+
+        if (field) return cleanText(field.value);
+
+        return cleanText(node.textContent) || null;
+    }
+
+    // Same shape as findPaymentHandlerValue: the value sits next to the label,
+    // never inside it. The panel renders both as a flat run of nodes and as
+    // label/value rows, so both are tried - siblings first, because in the flat
+    // run the label's parent holds every other field too, and reading the whole
+    // parent there would glue the entire panel into one value.
+    function readLabeledValue(labelElement) {
+        const label = cleanText(labelElement.textContent);
+
+        // Only the date fields spill over into a second node (Registered On
+        // renders the day and the time separately). Everything else stops at
+        // one, so an unrecognised neighbouring label can't be swallowed into
+        // the value above it.
+        const maxParts = /date|registered|renewal/i.test(label) ? 2 : 1;
+        const parts = [];
+
+        let sibling = labelElement.nextElementSibling;
+        let sawField = false;
+
+        while (sibling && parts.length < maxParts) {
+            // The next field's label ends this field's value.
+            if (isSubscriptionDetailLabel(sibling.textContent)) break;
+
+            const holdsField = sibling.matches("input, textarea") ||
+                Boolean(sibling.querySelector("input, textarea"));
+
+            const text = readFieldOrText(sibling);
+            if (text) parts.push(text);
+
+            // An empty editable field is still the answer for this label: the
+            // field has no value, so nothing further along is one either.
+            if (holdsField) {
+                sawField = true;
+                break;
+            }
+
+            sibling = sibling.nextElementSibling;
+        }
+
+        if (parts.length) return cleanText(parts.join(" "));
+        if (sawField) return "";
+
+        // Row layout: the label and the value are wrapped together instead of
+        // being siblings. Only trusted when the wrapper really is one field's
+        // row - in the flat layout the label's parent holds the whole panel,
+        // and reading it there hands back the section heading as the value.
+        const row = labelElement.parentElement;
+        if (!row) return "";
+
+        const siblingsInRow = Array.from(row.children)
+            .filter(child => child !== labelElement && !child.contains(labelElement));
+
+        const isFlatRun = siblingsInRow.length > 3 ||
+            siblingsInRow.some(child => isSubscriptionDetailLabel(child.textContent));
+
+        if (isFlatRun) return "";
+
+        for (const child of siblingsInRow) {
+            const text = readFieldOrText(child);
+            if (text) return text;
+        }
+
+        return "";
+    }
+
+    function collectSubscriptionDetails() {
+        const scope = findSubscriptionPanel();
+        if (!scope) return [];
+
+        const candidates = Array.from(
+            scope.querySelectorAll("p, span, div, label, td, th, strong, b, h4, h5, h6")
+        ).filter(element => {
+            if (element.closest(`#${WRAPPER_ID}, #${BUTTON_ID}, #${BADGE_ID}, #refund-capture-panel`)) return false;
+            if (!isSubscriptionDetailLabel(element.textContent)) return false;
+
+            // Wrappers whose only text is the label repeat the same field once
+            // per nesting level - keep the innermost node, which is the one
+            // sitting next to the value.
+            return !Array.from(element.children).some(
+                child => isSubscriptionDetailLabel(child.textContent)
+            );
+        });
+
+        const details = [];
+        const seen = new Set();
+
+        for (const element of candidates) {
+            const label = isSubscriptionDetailLabel(element.textContent);
+            if (!label || seen.has(label)) continue;
+
+            let value = readLabeledValue(element);
+
+            // Empty fields render their own placeholder ("Enter TVOD
+            // Redemption Code") - that is not a value, it is the absence of one.
+            if (!value || /^enter\b/i.test(value)) continue;
+
+            if (value.length > SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH) {
+                value = `${value.slice(0, SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH)}...`;
+            }
+
+            seen.add(label);
+            details.push({ label, value });
+
+            if (details.length >= SUBSCRIPTION_DETAIL_MAX_FIELDS) break;
+        }
+
+        return details;
+    }
+
 
     function findPaymentHandlerValue() {
         const labels = Array.from(document.querySelectorAll("p, span, div, label"))
@@ -7078,6 +7284,10 @@ if (isCMSHost()) {
                     // doesn't say which account it belongs to, so the Freshdesk
                     // side pastes this as a clickable link under the image.
                     sourceUrl: location.href,
+                    // The same subscription fields the shot shows, as text, so
+                    // the note stays searchable and quotable instead of being
+                    // an image nobody can copy a plan name out of.
+                    subscriptionDetails: collectSubscriptionDetails(),
                     createdAt: Date.now()
                 });
 
@@ -8417,6 +8627,38 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return true;
   }
 
+  // Same trust rule as the source link: this came out of GM storage and is
+  // about to land in an agent's note, so it goes in as text nodes only, with
+  // hard caps on how much of it can get there.
+  function appendSubscriptionDetails(editor, details) {
+    if (!Array.isArray(details) || !details.length) return false;
+
+    const rows = details
+      .slice(0, 20)
+      .map(detail => ({
+        label: cleanText(detail && detail.label).slice(0, 60),
+        value: cleanText(detail && detail.value).slice(0, 200)
+      }))
+      .filter(row => row.label && row.value);
+
+    if (!rows.length) return false;
+
+    const paragraph = document.createElement('p');
+    const heading = document.createElement('strong');
+    heading.textContent = 'Subscription details';
+    paragraph.appendChild(heading);
+
+    for (const row of rows) {
+      paragraph.appendChild(document.createElement('br'));
+      paragraph.appendChild(document.createTextNode(`${row.label}: ${row.value}`));
+    }
+
+    editor.appendChild(paragraph);
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
   async function pasteSnapshot(snapshot) {
     const dataUrl = cleanText(snapshot && snapshot.dataUrl);
     if (!/^data:image\/png;base64,/i.test(dataUrl)) throw new Error('Invalid queued PNG.');
@@ -8449,8 +8691,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       editor.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    // Appended last, so it lands under the image on both paste paths.
+    // Appended last, so it lands under the image on both paste paths, with
+    // the scraped fields directly under the link.
     appendSourceLink(editor, snapshot && snapshot.sourceUrl);
+    appendSubscriptionDetails(editor, snapshot && snapshot.subscriptionDetails);
 
     return true;
   }
@@ -11167,6 +11411,63 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         return '';
     }
 
+    // cms.viewlift.com is not one brand. Altitude, DIRTVision and Vegas Golden
+    // Knights all live on it, each as its own CMS "site" - the slug that goes
+    // into the search API's auth.site/query.site body fields. The host is
+    // therefore only half the routing decision, and the half that was missing
+    // is what "the CMS button for DIRT opens the wrong CMS" is: the host was
+    // right all along (live-confirmed on #352811, 2026-08-22), the tenant was
+    // not. resolveCmsSite's old fallback - "whichever slug this host was last
+    // seen using" - is a coin flip between three brands there, so a DIRT
+    // ticket looked up while the session had last been on Altitude searched
+    // ALTITUDE's tenant with Altitude's API key and opened whatever Altitude
+    // account happened to share the email.
+    //
+    // The real slugs for these three have never been read off the CMS, so
+    // nothing here guesses one. Each brand carries a PATTERN instead, matched
+    // against the slugs the CMS itself has already reported through
+    // bvRecordCmsCreds - the first time a real DIRTVision page is open in the
+    // browser its true slug is learned and used, whatever it turns out to be
+    // called.
+    const MULTI_BRAND_CMS_SITES = [
+        {
+            label: 'DIRTVision',
+            brand: /\bdirt\s*vision\b|\bdirtvision\b|dirtvision\.com/,
+            slug: /dirt/
+        },
+        {
+            label: 'Altitude',
+            brand: /\baltitude\b|altitudeplus\.com/,
+            slug: /altitude/
+        },
+        {
+            label: 'Vegas Golden Knights',
+            brand: /\bvgk\b|vegas\s+golden\s+knights|knight\s*time/,
+            slug: /vgk|knight|golden/
+        }
+    ];
+
+    function getMultiBrandSiteRule(clientContext) {
+        const text = cleanText([
+            clientContext && clientContext.primary,
+            clientContext && clientContext.fallback
+        ].filter(Boolean).join(' ') || clientContext).toLowerCase();
+
+        if (!text) return null;
+
+        return MULTI_BRAND_CMS_SITES.find(rule => rule.brand.test(text)) || null;
+    }
+
+    // The slugs the CMS has actually named for itself, not a list this script
+    // made up - bvRecordCmsCreds only ever writes one it saw on a real page.
+    function findCapturedSite(pattern) {
+        try {
+            return Object.keys(bvGetCmsCreds().sites || {}).find(site => pattern.test(site)) || '';
+        } catch (error) {
+            return '';
+        }
+    }
+
     function extractEmailFromText(text) {
         const match = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
 
@@ -11516,6 +11817,33 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
 
+    // The sibling-brand trap on a shared host: the URL can be perfectly
+    // right and the page still show the wrong brand, because which tenant a
+    // CMS session is looking at is session state, not part of the link. Only
+    // the GCP host gets an automated switch (ORGANIZATIONS in Feature 1c
+    // covers lightning / liv-golf / schn); on cms.viewlift.com there is
+    // nothing to drive, so the least this can do is say so out loud instead
+    // of letting an agent read an Altitude account as if it were a DIRT one.
+    function warnAboutSiblingBrandSession(clientContext) {
+        const rule = getMultiBrandSiteRule(clientContext);
+        if (!rule) return;
+
+        let host = '';
+        try {
+            host = new URL(getCMSUsersURLForClient(clientContext)).hostname;
+        } catch (error) {
+            return;
+        }
+
+        const sessionSite = bvGetSiteForCmsHost(host);
+        if (!sessionSite || rule.slug.test(sessionSite)) return;
+
+        bvNotify(
+            `CMS: this is a ${rule.label} ticket, but the CMS session on ${host} was last on "${sessionSite}" - switch the CMS account to ${rule.label} first, or the search runs against the wrong brand.`,
+            { level: 'warn', ttl: 12000 }
+        );
+    }
+
     function warnAboutUnroutedBrand(clientContext) {
         const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
         if (unroutedBrand) {
@@ -11580,12 +11908,22 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     // Resolves the CMS API "site" slug for a ticket. The explicit account
     // mapping already uses the real slugs (confirmed against CMS's own
-    // tenant list: lightning / liv-golf / schn) but only covers the GCP
-    // host; for the others fall back to whichever slug that host was last
-    // seen really using.
+    // tenant list: lightning / liv-golf / schn) but only covers the GCP host.
+    //
+    // For a brand that shares its host with other brands, the answer has to be
+    // that brand's own slug or nothing: returning '' costs the
+    // straight-into-the-account shortcut and nothing else (openCmsForEmail
+    // falls back to the plain search page), which is far cheaper than
+    // searching a sibling brand's tenant and believing the answer.
+    //
+    // The last-seen-slug fallback survives only where it cannot pick the wrong
+    // brand - an unrecognized client on a host that serves a single one.
     function resolveCmsSite(clientContext) {
         const account = getCMSAccountForClient(clientContext);
         if (account) return account;
+
+        const rule = getMultiBrandSiteRule(clientContext);
+        if (rule) return findCapturedSite(rule.slug);
 
         try {
             return bvGetSiteForCmsHost(new URL(getCMSUsersURLForClient(clientContext)).hostname);
@@ -11596,6 +11934,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function openCMSForEmail(email, clientContext, existingTab) {
         warnAboutUnroutedBrand(clientContext);
+        warnAboutSiblingBrandSession(clientContext);
 
         const href = buildCMSDestination(clientContext, { email });
         bvTimingMark('navigate-search-page', existingTab ? 'reusing the holding tab' : 'new tab');
@@ -11607,6 +11946,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function openCMSAccount(userId, email, clientContext, existingTab) {
         warnAboutUnroutedBrand(clientContext);
+        warnAboutSiblingBrandSession(clientContext);
 
         const href = buildCMSDestination(clientContext, { email, userId });
         bvTimingMark('navigate-account-page', existingTab ? 'reusing the holding tab' : 'new tab');

@@ -2,6 +2,61 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## DIRT opened the right CMS host and the wrong brand inside it - 3.57.0 (2026-08-23)
+
+Sebastian: "el cms button para Dirt no funciona correctamente - abre el CMS equivocado."
+
+The host was **not** the problem, contrary to first instinct. Re-ran the real
+`getFreshdeskClientContext` + `getCMSKeyFromClientText` against four DIRT scenarios (client field
+readable, client field missing, no `dirtvision.com` anywhere, view name rendered differently in the
+body) - **all four resolve to `cms.viewlift.com`**, matching yesterday's live confirmation on
+#352811. The `TAMPA + DIRT` view name is genuinely stripped; it only misroutes if it leaks, and it
+does not.
+
+### What was actually wrong: the tenant, which is not in the URL
+
+`cms.viewlift.com` serves **three** brands - Altitude, DIRTVision, VGK - each its own CMS `site`
+slug (the `auth.site`/`query.site` body fields of the search API). `resolveCmsSite()` only had
+explicit slugs for the GCP brands (`lightning` / `liv-golf` / `schn`); for everything else it
+returned `bvGetSiteForCmsHost(host)` - *whichever slug that host was last seen using*. On a
+three-brand host that is a coin flip: a DIRT ticket looked up while the session had last been on
+Altitude ran the lookup against **Altitude's tenant with Altitude's API key**, and
+`openCMSAccount()` then opened whatever Altitude account shared that email. Right host, wrong CMS.
+
+### The fix, without guessing a slug
+
+DIRTVision's/Altitude's/VGK's real slugs have never been read off the CMS, and Sebastian asked for
+a blind fix, so **nothing hardcodes one**. New `MULTI_BRAND_CMS_SITES` (next to
+`getCMSAccountForClient`) gives each of the three a brand regex and a *slug pattern*
+(`/dirt/`, `/altitude/`, `/vgk|knight|golden/`), matched against the slugs the CMS itself has
+already reported through `bvRecordCmsCreds`. The first time a real DIRTVision page is open in the
+browser, its true slug is learned and used - whatever it is called.
+
+`resolveCmsSite()` on a shared host is now **that brand's slug or nothing**. Nothing costs only the
+straight-into-the-account shortcut (`openCmsForEmail` falls back to the plain search page), which is
+far cheaper than searching a sibling brand and believing the answer. The last-seen-slug fallback
+survives only where it cannot pick the wrong brand.
+
+### The half a userscript cannot fix, now said out loud
+
+Which tenant the CMS *session* is on is session state, not part of the link, and only the GCP host
+has an automated switch (`ORGANIZATIONS` in Feature 1c: lightning / liv-golf / schn). On
+`cms.viewlift.com` there is nothing to drive - **so if we ever learn how the standard host's org
+picker names Altitude / DIRTVision / VGK, adding them to `ORGANIZATIONS` is the remaining fix.**
+Until then, new `warnAboutSiblingBrandSession()` (called from both `openCMSForEmail` and
+`openCMSAccount`) fires a `bvNotify` when the session's last-seen slug for that host belongs to a
+different brand: "this is a DIRTVision ticket, but the CMS session was last on altitude - switch the
+CMS account first." Same "make the failure loud" instinct as `UNROUTED_KNOWN_BRANDS`.
+
+### Verified
+
+`node tests/run-all.js` - all 15 steps pass. New `tests/cms-site-slug.test.js` (14 checks) injects
+`bvGetCmsCreds`/`bvGetSiteForCmsHost`/`bvNotify` as stubs, so a test can say "the session was last
+on Altitude" with no browser. **Mutation-tested**: deleting the two-line multi-brand branch from
+`resolveCmsSite` fails 4 checks, and the first failure reads `expected "", got "altitude"` - i.e.
+the mutant reproduces Sebastian's exact report. Not live-confirmed: no browser check this session,
+by request.
+
 ## Tampa was invisible to both detectors, and the Case helper is one link now - 3.56.0 (2026-08-22)
 
 ### The client names Freshdesk actually stores
@@ -2710,3 +2765,42 @@ of the internal ViewLift Support Assistant bot at `http://135.181.37.72:3001` (a
   `cms_not_found: false`. Wiring `checkCmsAccountViaBot`'s result into `runGenerate()`'s request
   body would make the draft's "no account found" framing accurate instead of always assuming an
   account exists - straightforward follow-up once the two features have been used a bit.
+
+## 2026-08-27 — Snapshot button also copies the subscription details as text (v3.58.0)
+
+Requested as: "en el botón que hace la captura, haz que abajo del link, se copien los detalles
+de la subscripción" — Plan Name, Country, Channel IDs, Payment Handler, Registered On, and the
+TVOD Redemption Code when one is actually set.
+
+The screenshot already carried the panel, but only as pixels: a note you can only read as an
+image is one nobody can search, quote, or copy a plan name out of. So the CMS tab now lifts the
+same fields as text at capture time (`collectSubscriptionDetails()` in Feature 4), ships them in
+the queued snapshot payload as `subscriptionDetails`, and the Freshdesk tab pastes them as a
+`Subscription details` block directly under the existing CMS link (`appendSubscriptionDetails()`
+in Feature 9).
+
+Scraping decisions worth keeping:
+- **Label-driven, not structural.** The panel is generic divs; a "read every row" sweep picks up
+  headings, buttons and spacers as if they were fields. `SUBSCRIPTION_DETAIL_LABELS` keeps the
+  note to the fields support actually reads out.
+- **The scan is scoped to the panel.** `findSubscriptionPanel()` walks up from the
+  "Subscription Plans" heading to the smallest ancestor holding 2+ known labels — the account
+  header on the same page also has a "Status" field.
+- **Siblings first, row wrapper second.** The panel renders as a *flat* run of label/value nodes,
+  so the label's parent is the whole panel. Reading the parent (the shape `findPaymentHandlerValue`
+  uses, which is fine for its single field) glued the section heading on as the value — caught by
+  the test, not by reading the code. The row fallback now refuses to fire when the wrapper holds
+  other known labels or more than three siblings.
+- **An empty editable field is not a value.** The TVOD row is an input plus an "ALL" picker; with
+  nothing typed, the placeholder is not a value and the picker beside it is not one either, so the
+  field is dropped entirely. A code that *was* entered comes across.
+- **Only Registered On/date fields read two nodes** (day + time render separately). Every other
+  label stops at one node, so an unrecognised neighbouring label cannot be swallowed into the
+  value above it.
+
+The Freshdesk side treats the payload as untrusted the same way the source link does — text nodes
+only, 20 rows max, 200 chars per value, appended as DOM nodes rather than re-serialising the
+editor (Froala is still uploading the image at that point).
+
+`tests/subscription-details.test.js` pins all of it against both panel layouts plus the note side.
+Not yet click-tested on a live account page — no CMS user page was open in this session.
