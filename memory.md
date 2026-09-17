@@ -2,6 +2,25 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Julio joins both agent rosters - 3.61.0 (2026-09-17)
+
+Sebastian asked for Julio in the agent list and in the capture tool. Those are two separate hardcoded
+rosters, and they are not the same kind of list:
+
+* `FALLBACK_AGENT_NAMES` (Set Agent) holds **full Freshdesk display names**. Julio's is
+  `Julio Fernando Fernando Piovano` - the duplicated "Fernando" is real, it is how his first/last
+  name split is stored in Freshdesk (confirmed against `/api/v2/agents?email=julio.piovano@viewlift.com`,
+  id 43277026523). Do not "fix" the spelling: the list exists to recognise the option text in the
+  Agent dropdown, so it has to match Freshdesk character for character.
+* The Refund Capture panel's **Refunder** select uses first names only (`Sebastian`, `Eric`,
+  `Esteban`, now `Julio`). Two edits are needed every time, not one - the `<option>` and
+  `VALID_REFUNDERS`. The preference patch silently drops any value not in `VALID_REFUNDERS`, so
+  adding only the option would let an agent pick Julio and lose it on the next page load.
+
+If a second Julio ever joins, the first-name list is the one that breaks first.
+
+`node tests/run-all.js` - all steps pass.
+
 ## Two diagnostics left the Tampermonkey menu - 3.60.0 (2026-08-29)
 
 Sebastian screenshotted the menu and asked for **CMS API: Check captured credentials** and **CMS

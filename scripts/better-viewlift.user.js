@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.60.0
+// @version      3.61.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2852,6 +2852,7 @@
           <option selected>Sebastian</option>
           <option>Eric</option>
           <option>Esteban</option>
+          <option>Julio</option>
         </select>
 
         <label for="refund-date">Date/Week of</label>
@@ -3037,7 +3038,7 @@
 /*
  * Better CMS preference patch:
  * Remembers the selected Refunder value in the Refund Capture panel.
- * This keeps Sebastian/Eric/Esteban persistent across page refreshes and new CMS users.
+ * This keeps Sebastian/Eric/Esteban/Julio persistent across page refreshes and new CMS users.
  */
 (function () {
   'use strict';
@@ -3048,7 +3049,7 @@
   if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   const REFUNDER_PREF_KEY = 'Better CMS Preferred Refunder';
   const REFUNDER_SELECT_ID = 'refund-refunder';
-  const VALID_REFUNDERS = ['Sebastian', 'Eric', 'Esteban'];
+  const VALID_REFUNDERS = ['Sebastian', 'Eric', 'Esteban', 'Julio'];
 
   function safeGetPreferredRefunder() {
     try {
@@ -4041,6 +4042,7 @@ if (isCMSHost()) {
         'Esteban Ramirez',
         'Fan Assist',
         'Gerald Eduardo Calero Valverde',
+        'Julio Fernando Fernando Piovano',
         'rajnish kumar',
         'Sebastian Rojas Grant',
         'Vernon Steven Maithand Raude'
