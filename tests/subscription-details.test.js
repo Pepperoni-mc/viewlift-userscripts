@@ -108,6 +108,13 @@ function el(tag, opts) {
     }
   });
 
+  Object.defineProperty(node, 'previousElementSibling', {
+    get() {
+      const siblings = node.parentElement ? node.parentElement.children : [];
+      return siblings[siblings.indexOf(node) - 1] || null;
+    }
+  });
+
   node.appendChild = child => {
     child.parentElement = node;
     node.children.push(child);
@@ -156,12 +163,14 @@ function loadScraper(rootChildren) {
     const BADGE_ID = "tm-viewlift-payment-handler-badge";
     ${extractFunction(cmsSrc, /function cleanText/, 'cleanText')}
     ${extractConst(cmsSrc, 'SUBSCRIPTION_DETAIL_LABELS')}
+    ${extractConst(cmsSrc, 'SUBSCRIPTION_CYCLE_PATTERN')}
     ${extractConst(cmsSrc, 'SUBSCRIPTION_DETAIL_MAX_FIELDS')}
     ${extractConst(cmsSrc, 'SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH')}
     ${extractFunction(cmsSrc, /function isSubscriptionDetailLabel/, 'isSubscriptionDetailLabel')}
     ${extractFunction(cmsSrc, /function findSubscriptionPanel/, 'findSubscriptionPanel')}
     ${extractFunction(cmsSrc, /function readFieldOrText/, 'readFieldOrText')}
     ${extractFunction(cmsSrc, /function readLabeledValue/, 'readLabeledValue')}
+    ${extractFunction(cmsSrc, /function readSubscriptionCycleHeading/, 'readSubscriptionCycleHeading')}
     ${extractFunction(cmsSrc, /function collectSubscriptionDetails/, 'collectSubscriptionDetails')}
     module.exports = { collectSubscriptionDetails, findSubscriptionPanel, readLabeledValue, isSubscriptionDetailLabel };
   `;
@@ -192,6 +201,63 @@ function flatPanel() {
       text('p', 'Registered On'),
       text('p', '8/25/26'),
       text('p', '12:58:04 PM GMT-6')
+    ] })
+  ] });
+}
+
+// The panel exactly as a Stripe account renders it (ticket 2026-08-29): a
+// billing-cycle heading with no label of its own, then every field of the plan
+// - including the ones that used to fall off the end of the note.
+function stripePanel() {
+  return el('div', { id: 'page', children: [
+    el('div', { id: 'panel', children: [
+      text('h4', 'Subscription Plans'),
+      text('p', 'TVOD Redemption Code'),
+      el('div', { children: [el('input', { value: '', attrs: { placeholder: 'Enter TVOD Redemption Code' } })] }),
+      text('p', 'Monthly'),
+      text('p', 'Plan Name'),
+      text('p', 'Altitude+ Monthly Plan'),
+      text('p', 'Price'),
+      text('p', 'USD 19.95'),
+      text('p', 'Status'),
+      text('p', 'DEFERRED_CANCELLATION'),
+      text('p', 'Country'),
+      text('p', 'US'),
+      text('p', 'Receipt ID'),
+      text('p', 'ch_3U3TcQEQqB3z7mPz0SVQU3eC'),
+      text('p', 'Payment Unique ID'),
+      text('p', 'cus_TDfwTS0Oy93V6d'),
+      text('p', 'Transaction ID'),
+      text('p', '–'),
+      text('p', 'Payment Handler'),
+      text('p', 'STRIPE'),
+      text('p', 'Registered On'),
+      text('p', '10/11/25'),
+      text('p', '7:58:10 PM GMT-6'),
+      text('p', 'End Date'),
+      text('p', '9/11/26'),
+      text('p', '10:18:21 PM GMT-6'),
+      text('p', 'Cancellation Reason'),
+      text('p', 'Not using enough')
+    ] })
+  ] });
+}
+
+// Two plans on one account - the same labels twice over.
+function twoPlanPanel() {
+  return el('div', { id: 'page', children: [
+    el('div', { id: 'panel', children: [
+      text('h4', 'Subscription Plans'),
+      text('p', 'Monthly'),
+      text('p', 'Plan Name'),
+      text('p', 'Altitude+ Monthly Plan'),
+      text('p', 'Status'),
+      text('p', 'CANCELLED'),
+      text('p', 'Annual'),
+      text('p', 'Plan Name'),
+      text('p', 'Altitude+ Annual Plan'),
+      text('p', 'Status'),
+      text('p', 'ACTIVE')
     ] })
   ] });
 }
@@ -271,6 +337,85 @@ function check(label, actual, expected) {
   check('row layout: payment handler', asMap['Payment Handler'], 'TVE');
 }
 
+// --- the whole Stripe panel, field for field ------------------------------
+{
+  const api = loadScraper([stripePanel()]);
+  const details = api.collectSubscriptionDetails();
+
+  check(
+    'every field the panel shows reaches the note, in page order',
+    details.map(d => d.label + ': ' + d.value),
+    [
+      'Billing Cycle: Monthly',
+      'Plan Name: Altitude+ Monthly Plan',
+      'Price: USD 19.95',
+      'Status: DEFERRED_CANCELLATION',
+      'Country: US',
+      'Receipt ID: ch_3U3TcQEQqB3z7mPz0SVQU3eC',
+      'Payment Unique ID: cus_TDfwTS0Oy93V6d',
+      'Transaction ID: –',
+      'Payment Handler: STRIPE',
+      'Registered On: 10/11/25 7:58:10 PM GMT-6',
+      'End Date: 9/11/26 10:18:21 PM GMT-6',
+      'Cancellation Reason: Not using enough'
+    ]
+  );
+
+  check(
+    'a single plan is one group, so the note gets no stray blank line',
+    Array.from(new Set(details.map(d => d.group))),
+    [0]
+  );
+}
+
+// --- two plans on one account --------------------------------------------
+{
+  const api = loadScraper([twoPlanPanel()]);
+  const details = api.collectSubscriptionDetails();
+
+  check(
+    'the second plan is kept rather than dropped as a repeat',
+    details.map(d => d.label + ': ' + d.value),
+    [
+      'Billing Cycle: Monthly',
+      'Plan Name: Altitude+ Monthly Plan',
+      'Status: CANCELLED',
+      'Billing Cycle: Annual',
+      'Plan Name: Altitude+ Annual Plan',
+      'Status: ACTIVE'
+    ]
+  );
+
+  check(
+    'and the two plans are separate groups',
+    details.map(d => d.group),
+    [0, 0, 0, 1, 1, 1]
+  );
+}
+
+// --- a cycle word that is somebody's value, not a heading -----------------
+{
+  const api = loadScraper([el('div', { children: [
+    el('div', { id: 'panel', children: [
+      text('h4', 'Subscription Plans'),
+      text('p', 'Plan Name'),
+      text('p', 'tve-schn'),
+      text('p', 'Free Trial'),
+      text('p', 'Monthly'),
+      text('p', 'Country'),
+      text('p', 'US')
+    ] })
+  ] })]);
+
+  const details = api.collectSubscriptionDetails();
+
+  check(
+    'a labelled cycle word is read under its own label, not as a new plan',
+    details.map(d => d.label + ': ' + d.value),
+    ['Plan Name: tve-schn', 'Free Trial: Monthly', 'Country: US']
+  );
+}
+
 // --- no panel on the page -------------------------------------------------
 {
   const api = loadScraper([el('div', { children: [text('p', 'Plan Name'), text('p', 'tve-schn')] })]);
@@ -303,6 +448,7 @@ function loadNoteSide() {
   editor.dispatchEvent = evt => { events.push(evt); return true; };
 
   const sandbox = `
+    ${extractConst(noteSrc, 'SUBSCRIPTION_NOTE_MAX_ROWS')}
     ${extractFunction(noteSrc, /function cleanText/, 'cleanText')}
     ${extractFunction(noteSrc, /function appendSubscriptionDetails/, 'appendSubscriptionDetails')}
     module.exports = { appendSubscriptionDetails };
@@ -352,6 +498,25 @@ function serialize(node) {
 }
 
 {
+  const { api, editor } = loadNoteSide();
+
+  api.appendSubscriptionDetails(editor, [
+    { label: 'Billing Cycle', value: 'Monthly', group: 0 },
+    { label: 'Status', value: 'CANCELLED', group: 0 },
+    { label: 'Billing Cycle', value: 'Annual', group: 1 },
+    { label: 'Status', value: 'ACTIVE', group: 1 }
+  ]);
+
+  check(
+    'a second plan is separated by a blank line instead of running on',
+    serialize(editor.children[0]),
+    '<p><strong>Subscription details</strong>' +
+      '<br>Billing Cycle: Monthly<br>Status: CANCELLED' +
+      '<br><br>Billing Cycle: Annual<br>Status: ACTIVE</p>'
+  );
+}
+
+{
   const { api, editor, events } = loadNoteSide();
   check('an older snapshot with no details is a no-op', api.appendSubscriptionDetails(editor, undefined), false);
   check('an empty list is a no-op too', api.appendSubscriptionDetails(editor, []), false);
@@ -362,14 +527,14 @@ function serialize(node) {
 {
   const { api, editor } = loadNoteSide();
 
-  api.appendSubscriptionDetails(editor, Array.from({ length: 40 }, (_, i) => ({
+  api.appendSubscriptionDetails(editor, Array.from({ length: 100 }, (_, i) => ({
     label: 'Field ' + i,
     value: 'x'.repeat(400)
   })));
 
   const paragraph = editor.children[0];
-  // 1 heading + 20 rows, each row a <br> plus its text.
-  check('at most 20 rows reach the note', paragraph.children.length, 1 + 20 * 2);
+  // 1 heading + 60 rows, each row a <br> plus its text.
+  check('at most 60 rows reach the note', paragraph.children.length, 1 + 60 * 2);
 
   const firstRow = paragraph.children[2];
   check('and each value is capped', firstRow.nodeValue.length <= 'Field 0: '.length + 200, true);

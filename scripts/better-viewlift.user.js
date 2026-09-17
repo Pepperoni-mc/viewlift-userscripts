@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.58.0
+// @version      3.60.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -471,54 +471,6 @@
     });
   }
 
-  // Diagnostic for "why didn't it jump straight to the account?" - reports
-  // which brands are ready and how fresh the token is, WITHOUT ever
-  // printing the credentials themselves.
-  function bvReportCmsCredStatus() {
-    const creds = bvGetCmsCreds();
-    const auth = creds.authorization;
-    const sites = Object.keys(creds.sites || {});
-
-    if (!auth || !auth.value) {
-      bvNotify('CMS API: no session token captured yet. Open a CMS tab and run one search there, then try again.', { level: 'warn', ttl: 12000 });
-      return;
-    }
-
-    const live = bvCredsAreLive(auth);
-    const expiresAt = bvTokenExpiresAt(auth.value);
-    const brands = sites.length ? `Brands ready: ${sites.join(', ')}.` : 'No brand keys captured yet.';
-
-    if (!live) {
-      bvNotify(
-        `CMS API: session token has expired - open any CMS tab once and it is picked up again automatically. ${brands}`,
-        { level: 'warn', ttl: 12000 }
-      );
-      return;
-    }
-
-    // Report real remaining life from the token's own claim when it has one,
-    // rather than how long ago it happened to be captured.
-    let lifeText;
-    if (expiresAt) {
-      const minutesLeft = Math.round((expiresAt - Date.now()) / 60000);
-      lifeText = minutesLeft < 60
-        ? `expires in ${minutesLeft} min`
-        : `expires in ${Math.round(minutesLeft / 60)} h`;
-    } else {
-      const ageMinutes = Math.round((Date.now() - Number(auth.capturedAt || 0)) / 60000);
-      lifeText = `captured ${ageMinutes < 60 ? `${ageMinutes} min` : `${Math.round(ageMinutes / 60)} h`} ago (no expiry claim)`;
-    }
-
-    bvNotify(`CMS API: session token ${lifeText}. ${brands}`, { level: 'info', ttl: 12000 });
-  }
-
-  try {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('CMS API: Check captured credentials', bvReportCmsCredStatus);
-    }
-  } catch (error) {
-    console.warn('[CMS API] Could not register the status menu command.', error);
-  }
   // --- CMS button journey timing ---------------------------------------
   //
   // "The SCHN CMS is slow on the initial search" could not be pinned down
@@ -630,22 +582,9 @@
     bvTimingClearRun();
   }
 
-  try {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('CMS button: toggle timing log', function () {
-        const next = !bvTimingEnabled();
-        bvTimingSetEnabled(next);
-        bvNotify(
-          next
-            ? 'CMS button timing ON - click the CMS button, then read the console on BOTH tabs (prefix [BV CMS Timing]).'
-            : 'CMS button timing OFF.',
-          { level: 'info', ttl: 9000 }
-        );
-      });
-    }
-  } catch (error) {
-    console.warn('[BV CMS Timing] Could not register the timing menu command.', error);
-  }
+  // No menu entry for this one: the flag's other two channels are the switch.
+  // From DevTools on the page, document.documentElement.dataset.bvCmsTiming =
+  // 'true' turns the journey log on for that tab.
 
   // The other half of the journey: whichever CMS page the button lands on
   // reports how long it took to get there, and how long that page's own API
@@ -6943,24 +6882,47 @@ if (isCMSHost()) {
         "Subscription ID",
         "Subscription Status",
         "Status",
+        "Price",
         "Amount",
         "Currency",
         "Country",
         "Channel IDs",
         "Channel Ids",
+        "Receipt ID",
+        "Receipt Id",
+        "Payment Unique ID",
+        "Payment Unique Id",
+        "Transaction ID",
+        "Transaction Id",
         "Payment Handler",
         "Payment Method",
         "Registered On",
+        "Start Date",
+        "End Date",
         "Subscription Start Date",
         "Subscription End Date",
         "Next Billing Date",
         "Renewal Date",
         "Free Trial",
         "Coupon Code",
+        "Promo Code",
+        "Discount",
+        "Cancellation Reason",
+        "Cancelled On",
         "TVOD Redemption Code"
     ];
 
-    const SUBSCRIPTION_DETAIL_MAX_FIELDS = 20;
+    // The plan's billing cycle is the one thing in the panel with no label
+    // beside it - it renders as a bare heading above that plan's fields
+    // ("Monthly"), so it is recognised by its own text and reported under a
+    // label of our own. It doubles as the marker for where one plan ends and
+    // the next begins.
+    const SUBSCRIPTION_CYCLE_PATTERN = /^(?:daily|weekly|bi-?weekly|monthly|bi-?monthly|quarterly|semi-?annual(?:ly)?|annual(?:ly)?|yearly|lifetime|one[- ]time|free\s+trial)$/i;
+
+    // An account can hold several plans, and every field of every plan is
+    // wanted - so the cap is per panel, not per plan, and sits well above what
+    // a single plan renders.
+    const SUBSCRIPTION_DETAIL_MAX_FIELDS = 60;
     const SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH = 200;
 
     function isSubscriptionDetailLabel(text) {
@@ -7085,43 +7047,84 @@ if (isCMSHost()) {
         return "";
     }
 
+    // A bare "Monthly" / "Annual" heading is the start of a plan. It is only
+    // that heading when nothing labelled it: the same word sitting next to a
+    // known label is that label's value, and is read there instead.
+    function readSubscriptionCycleHeading(element) {
+        if (element.children && element.children.length) return "";
+
+        const text = cleanText(element.textContent);
+        if (!SUBSCRIPTION_CYCLE_PATTERN.test(text)) return "";
+
+        const previous = element.previousElementSibling;
+        if (previous && isSubscriptionDetailLabel(previous.textContent)) return "";
+
+        return text;
+    }
+
     function collectSubscriptionDetails() {
         const scope = findSubscriptionPanel();
         if (!scope) return [];
 
         const candidates = Array.from(
             scope.querySelectorAll("p, span, div, label, td, th, strong, b, h4, h5, h6")
-        ).filter(element => {
-            if (element.closest(`#${WRAPPER_ID}, #${BUTTON_ID}, #${BADGE_ID}, #refund-capture-panel`)) return false;
-            if (!isSubscriptionDetailLabel(element.textContent)) return false;
+        ).filter(element =>
+            !element.closest(`#${WRAPPER_ID}, #${BUTTON_ID}, #${BADGE_ID}, #refund-capture-panel`)
+        );
+
+        const details = [];
+
+        // An account can hold more than one plan, and the panel lists them one
+        // after another under the same labels each time. A label that has
+        // already been read therefore means "this is the next plan", not "skip
+        // it" - so repeats open a new group instead of being dropped, and the
+        // note can keep the plans apart.
+        let group = 0;
+        let seen = new Set();
+
+        const startNextPlan = () => {
+            group += 1;
+            seen = new Set();
+        };
+
+        for (const element of candidates) {
+            const label = isSubscriptionDetailLabel(element.textContent);
+
+            // "Free Trial" is both a field of its own and a billing cycle. A
+            // node the panel labelled is read as that label, always - the
+            // cycle heuristic only gets the nodes nothing labelled.
+            if (!label) {
+                const cycle = readSubscriptionCycleHeading(element);
+                if (!cycle) continue;
+
+                if (seen.size) startNextPlan();
+                seen.add("Billing Cycle");
+                details.push({ label: "Billing Cycle", value: cycle, group });
+                if (details.length >= SUBSCRIPTION_DETAIL_MAX_FIELDS) break;
+                continue;
+            }
 
             // Wrappers whose only text is the label repeat the same field once
             // per nesting level - keep the innermost node, which is the one
             // sitting next to the value.
-            return !Array.from(element.children).some(
+            if (Array.from(element.children).some(
                 child => isSubscriptionDetailLabel(child.textContent)
-            );
-        });
-
-        const details = [];
-        const seen = new Set();
-
-        for (const element of candidates) {
-            const label = isSubscriptionDetailLabel(element.textContent);
-            if (!label || seen.has(label)) continue;
+            )) continue;
 
             let value = readLabeledValue(element);
 
             // Empty fields render their own placeholder ("Enter TVOD
             // Redemption Code") - that is not a value, it is the absence of one.
-            if (!value || /^enter\b/i.test(value)) continue;
+            if (!value || /^enter/i.test(value)) continue;
 
             if (value.length > SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH) {
                 value = `${value.slice(0, SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH)}...`;
             }
 
+            if (seen.has(label)) startNextPlan();
+
             seen.add(label);
-            details.push({ label, value });
+            details.push({ label, value, group });
 
             if (details.length >= SUBSCRIPTION_DETAIL_MAX_FIELDS) break;
         }
@@ -8627,6 +8630,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return true;
   }
 
+  // Matches the scraper's per-panel cap: every field of every plan on the
+  // account is meant to reach the note, not just the first plan's.
+  const SUBSCRIPTION_NOTE_MAX_ROWS = 60;
+
   // Same trust rule as the source link: this came out of GM storage and is
   // about to land in an agent's note, so it goes in as text nodes only, with
   // hard caps on how much of it can get there.
@@ -8634,10 +8641,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     if (!Array.isArray(details) || !details.length) return false;
 
     const rows = details
-      .slice(0, 20)
+      .slice(0, SUBSCRIPTION_NOTE_MAX_ROWS)
       .map(detail => ({
         label: cleanText(detail && detail.label).slice(0, 60),
-        value: cleanText(detail && detail.value).slice(0, 200)
+        value: cleanText(detail && detail.value).slice(0, 200),
+        group: Number(detail && detail.group) || 0
       }))
       .filter(row => row.label && row.value);
 
@@ -8648,7 +8656,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     heading.textContent = 'Subscription details';
     paragraph.appendChild(heading);
 
+    // One blank line between plans, so an account with two subscriptions
+    // does not read as one plan with two of everything.
+    let group = rows[0].group;
+
     for (const row of rows) {
+      if (row.group !== group) {
+        paragraph.appendChild(document.createElement('br'));
+        group = row.group;
+      }
+
       paragraph.appendChild(document.createElement('br'));
       paragraph.appendChild(document.createTextNode(`${row.label}: ${row.value}`));
     }

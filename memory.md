@@ -2,6 +2,68 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Two diagnostics left the Tampermonkey menu - 3.60.0 (2026-08-29)
+
+Sebastian screenshotted the menu and asked for **CMS API: Check captured credentials** and **CMS
+button: toggle timing log** to go. Both were developer diagnostics that had been shipping to every
+agent's menu.
+
+* The credentials entry went, and `bvReportCmsCredStatus()` went with it - the menu was its only
+  caller, so keeping it would have left ~40 lines nothing could reach. The helpers it used
+  (`bvCredsAreLive`, `bvTokenExpiresAt`, `bvGetCmsCreds`) stay: the capture path and
+  `tests/token-expiry.test.js` still use them.
+* The timing entry went but **the feature did not**. `bvTimingEnabled()` reads three channels, and
+  the menu was only ever the third; from DevTools on the page,
+  `document.documentElement.dataset.bvCmsTiming = 'true'` still turns the journey log on. A comment
+  where the menu block used to be says so, because that is now the only place it is written down.
+  `bvTimingSetEnabled()` is left in place - unused by the script, still exercised by
+  `tests/cms-timing.test.js`, and it is the documented write path for the flag.
+
+The two Refund entries and `Freshdesk: Set API Key` were not touched - only the two in the shot.
+
+`node tests/run-all.js` - all 15 steps pass.
+
+## The note copied half the subscription panel - 3.59.0 (2026-08-29)
+
+Sebastian pasted a real Stripe panel and asked for "todo" in the sub section of the CMS-to-Freshdesk
+note. Seven of its twelve fields never arrived: **Price, Receipt ID, Payment Unique ID, Transaction
+ID, End Date, Cancellation Reason** and the bare **Monthly** heading. Nothing was broken - the
+scraper is a whitelist (`SUBSCRIPTION_DETAIL_LABELS`) and those labels had never been added, so they
+were silently skipped. The whitelist stays: a structural sweep of this React panel picks up buttons,
+spacers and section headings as if they were fields, which is why it exists at all.
+
+### Three changes, not one
+
+1. **The list now covers the panel.** Price / Receipt ID / Payment Unique ID / Transaction ID /
+   Start Date / End Date / Cancellation Reason / Cancelled On / Promo Code / Discount, plus the
+   `Id`-cased twins the CMS mixes freely.
+2. **The billing cycle has no label**, so it could never be whitelisted. New
+   `SUBSCRIPTION_CYCLE_PATTERN` + `readSubscriptionCycleHeading()` recognise a bare
+   "Monthly"/"Annual"/"Free Trial" heading by its own text and report it as `Billing Cycle`. Two
+   guards keep it from firing on a value: it must be a leaf node, and a **known label always wins** -
+   "Free Trial" is both a field and a cycle, and the labelled reading is the right one.
+3. **A repeated label used to mean "drop it"; now it means "next plan".** An account can hold several
+   subscriptions and the panel lists them under identical labels, so `collectSubscriptionDetails`
+   groups instead of deduplicating, and `appendSubscriptionDetails` puts one blank line between
+   groups. Caps moved with it: 20 -> 60 fields on both sides (per panel, not per plan).
+
+### Not touched on purpose
+
+`readLabeledValue`'s `maxParts` is still 2 for date-ish labels and 1 for everything else. Sebastian's
+paste is the evidence: "Registered On" and "End Date" render their day and time as two nodes,
+"Price" renders `USD 19.95` as one. Widening it for money would let an unrecognised future label get
+swallowed into the value above it - the exact failure the original comment warns about. `Transaction
+ID: –` comes across as the en dash, because that is what the panel shows.
+
+### Verified
+
+`node tests/run-all.js` - all 15 steps pass. `tests/subscription-details.test.js` gained a
+`stripePanel()` fixture that is Sebastian's paste node for node, a `twoPlanPanel()`, a
+labelled-"Monthly" trap, and a note-side check for the blank line between plans; the fake DOM gained
+`previousElementSibling`. **Mutation-tested**: deleting `"Price"` and `"Cancellation Reason"` from the
+list reproduces the exact report - both fields vanish from the expected run. Not live-confirmed: no
+CMS page was open this session.
+
 ## DIRT opened the right CMS host and the wrong brand inside it - 3.57.0 (2026-08-23)
 
 Sebastian: "el cms button para Dirt no funciona correctamente - abre el CMS equivocado."
