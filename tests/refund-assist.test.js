@@ -108,10 +108,15 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'buildNote')}
   ${extractFunction(assistSrc, 'escapeHtml')}
   ${extractFunction(assistSrc, 'noteLinesToHtml')}
+  ${extractFunction(assistSrc, 'lineToHtml')}
+  ${extractFunction(assistSrc, 'noteToHtml')}
+  ${extractFunction(assistSrc, 'noteToText')}
+  ${extractFunction(assistSrc, 'chargeCells')}
+  function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
   Object.assign(ctx, { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
-    noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
+    noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
 
@@ -125,7 +130,7 @@ new Function('ctx', `
 `)(workflowCtx);
 
 const { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
-  noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
+  noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
 
@@ -181,51 +186,70 @@ check('reads the plan name after its label', plan.name === 'Monthly Plan', plan.
 check('reads the status after its label', plan.status === 'DEFERRED_CANCELLATION', plan.status);
 check('reads the end date after its label', plan.endDate === '10/29/26', plan.endDate);
 check('finds the enabled CANCEL button', plan.cancelButton === cancelBtn);
+check('reads the bare heading as the billing cycle', plan.cycle === 'Monthly', plan.cycle);
+check('reads the price after its label', plan.price === 'USD 19.99', plan.price);
+const noCycle = readPlanCard({ innerText: ['Plan Name', 'Weird Plan', 'Status', 'ACTIVE'].join('\n'), querySelectorAll: () => [] });
+check('a card without a cycle heading reports no cycle', noCycle.cycle === '', noCycle);
 const disabledPlan = readPlanCard({ innerText: cardLines.join('\n'), querySelectorAll: () => [button('Cancel', true)] });
 check('a disabled CANCEL is no cancel button', disabledPlan.cancelButton === null);
 
 // ------------------------------------------------------------------ note
 
-const charge = { date: '9/29/2026', title: 'Monthly Plan', order: 'ch_AAA', amount: 'USD 19.99', handler: 'STRIPE' };
-const charge2 = { date: '8/29/2026', title: 'Monthly Plan', order: 'ch_BBB', amount: 'USD 19.99', handler: 'STRIPE' };
-const ticket = 'https://viewlift.freshdesk.com/a/tickets/361631';
+// Modelled on the note Sebastian pasted as the target (2026-09-30).
+const CMS_URL = 'https://cms.monumentalsportsnetwork.com/users/search/96a60516-4889-4c51-937d-620875cbc005';
+const annualPlan = { name: 'Annual Plan', cycle: 'Yearly', price: 'USD 179.99', status: 'CANCELLED' };
+const refundRow = { date: '9/30/2026', title: 'Annual Plan', type: 'REFUND', order: 're_3UL9b7JtJXFjDDk501KK4Zho', amount: 'USD 179.99', handler: 'STRIPE', offer: 'N/A' };
+const charge = { date: '9/29/2026', title: 'Annual Plan', type: 'CHARGE', order: 'ch_3UL9b7JtJXFjDDk50hpPSre8', amount: 'USD 179.99', handler: 'STRIPE', offer: 'N/A', refundRow };
+const charge2 = { date: '8/29/2026', title: 'Annual Plan', type: 'CHARGE', order: 'ch_BBB', amount: 'USD 19.99', handler: 'STRIPE', offer: 'N/A' };
 
-const okNote = buildNote({
-  dryRun: false, cancelOk: true,
-  cancelLines: ['Account cancelled now (Monthly Plan) - status: CANCELLED'],
-  done: [charge, charge2], failed: [], skipped: []
-}).map(line => line.text);
-check('note leads with the cancellation', okNote[0] === 'Account cancelled now (Monthly Plan) - status: CANCELLED', okNote);
-check('note lists every refunded charge, one short line each', okNote[1] === 'Refunded (100%):' &&
-  okNote[2] === '9/29/2026 - USD 19.99 - ch_AAA' && okNote[3] === '8/29/2026 - USD 19.99 - ch_BBB', okNote);
-check('note carries the total when there is more than one', okNote[4] === 'Total: USD 39.98', okNote);
-check('note is short: no tool name, no links, nothing else', okNote.length === 5 &&
-  !okNote.some(t => /refund assist|https?:/i.test(t)), okNote);
+const okNote = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL, done: [charge], failed: [], skipped: [] });
+const okLines = okNote.lines.map(line => line.text);
+check('note opens with the plan name in brackets, then the CMS link', okLines[0] === '(Annual Plan)' &&
+  okLines[1] === 'CMS: ' + CMS_URL && okNote.lines[1].href === CMS_URL, okLines);
+check('note has the Subscription details block in the asked order',
+  JSON.stringify(okLines.slice(2)) === JSON.stringify(['Subscription details', 'Billing Cycle: Yearly',
+    'Plan Name: Annual Plan', 'Price: USD 179.99', 'Status: CANCELLED']) && okNote.lines[2].bold === true, okLines);
+check('the table has the REFUND row (re_ id) above its CHARGE row', JSON.stringify(okNote.rows) === JSON.stringify([
+  ['9/30/2026', 'Annual Plan', 'REFUND', 're_3UL9b7JtJXFjDDk501KK4Zho', 'USD 179.99', 'STRIPE', 'N/A'],
+  ['9/29/2026', 'Annual Plan', 'CHARGE', 'ch_3UL9b7JtJXFjDDk50hpPSre8', 'USD 179.99', 'STRIPE', 'N/A']
+]), okNote.rows);
+check('a clean run has nothing below the table', okNote.after.length === 0, okNote.after);
+check('no tool name anywhere in the note', !okLines.some(t => /refund assist/i.test(t)), okLines);
 
-const single = buildNote({ dryRun: false, cancelOk: true, cancelLines: ['x'], done: [charge], failed: [], skipped: [] }).map(l => l.text);
-check('one refund has no separate total line', !single.some(t => t.startsWith('Total')), single);
+const text = noteToText(okNote);
+check('clipboard copy is the lines, a blank line, then tab-separated rows', text.startsWith('(Annual Plan)\nCMS: ') &&
+  text.includes('Status: CANCELLED\n\n9/30/2026\tAnnual Plan\tREFUND\tre_3UL9b7JtJXFjDDk501KK4Zho\tUSD 179.99\tSTRIPE\tN/A\n9/29/2026\t'), text);
+
+const noteHtml = noteToHtml(okNote);
+check('note HTML links the CMS account', noteHtml.includes(`CMS: <a href="${CMS_URL}"`), noteHtml);
+check('note HTML renders the rows as a table', noteHtml.includes('<table><tbody><tr><td>9/30/2026</td>') &&
+  noteHtml.includes('<td>re_3UL9b7JtJXFjDDk501KK4Zho</td>'), noteHtml);
+const offHost = noteToHtml({ lines: [{ text: 'CMS: https://evil.example/x', href: 'https://evil.example/x' }], rows: [], after: [] });
+check('only a CMS host ever becomes a link', !offHost.includes('<a '), offHost);
+
+const noRefundYet = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL,
+  done: [charge2], failed: [], skipped: [] });
+check('a refund CMS has not listed yet keeps its charge row and says so', noRefundYet.rows.length === 1 &&
+  noRefundYet.after.some(line => line.text.includes('ch_BBB')), noRefundYet);
 
 const partial = buildNote({
-  dryRun: false, cancelOk: true, cancelLines: ['x'],
-  done: [charge], failed: [{ charge: charge2, reason: 'Refund dialog still open' }], skipped: [{ date: '7/1', order: 'ch_DDD', amount: 'USD 1.00' }]
-}).map(line => line.text);
-check('a failed refund is listed with its reason', partial.includes('8/29/2026 - USD 19.99 - failed: Refund dialog still open'), partial);
-check('charges after the failure are listed as not done', partial.includes('7/1 - USD 1.00 - not done'), partial);
-check('a failed charge is not listed as refunded', !partial.some(t => t.includes('ch_BBB')), partial);
+  dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL,
+  done: [charge], failed: [{ charge: charge2, reason: 'Refund dialog still open' }],
+  skipped: [{ date: '7/1', order: 'ch_DDD', amount: 'USD 1.00' }]
+});
+const partialAfter = partial.after.map(line => line.text);
+check('a failed refund is listed below the table with its reason',
+  partialAfter.includes('8/29/2026 - USD 19.99 - ch_BBB - failed: Refund dialog still open'), partialAfter);
+check('charges after the failure are listed as not done', partialAfter.includes('7/1 - USD 1.00 - ch_DDD - not done'), partialAfter);
+check('a failed charge is not in the table', !partial.rows.some(cells => cells.includes('ch_BBB')), partial.rows);
 
-const cancelFailed = buildNote({
-  dryRun: false, cancelOk: false, cancelLines: [],
-  done: [], failed: [], skipped: [charge]
-}).map(line => line.text);
-check('a failed cancel says no refund was issued', cancelFailed[0] === 'Cancellation failed - no refunds issued', cancelFailed);
-check('a failed cancel has no "Refunded" block', !cancelFailed.includes('Refunded (100%):'), cancelFailed);
+const cancelFailed = buildNote({ dryRun: false, cancelOk: false, plan: null, cmsUrl: CMS_URL, done: [], failed: [], skipped: [charge] });
+check('a failed cancel says no refund was issued', cancelFailed.lines[0].text === 'Cancellation failed - no refunds issued', cancelFailed.lines);
+check('a failed cancel has an empty table', cancelFailed.rows.length === 0, cancelFailed.rows);
 
-const dry = buildNote({
-  dryRun: true, cancelOk: true, cancelLines: ['Would cancel now: Monthly Plan (status ACTIVE)'],
-  done: [charge], failed: [], skipped: []
-}).map(line => line.text);
-check('a dry run says so first', dry[0] === 'DRY RUN - nothing was cancelled or refunded', dry[0]);
-check('a dry run never says "Refunded"', !dry.includes('Refunded (100%):') && dry.includes('Refunds prepared (100%):'), dry);
+const dry = buildNote({ dryRun: true, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL, done: [charge2], failed: [], skipped: [] });
+check('a dry run says so first', dry.lines[0].text === 'DRY RUN - nothing was cancelled or refunded', dry.lines[0]);
+check('a dry run does not complain about missing refund ids', dry.after.length === 0, dry.after);
 
 // ------------------------------------------------------------------ order pin
 

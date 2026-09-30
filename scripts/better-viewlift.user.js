@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.64.1
+// @version      3.65.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -24,6 +24,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @grant        GM_openInTab
+// @grant        window.close
+// @grant        window.focus
 // @grant        unsafeWindow
 // @connect      cms.viewlift.com
 // @connect      cms-gcp.viewlift.com
@@ -203,6 +205,10 @@
   // ticket's own Freshdesk tab pastes it into a private note.
   const BV_REFUND_ASSIST_NOTE_KEY = 'betterViewliftRefundAssistNote';
   const BV_REFUND_ASSIST_NOTE_TTL_MS = 60 * 60 * 1000;
+  // After a clean run CMS asks the ticket's tab to come to the front, and
+  // waits for it to answer before closing itself.
+  const BV_FOCUS_TICKET_KEY = 'betterViewliftFocusTicket';
+  const BV_FOCUS_TICKET_ACK_KEY = 'betterViewliftFocusTicketAck';
 
   // Diagnostic channel for things worth knowing about (CMS session dying,
   // a lookup falling back to a worse method). Routed to the console -
@@ -6640,6 +6646,7 @@ if (isCMSHost()) {
                 order: cell('order number'),
                 amount: cell('total amount'),
                 handler: cell('payment handler'),
+                offer: cell('offer'),
                 hasEye: Boolean(row.querySelector('svg[data-testid="VisibilityIcon"]'))
             };
         }).filter(charge => charge.order);
@@ -6758,8 +6765,15 @@ if (isCMSHost()) {
         };
         const cancelButton = Array.from(card?.querySelectorAll('button') || [])
             .find(button => lower(button) === 'cancel' && !button.disabled && isVisible(button)) || null;
+        // The card opens with a bare billing-cycle heading ("Monthly",
+        // "Annual") above its CANCEL/REVERT buttons - the same heading the
+        // snapshot's subscription details report as "Billing Cycle".
+        const cycle = /^(?:daily|weekly|bi-?weekly|monthly|bi-?monthly|quarterly|semi-?annual(?:ly)?|annual(?:ly)?|yearly|lifetime|one[- ]time|free\s+trial)$/i
+            .test(lines[0] || '') ? lines[0] : '';
         return {
             name: valueAfter('plan name') || lines[0] || 'Subscription',
+            cycle,
+            price: valueAfter('price'),
             status: valueAfter('status'),
             endDate: valueAfter('end date'),
             cancelButton
@@ -7000,27 +7014,67 @@ if (isCMSHost()) {
         return endStep(step, 'done', alertText || 'Confirm Refund accepted');
     }
 
-    // Kept short on purpose: it lands in the ticket as the agent's note, so
-    // it reads like one - what was cancelled, what was refunded, the total.
-    function buildNote({ dryRun, cancelLines, cancelOk, done, failed, skipped }) {
+    function chargeCells(charge) {
+        return [charge.date, charge.title, charge.type, charge.order, charge.amount, charge.handler, charge.offer]
+            .map(value => cleanText(value));
+    }
+
+    // The layout Sebastian asked for (2026-09-30, modelled on his own note):
+    //   (Annual Plan)
+    //   CMS: <account link>
+    //   Subscription details - Billing Cycle / Plan Name / Price / Status
+    //   then the CMS table rows: each refunded charge's REFUND row (the re_
+    //   id) above its CHARGE row, exactly as CMS lists them.
+    // Returns { lines, rows, after }: text above the table, the table, and
+    // anything that went wrong below it.
+    function buildNote({ dryRun, cancelOk, plan, cmsUrl, done, failed, skipped }) {
         const lines = [];
         if (dryRun) lines.push({ text: 'DRY RUN - nothing was cancelled or refunded', bold: true });
-        cancelLines.forEach(text => lines.push({ text }));
-        if (!cancelOk && !cancelLines.length) lines.push({ text: 'Cancellation failed - no refunds issued', bold: true });
-        if (done.length) {
-            lines.push({ text: dryRun ? 'Refunds prepared (100%):' : 'Refunded (100%):', bold: true });
-            done.forEach(charge => lines.push({ text: `${charge.date} - ${charge.amount} - ${charge.order}` }));
-            if (done.length > 1) lines.push({ text: `Total: ${formatTotal(done)}` });
+        if (!cancelOk) lines.push({ text: 'Cancellation failed - no refunds issued', bold: true });
+        if (plan?.name) lines.push({ text: `(${plan.name})` });
+        if (cmsUrl) lines.push({ text: `CMS: ${cmsUrl}`, href: cmsUrl });
+
+        const details = [
+            ['Billing Cycle', plan?.cycle],
+            ['Plan Name', plan?.name],
+            ['Price', plan?.price],
+            ['Status', plan?.status]
+        ].filter(([, value]) => cleanText(value));
+        if (details.length) {
+            lines.push({ text: 'Subscription details', bold: true });
+            details.forEach(([label, value]) => lines.push({ text: `${label}: ${cleanText(value)}` }));
+        }
+
+        const rows = [];
+        for (const charge of done) {
+            if (charge.refundRow) rows.push(chargeCells(charge.refundRow));
+            rows.push(chargeCells(charge));
+        }
+
+        const after = [];
+        const missingRefundId = !dryRun && done.filter(charge => !charge.refundRow);
+        if (missingRefundId && missingRefundId.length) {
+            after.push({ text: `Refund row not shown in CMS yet for: ${missingRefundId.map(charge => charge.order).join(', ')}` });
         }
         const notDone = [
-            ...failed.map(({ charge, reason }) => `${charge.date} - ${charge.amount} - failed: ${reason}`),
-            ...skipped.map(charge => `${charge.date} - ${charge.amount} - not done`)
+            ...failed.map(({ charge, reason }) => `${charge.date} - ${charge.amount} - ${charge.order} - failed: ${reason}`),
+            ...skipped.map(charge => `${charge.date} - ${charge.amount} - ${charge.order} - not done`)
         ];
         if (notDone.length) {
-            lines.push({ text: 'Not refunded:', bold: true });
-            notDone.forEach(text => lines.push({ text }));
+            after.push({ text: 'Not refunded:', bold: true });
+            notDone.forEach(text => after.push({ text }));
         }
-        return lines;
+        return { lines, rows, after };
+    }
+
+    // Tab-separated rows, like copying the table straight out of CMS.
+    function noteToText(note) {
+        const block = list => list.map(line => line.text).join('\n');
+        return [
+            block(note.lines),
+            note.rows.length ? note.rows.map(cells => cells.join('\t')).join('\n') : '',
+            block(note.after)
+        ].filter(Boolean).join('\n\n');
     }
 
     // pasteNote: the Freshdesk tab writes the lines into an unsaved private
@@ -7028,13 +7082,21 @@ if (isCMSHost()) {
     // clicks Apply on that scenario so its customer reply lands in the reply
     // editor for review - only queued once the note is already saved,
     // because the reply editor replaces an open note draft.
-    function queueNote(ticketURL, lines, { pasteNote = true, applyScenario = '' } = {}) {
+    function queueNote(ticketURL, note, { pasteNote = true, applyScenario = '' } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
             const now = Date.now();
             queue = queue.filter(entry => entry && now - Number(entry.createdAt || 0) < BV_REFUND_ASSIST_NOTE_TTL_MS);
-            queue.push({ ticketUrl: ticketURL, createdAt: now, lines: pasteNote ? lines : [], pasteNote, applyScenario });
+            queue.push({
+                ticketUrl: ticketURL,
+                createdAt: now,
+                lines: pasteNote ? (note?.lines || []) : [],
+                rows: pasteNote ? (note?.rows || []) : [],
+                after: pasteNote ? (note?.after || []) : [],
+                pasteNote,
+                applyScenario
+            });
             GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
             return true;
         } catch (error) {
@@ -7084,10 +7146,35 @@ if (isCMSHost()) {
         return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     }
 
+    function lineToHtml(line) {
+        if (line.bold) return `<strong>${escapeHtml(line.text)}</strong>`;
+        // Only the account link is ever a link, and only to a CMS host.
+        if (line.href && /^https:\/\//i.test(line.href)) {
+            try {
+                if (isCMSHost(new URL(line.href).hostname)) {
+                    const label = line.text.startsWith('CMS: ') ? 'CMS: ' : '';
+                    return `${label}<a href="${escapeHtml(line.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(line.href)}</a>`;
+                }
+            } catch (error) {
+                // Not a URL - falls through to plain text.
+            }
+        }
+        return escapeHtml(line.text);
+    }
+
     function noteLinesToHtml(lines) {
-        return `<div>${lines.map(line => line.bold
-            ? `<strong>${escapeHtml(line.text)}</strong>`
-            : escapeHtml(line.text)).join('<br>')}</div>`;
+        return `<div>${lines.map(lineToHtml).join('<br>')}</div>`;
+    }
+
+    function noteToHtml(note) {
+        const parts = [];
+        if (note.lines.length) parts.push(noteLinesToHtml(note.lines));
+        if (note.rows.length) {
+            parts.push(`<table><tbody>${note.rows.map(cells =>
+                `<tr>${cells.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+        }
+        if (note.after.length) parts.push(noteLinesToHtml(note.after));
+        return parts.join('<br>');
     }
 
     // The scenario's actions translated into one v2 ticket update. The reply
@@ -7183,7 +7270,6 @@ if (isCMSHost()) {
         lastNoteText = '';
         render();
 
-        let cancelLines = [];
         let cancelOk = true;
         const done = [];
         const failed = [];
@@ -7192,7 +7278,6 @@ if (isCMSHost()) {
         try {
             if (cancelFirst) {
                 const cancel = await cancelSubscriptions(ticketURL, dryRun);
-                cancelLines = cancel.lines;
                 cancelOk = cancel.ok;
             }
 
@@ -7219,8 +7304,29 @@ if (isCMSHost()) {
             skipped.push(...picked.filter(charge => !handled.has(charge)));
         }
 
-        const lines = buildNote({ dryRun, cancelLines, cancelOk, done, failed, skipped });
-        lastNoteText = lines.map(line => line.text).join('\n');
+        // What the note reports is read back from CMS after the fact - the
+        // refund ids and the plan's final status - never assumed.
+        if (!dryRun && done.length) {
+            const refundStep = addStep('Read the refund ids back from CMS');
+            try {
+                await attachRefundRows(done);
+                const missing = done.filter(charge => !charge.refundRow).length;
+                endStep(refundStep, 'done', missing
+                    ? `${done.length - missing} of ${done.length} found - CMS has not listed the rest yet`
+                    : done.map(charge => charge.refundRow.order).join(', '));
+            } catch (error) {
+                endStep(refundStep, 'done', `could not re-read the table (${String(error?.message || error)})`);
+            }
+        }
+        let plan = null;
+        try {
+            plan = await readFinalPlan(cancelFirst && cancelOk && !dryRun, picked[0]?.title || '');
+        } catch (error) {
+            console.warn('[BV Refund Assist] Could not re-read the plan card.', error);
+        }
+
+        const note = buildNote({ dryRun, cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
+        lastNoteText = noteToText(note);
         const copied = copyText(lastNoteText);
         const ticketId = getTicketNumber(ticketURL);
 
@@ -7231,7 +7337,7 @@ if (isCMSHost()) {
         if (!dryRun && getFreshdeskApiKey()) {
             try {
                 await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
-                    body: noteLinesToHtml(lines),
+                    body: noteToHtml(note),
                     private: true
                 });
                 noteSaved = true;
@@ -7241,7 +7347,7 @@ if (isCMSHost()) {
             }
         }
         if (!noteSaved) {
-            const queued = queueNote(ticketURL, lines);
+            const queued = queueNote(ticketURL, note);
             if (noteStep.state === 'running') {
                 endStep(noteStep, queued ? (dryRun ? 'dry-run' : 'done') : 'failed', [
                     queued ? 'pasted into the ticket tab, NOT saved - click Add note' : 'could not queue the note',
@@ -7263,7 +7369,7 @@ if (isCMSHost()) {
                     // The customer reply cannot go through the API and must
                     // be reviewed anyway: the ticket tab clicks Apply so it
                     // lands in the reply editor, unsent.
-                    queueNote(ticketURL, [], { pasteNote: false, applyScenario: REFUNDED_SCENARIO_NAME });
+                    queueNote(ticketURL, null, { pasteNote: false, applyScenario: REFUNDED_SCENARIO_NAME });
                     endStep(scenarioStep, 'done', [
                         `set ${result.changed.join(', ') || 'nothing new'} (${result.source})`,
                         'the reply opens in the ticket tab for you to review and send'
@@ -7276,6 +7382,90 @@ if (isCMSHost()) {
 
         running = false;
         render();
+
+        // Only a run where everything worked closes CMS: anything that failed
+        // stays on screen in this panel, which is where it is explained.
+        const allGood = !dryRun && cancelOk && noteSaved && !failed.length && !skipped.length &&
+            steps.every(step => step.state !== 'failed');
+        if (allGood) await handOffToTicket(ticketId);
+    }
+
+    // A refund issued seconds ago is not in the list CMS already fetched, so
+    // the table is reloaded (One-Time Purchases and back) until each refunded
+    // Stripe charge has its REFUND row, or the time runs out. Other handlers'
+    // ids cannot be paired (see markRefundedCharges), so they are not waited on.
+    async function attachRefundRows(done) {
+        const waitable = done.filter(charge => /^ch_/i.test(charge.order));
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            const oneTime = findButtonByText('one-time purchases');
+            if (oneTime) {
+                realClick(oneTime);
+                await sleep(700);
+            }
+            const table = await openSubscriptionCharges();
+            const rows = markRefundedCharges(scrapeCharges(table));
+            for (const charge of done) {
+                const row = rows.find(candidate => candidate.order === charge.order);
+                if (row?.refundedBy) charge.refundRow = rows.find(candidate => candidate.order === row.refundedBy) || null;
+            }
+            if (waitable.every(charge => charge.refundRow)) return;
+            await sleep(2000);
+        }
+    }
+
+    // The status is read from a freshly mounted card: right after CANCEL NOW
+    // the old card still says DEFERRED_CANCELLATION (live, 2026-09-30).
+    async function readFinalPlan(expectCancelled, preferName) {
+        if (!await openSubscriptionPlans()) return null;
+        let plan = null;
+        await waitFor(() => {
+            const cards = getPlanCards().map(readPlanCard);
+            plan = cards.find(card => card.name === preferName) || cards[0] || null;
+            return plan && (!expectCancelled || /^cancel/i.test(plan.status)) ? true : null;
+        }, { timeout: 8000, pollMs: 400 });
+        if (plan && expectCancelled && !/^cancel/i.test(plan.status)) {
+            // Cancel Now went through, CMS just has not caught up. Say that
+            // rather than printing the stale status as if it were the result.
+            plan = Object.assign({}, plan, { status: `Cancel Now done (CMS still showed ${plan.status || 'no status'})` });
+        }
+        return plan;
+    }
+
+    // Brings the ticket tab to the front and closes this CMS tab. The ticket
+    // tab answers on BV_FOCUS_TICKET_ACK_KEY when it has focused itself; with
+    // no answer (tab not open) the ticket is opened fresh instead.
+    async function handOffToTicket(ticketId) {
+        const step = addStep('Back to the ticket');
+        const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        try {
+            GM_setValue(BV_FOCUS_TICKET_KEY, { ticketId: String(ticketId), nonce, at: Date.now() });
+        } catch (error) {
+            endStep(step, 'failed', 'could not signal the ticket tab');
+            return;
+        }
+        const acked = await waitFor(() => {
+            try {
+                return GM_getValue(BV_FOCUS_TICKET_ACK_KEY, '') === nonce ? true : null;
+            } catch (error) {
+                return null;
+            }
+        }, { timeout: 3000, pollMs: 150 });
+        if (!acked) {
+            try {
+                GM_openInTab(`https://viewlift.freshdesk.com/a/tickets/${ticketId}`, { active: true });
+            } catch (error) {
+                endStep(step, 'failed', 'ticket tab not open and could not open it - CMS left open');
+                return;
+            }
+        }
+        endStep(step, 'done', `${acked ? 'ticket tab focused' : 'ticket opened in a new tab'} - closing CMS`);
+        await sleep(1500);
+        try {
+            window.close();
+        } catch (error) {
+            endStep(step, 'failed', 'Tampermonkey did not allow closing this tab - close it by hand');
+        }
     }
 
     /* ---------------- UI ---------------- */
@@ -9993,12 +10183,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   // Came out of GM storage, so it goes in as text nodes only, capped - the
   // same trust rule as the snapshot note's subscription details.
-  function writeLines(editor, lines) {
+  function buildParagraph(lines) {
     const paragraph = document.createElement('p');
-    lines.slice(0, MAX_LINES).forEach((line, index) => {
+    (Array.isArray(lines) ? lines : []).slice(0, MAX_LINES).forEach(line => {
       const text = cleanText(line && line.text).slice(0, 300);
       if (!text) return;
-      if (index > 0) paragraph.appendChild(document.createElement('br'));
+      if (paragraph.childNodes.length) paragraph.appendChild(document.createElement('br'));
       if (line.bold) {
         const strong = document.createElement('strong');
         strong.textContent = text;
@@ -10007,8 +10197,32 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         paragraph.appendChild(document.createTextNode(text));
       }
     });
-    if (!paragraph.childNodes.length) return false;
-    editor.appendChild(paragraph);
+    return paragraph.childNodes.length ? paragraph : null;
+  }
+
+  function buildTable(rows) {
+    const list = (Array.isArray(rows) ? rows : []).slice(0, MAX_LINES).filter(Array.isArray);
+    if (!list.length) return null;
+    const table = document.createElement('table');
+    const body = document.createElement('tbody');
+    for (const cells of list) {
+      const tr = document.createElement('tr');
+      cells.slice(0, 10).forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cleanText(cell).slice(0, 120);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    return table;
+  }
+
+  // Same layout as the API note: lines, the CMS table rows, then problems.
+  function writeNote(editor, entry) {
+    const blocks = [buildParagraph(entry.lines), buildTable(entry.rows), buildParagraph(entry.after)].filter(Boolean);
+    if (!blocks.length) return false;
+    blocks.forEach(block => editor.appendChild(block));
     editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
     editor.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -10108,7 +10322,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     pasting = true;
     try {
       editor.focus();
-      if (writeLines(editor, entry.lines)) {
+      if (writeNote(editor, entry)) {
         removeEntry(entry);
         showStatus('Refund Assist: summary pasted into a private note - click Add note to save it.');
       }
@@ -10129,6 +10343,24 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       if (typeof GM_addValueChangeListener === 'function') {
         GM_addValueChangeListener(BV_REFUND_ASSIST_NOTE_KEY, function (_name, _old, _new, remote) {
           if (remote) consume();
+        });
+        // CMS finished cleanly and is about to close itself: if this tab is
+        // that ticket, come to the front and say so, so CMS does not open a
+        // duplicate. Needs @grant window.focus - Tampermonkey's version
+        // actually brings the tab forward, the page's own does not.
+        GM_addValueChangeListener(BV_FOCUS_TICKET_KEY, function (_name, _old, request, remote) {
+          if (!remote || !request || String(request.ticketId) !== getTicketId()) return;
+          if (Date.now() - Number(request.at || 0) > 15000) return;
+          try {
+            window.focus();
+          } catch (error) {
+            console.warn('[BV Refund Assist] Could not focus the ticket tab.', error);
+          }
+          try {
+            GM_setValue(BV_FOCUS_TICKET_ACK_KEY, request.nonce);
+          } catch (error) {
+            // CMS then opens the ticket in a new tab instead.
+          }
         });
       }
     } catch (error) {

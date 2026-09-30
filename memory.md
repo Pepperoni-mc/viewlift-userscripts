@@ -31,6 +31,34 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.65.0 - the note carries the refund ids; CMS closes and the ticket comes forward (same day)
+
+Sebastian pasted the note he wants (his own, for an Annual Plan): `(Plan)` / `CMS: <link>` /
+**Subscription details** (Billing Cycle, Plan Name, Price, Status) / then the CMS table rows -
+the `REFUND` row with its `re_` id above the `CHARGE` row. `buildNote()` now returns
+`{ lines, rows, after }` and that is rendered three ways: `noteToHtml()` for the API note (the
+CMS link is an `<a>` only when its host passes `isCMSHost`), `noteToText()` for the clipboard
+(tab-separated rows, like copying the CMS table), and the Freshdesk fallback paste
+(`writeNote()`, text nodes + a real `<table>`).
+
+- Refund ids are **read back, not assumed**: `attachRefundRows()` reloads the charges table
+  (One-Time Purchases and back, so CMS fetches again) for up to 15s until each refunded Stripe
+  charge has its REFUND row (paired by `markRefundedCharges`). Missing ones are said below the
+  table.
+- The plan block comes from `readFinalPlan()`: ACCOUNT tab re-opened (fresh card), waits up to 8s
+  for a status starting `CANCEL`; if CMS still has not caught up it says "Cancel Now done (CMS
+  still showed X)" instead of printing the stale status. `readPlanCard()` now also returns
+  `cycle` (the bare heading) and `price`.
+- After a run with **no failure at all** (not dry, note saved via API, every step OK) CMS writes
+  `BV_FOCUS_TICKET_KEY {ticketId, nonce}`; the ticket's Freshdesk tab calls `window.focus()` and
+  answers on `BV_FOCUS_TICKET_ACK_KEY`. No answer in 3s → `GM_openInTab(ticket, {active:true})`.
+  Then CMS calls `window.close()`. Both need the new `@grant window.close` / `@grant
+  window.focus` (Tampermonkey's versions actually focus/close a tab; the page's own do not).
+  Any failure keeps CMS open with the panel showing why.
+- Verified: syntax + `tests/refund-assist.test.js` (54 checks, target note reproduced from his
+  example). **Not live yet** - needs the update installed, and the refund-id readback, focus and
+  close only run on a real (non-dry) run.
+
 ### 3.64.1 - live dry run, and the double-refund gap it exposed (same day)
 
 Live dry run by Claude on the MSN account (4/22 charge, dry-run flag on): the Cancel Now step saw
