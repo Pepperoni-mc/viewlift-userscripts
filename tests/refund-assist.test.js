@@ -100,6 +100,8 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'getTableHeaders')}
   ${extractFunction(assistSrc, 'scrapeCharges')}
   ${extractFunction(assistSrc, 'isRefundable')}
+  const REFUND_MATCH_CHARS = 16;
+  ${extractFunction(assistSrc, 'markRefundedCharges')}
   ${extractFunction(assistSrc, 'parseAmount')}
   ${extractFunction(assistSrc, 'formatTotal')}
   ${extractFunction(assistSrc, 'readPlanCard')}
@@ -108,7 +110,7 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'noteLinesToHtml')}
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -122,7 +124,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -237,6 +239,20 @@ workflowCtx.setOrder('ch_AAA');
 check('the pinned order in the drawer passes', workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_AAA Plan')));
 check('a stale drawer for another order is refused', !workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_BBB Plan')));
 check('a Refund button outside any drawer is refused', !workflowCtx.triggerMatchesExpectedOrder({ closest: () => null }));
+
+// ------------------------------------------------------------------ already refunded
+
+// The live table right after Sebastian's real run, 2026-09-30.
+const afterRun = markRefundedCharges(scrapeCharges(makeTable(HEADERS, [
+  ['9/30/2026', 'Monthly Plan', 'REFUND', 're_3ULBgIJtJXFjDDk50gHhfbdI', 'USD 19.99', 'STRIPE', 'N/A', ''],
+  ['9/29/2026', 'Monthly Plan', 'CHARGE', 'ch_3ULBgIJtJXFjDDk50HJk2L25', 'USD 19.99', 'STRIPE', 'N/A', ''],
+  ['4/22/2026', 'Monthly Plan', 'CHARGE', 'ch_3TPDpmJtJXFjDDk50HeBD874', 'USD 19.99', 'STRIPE', 'N/A', ''],
+  ['3/22/2026', 'Monthly Plan', 'CHARGE', 'ch_3TDyqRJtJXFjDDk51pz5PzRT', 'USD 19.99', 'STRIPE', 'N/A', '']
+])));
+check('a charge with a matching REFUND row is marked refunded', afterRun[1].refundedBy === 're_3ULBgIJtJXFjDDk50gHhfbdI', afterRun[1]);
+check('an already-refunded charge cannot be picked again', !isRefundable(afterRun[1]));
+check('the other charges stay refundable (shared account suffix is not a match)',
+  isRefundable(afterRun[2]) && isRefundable(afterRun[3]) && !afterRun[2].refundedBy, afterRun.slice(2));
 
 // ------------------------------------------------------------------ Freshdesk API
 

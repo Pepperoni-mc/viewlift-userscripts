@@ -31,6 +31,20 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.64.1 - live dry run, and the double-refund gap it exposed (same day)
+
+Live dry run by Claude on the MSN account (4/22 charge, dry-run flag on): the Cancel Now step saw
+the plan already `CANCELLED` and passed, the refund dialog was filled (100 / ROTH / ticket link)
+and closed unconfirmed, the note was queued unsaved - 10s end to end, no drawer or modal left
+open, no new REFUND row. Sebastian's earlier real run is visible in the table as a REFUND row
+(`re_3ULBgIJtJXFjDDk50gHhfbdI`, 9/30) - but the refunded 9/29 CHARGE row stays a CHARGE, so it was
+still selectable for a second refund. `markRefundedCharges()` now ties a REFUND row to its charge
+by the shared 16-char Stripe payment-intent core (the first 6 chars are per payment, the rest
+`JtJXFjDDk5...` is the account, so fewer chars would false-match every charge) and disables it.
+Non-Stripe handlers get no match and stay selectable. The selection is also cleared on close.
+Also seen: the stored ticket was #361807, not the #361631 being worked - the ticket comes from
+the last Freshdesk ticket opened (`Freshdesk ID`), as it always has for the eye assist.
+
 ### 3.64.0 - note saved and scenario applied through the Freshdesk API (same day)
 
 Sebastian: after the refunds, save the note automatically and apply **B2C Account Refunded**,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.64.0
+// @version      3.64.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6646,7 +6646,27 @@ if (isCMSHost()) {
     }
 
     function isRefundable(charge) {
-        return charge.type.toUpperCase() === 'CHARGE' && charge.hasEye;
+        return charge.type.toUpperCase() === 'CHARGE' && charge.hasEye && !charge.refundedBy;
+    }
+
+    // A refunded charge stays a CHARGE row; the refund shows up as its own
+    // REFUND row (live 2026-09-30: ch_3ULBgIJtJXFjDDk50HJk2L25 refunded as
+    // re_3ULBgIJtJXFjDDk50gHhfbdI). Stripe gives both ids the same
+    // payment-intent prefix, so a shared 16-character core ties them together
+    // - without this the charge stayed selectable for a second refund. The
+    // first 6 characters differ between payments; the rest is the account.
+    const REFUND_MATCH_CHARS = 16;
+
+    function markRefundedCharges(list) {
+        const core = order => cleanText(order).replace(/^[a-z]+_/i, '').slice(0, REFUND_MATCH_CHARS);
+        const refunds = list.filter(charge => charge.type.toUpperCase() === 'REFUND' &&
+            core(charge.order).length === REFUND_MATCH_CHARS);
+        for (const charge of list) {
+            if (charge.type.toUpperCase() !== 'CHARGE') continue;
+            const match = refunds.find(refund => core(refund.order) === core(charge.order));
+            if (match) charge.refundedBy = match.order;
+        }
+        return list;
     }
 
     function findChargeRow(order) {
@@ -7339,6 +7359,8 @@ if (isCMSHost()) {
         if (running) return;
         document.getElementById(PANEL_ID)?.remove();
         view = 'select';
+        // A choice made for one account must not still be ticked next time.
+        selected = new Set();
     }
 
     async function openPanel() {
@@ -7347,7 +7369,7 @@ if (isCMSHost()) {
         steps = [];
         render(true);
         const table = await openSubscriptionCharges();
-        charges = scrapeCharges(table);
+        charges = markRefundedCharges(scrapeCharges(table));
         // Nothing preselected: every refund is an explicit choice.
         selected = new Set(Array.from(selected).filter(order => charges.some(c => c.order === order && isRefundable(c))));
         render();
@@ -7383,7 +7405,7 @@ if (isCMSHost()) {
 
         for (const charge of charges) {
             const on = isRefundable(charge);
-            body.appendChild(el('label', { class: `bv-ra-row${on ? '' : ' is-off'}`, title: on ? '' : `${charge.type} - not a refundable charge` }, [
+            body.appendChild(el('label', { class: `bv-ra-row${on ? '' : ' is-off'}`, title: on ? '' : (charge.refundedBy ? `Already refunded (${charge.refundedBy})` : `${charge.type} - not a refundable charge`) }, [
                 el('input', { type: 'checkbox', disabled: !on, checked: selected.has(charge.order), onchange: event => {
                     if (event.target.checked) selected.add(charge.order);
                     else selected.delete(charge.order);
@@ -7391,7 +7413,7 @@ if (isCMSHost()) {
                 } }),
                 el('span', { text: charge.date }),
                 el('span', { class: 'bv-ra-order', text: `${charge.title} - ${charge.order}` }),
-                el('strong', { text: charge.amount })
+                el('strong', { text: charge.refundedBy ? `${charge.amount} refunded` : charge.amount })
             ]));
         }
 
