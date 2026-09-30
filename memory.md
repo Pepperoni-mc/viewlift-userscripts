@@ -31,6 +31,36 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.64.0 - note saved and scenario applied through the Freshdesk API (same day)
+
+Sebastian: after the refunds, save the note automatically and apply **B2C Account Refunded**,
+using the Freshdesk API; the key is **personal per agent** and each agent sets it themselves
+(Tampermonkey menu "Freshdesk: Set API Key" - already existed). Never store or set it for them.
+
+- **Measured live**: the session cookie authenticates API *reads* but every *write* is refused -
+  `POST /api/v2/tickets/<id>/notes` and `PUT /api/v2/tickets/<id>` both `401 invalid_credentials`
+  (tested with empty bodies, so nothing was written). Writes therefore go through
+  `freshdeskApiRequest()` + the agent's key, which also lets them run straight from the CMS tab.
+  `freshdeskApiRequest()` now targets `https://viewlift.freshdesk.com` explicitly instead of
+  `location.hostname` - from a CMS tab the old URL would have sent the key to the CMS host.
+- **The scenario** (id `43001069613`, read live): `status 12`, `ticket_type Refund`,
+  `add_tag Refunded`, `add_reply`, `responder_id -2`. `scenarioActionsToUpdate()` turns the live
+  definition (fallback: a built-in copy of the above) into one v2 PUT - tags merged with the
+  existing ones, `-2` = `/api/v2/agents/me`, `cf_x_976229` → `custom_fields.cf_x`. **`add_reply` is
+  never sent through the API**: Sebastian's rule is that the reply stays for him to review.
+  Instead the ticket tab does the UI "Apply" (More `button[data-test-actions="more"]` → "Execute
+  scenarios" link → `.modal-content.execute-scenarios` → item `.text--semibold` = name →
+  `[data-test-button="apply-scenario-btn"] button`), which puts the reply in the editor unsent.
+  That chain was driven live with synthetic events up to the Apply button - **Apply itself was
+  not clicked** by Claude.
+- Order: note POST first; only if it saved, the scenario PUT + the UI Apply (the reply editor
+  would otherwise replace an unsaved note draft). No key → note pasted unsaved as before, scenario
+  not applied, and the run's panel says to set the key. Dry run → no API writes at all.
+- The cancel status is no longer read 1.2s after the dialog closes (it was stale - the note said
+  `DEFERRED_CANCELLATION` while a refresh showed cancelled); it waits up to 6s for the status to
+  change and otherwise omits it.
+- Not yet live: the API POST/PUT with a real key (no key is available to Claude, by design).
+
 ### 3.63.1 - resizable panel, short note (same day)
 
 Sebastian ran it and said it works; two asks. The panel "sale muy pequeña": it is now 520x560 by

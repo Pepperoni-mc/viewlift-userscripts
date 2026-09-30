@@ -50,6 +50,12 @@ function extractFunction(source, name) {
   throw new Error('unbalanced braces in ' + name);
 }
 
+function extractArray(source, name) {
+  const idx = source.indexOf('const ' + name);
+  if (idx === -1) throw new Error('could not find const ' + name);
+  return source.slice(idx, source.indexOf('];', idx) + 2);
+}
+
 let passed = 0;
 let failed = 0;
 function check(name, ok, detail) {
@@ -98,7 +104,12 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'formatTotal')}
   ${extractFunction(assistSrc, 'readPlanCard')}
   ${extractFunction(assistSrc, 'buildNote')}
-  Object.assign(ctx, { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote });
+  ${extractFunction(assistSrc, 'escapeHtml')}
+  ${extractFunction(assistSrc, 'noteLinesToHtml')}
+  ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
+  ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
+  Object.assign(ctx, { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+    noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
 
@@ -111,7 +122,8 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote } = context;
+const { scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  noteLinesToHtml, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
 
@@ -225,6 +237,36 @@ workflowCtx.setOrder('ch_AAA');
 check('the pinned order in the drawer passes', workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_AAA Plan')));
 check('a stale drawer for another order is refused', !workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_BBB Plan')));
 check('a Refund button outside any drawer is refused', !workflowCtx.triggerMatchesExpectedOrder({ closest: () => null }));
+
+// ------------------------------------------------------------------ Freshdesk API
+
+const html = noteLinesToHtml([{ text: 'Refunded (100%):', bold: true }, { text: '<img src=x onerror=alert(1)> & co' }]);
+check('note HTML bolds headings and joins lines with <br>', html.startsWith('<div><strong>Refunded (100%):</strong><br>'), html);
+check('note HTML escapes whatever came off the page', html.includes('&lt;img src=x onerror=alert(1)&gt; &amp; co') &&
+  !html.includes('<img'), html);
+
+// The B2C Account Refunded definition read live on 2026-09-30.
+const applied = scenarioActionsToUpdate(REFUNDED_SCENARIO_FALLBACK_ACTIONS, { tags: ['B2C_automation_question'] }, 43000111);
+check('scenario status becomes a number', applied.update.status === 12, applied.update);
+check('scenario ticket_type becomes type', applied.update.type === 'Refund', applied.update);
+check('add_tag keeps the ticket\'s existing tags',
+  JSON.stringify(applied.update.tags) === JSON.stringify(['B2C_automation_question', 'Refunded']), applied.update.tags);
+check('responder -2 means the agent running it', applied.update.responder_id === 43000111, applied.update);
+check('the customer reply is never sent through the API',
+  applied.skipped.includes('add_reply') && !('add_reply' in applied.update), applied);
+
+const again = scenarioActionsToUpdate([{ name: 'add_tag', value: 'Refunded' }], { tags: ['refunded'] }, 1);
+check('a tag already on the ticket is not added twice', !('tags' in again.update), again.update);
+const custom = scenarioActionsToUpdate([{ name: 'cf_platform_976229', value: 'ALL' }], { tags: [] }, 1);
+check('cf_<name>_<account> becomes custom_fields.cf_<name>',
+  custom.update.custom_fields && custom.update.custom_fields.cf_platform === 'ALL', custom.update);
+const noMe = scenarioActionsToUpdate([{ name: 'responder_id', value: '-2' }], { tags: [] }, undefined);
+check('"assign to me" with no agent id is skipped, never sent as -2',
+  !('responder_id' in noMe.update) && noMe.skipped.includes('responder_id'), noMe);
+
+const requestSrc = extractFunction(fullSrc, 'freshdeskApiRequest');
+check('the API key only ever goes to viewlift.freshdesk.com',
+  requestSrc.includes('url: `https://viewlift.freshdesk.com${path}`') && !requestSrc.includes('https://${location.hostname}'));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (!failed) console.log('All checks passed against the shipped source.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.63.1
+// @version      3.64.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -697,7 +697,9 @@
 
     GM_xmlhttpRequest({
       method,
-      url: `https://${location.hostname}${path}`,
+      // Fixed origin, not location.hostname: CMS Refund Assist calls this from
+      // a CMS tab, and the agent's key must only ever go to Freshdesk.
+      url: `https://viewlift.freshdesk.com${path}`,
       headers: Object.assign(
         { Authorization: 'Basic ' + btoa(apiKey + ':X') },
         body ? { 'Content-Type': 'application/json' } : {}
@@ -6892,11 +6894,22 @@ if (isCMSHost()) {
                 return { ok: endStep(step, 'failed', `The cancel dialog stayed open after CANCEL NOW (${info.name})`), lines };
             }
 
-            // Let the card re-render, then read what CMS says now.
-            await sleep(1200);
-            const after = getPlanCards().map(readPlanCard).find(card => card.name === info.name);
-            const status = after?.status || 'status not shown';
-            lines.push(`Account cancelled now (${info.name}) - status: ${status}`);
+            // The card keeps showing the OLD status for a while (live
+            // 2026-09-30: the note said DEFERRED_CANCELLATION while a refresh
+            // showed it cancelled). Only report a status once it has changed;
+            // never write the stale one into the ticket.
+            let status = '';
+            await waitFor(() => {
+                const after = getPlanCards().map(readPlanCard).find(card => card.name === info.name);
+                if (after?.status && after.status !== info.status) {
+                    status = after.status;
+                    return true;
+                }
+                return null;
+            }, { timeout: 6000, pollMs: 300 });
+            lines.push(status
+                ? `Account cancelled now (${info.name}) - status: ${status}`
+                : `Account cancelled now (${info.name})`);
         }
 
         return { ok: endStep(step, dryRun ? 'dry-run' : 'done', lines.join('; ')), lines };
@@ -6990,19 +7003,141 @@ if (isCMSHost()) {
         return lines;
     }
 
-    function queueNote(ticketURL, lines) {
+    // pasteNote: the Freshdesk tab writes the lines into an unsaved private
+    // note (the no-API-key fallback, and dry runs). applyScenario: the tab
+    // clicks Apply on that scenario so its customer reply lands in the reply
+    // editor for review - only queued once the note is already saved,
+    // because the reply editor replaces an open note draft.
+    function queueNote(ticketURL, lines, { pasteNote = true, applyScenario = '' } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
             const now = Date.now();
             queue = queue.filter(entry => entry && now - Number(entry.createdAt || 0) < BV_REFUND_ASSIST_NOTE_TTL_MS);
-            queue.push({ ticketUrl: ticketURL, createdAt: now, lines });
+            queue.push({ ticketUrl: ticketURL, createdAt: now, lines: pasteNote ? lines : [], pasteNote, applyScenario });
             GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
             return true;
         } catch (error) {
             console.warn('[BV Refund Assist] Could not queue the Freshdesk note.', error);
             return false;
         }
+    }
+
+    /* ---------------- Freshdesk API (writes need the agent's own key) ---------------- */
+
+    // Measured 2026-09-30: the Freshdesk session cookie is enough to READ the
+    // API but every write (POST note, PUT ticket) comes back 401
+    // invalid_credentials. So writes go through freshdeskApiRequest() with
+    // the key each agent sets for themselves (Tampermonkey menu > "Freshdesk:
+    // Set API Key") - which also means they work straight from this CMS tab.
+    const REFUNDED_SCENARIO_NAME = 'B2C Account Refunded';
+    // Read live on 2026-09-30 (id 43001069613). Only used when the scenario
+    // list itself cannot be read; the live definition always wins.
+    const REFUNDED_SCENARIO_FALLBACK_ACTIONS = [
+        { name: 'status', value: '12' },
+        { name: 'ticket_type', value: 'Refund' },
+        { name: 'add_tag', value: 'Refunded' },
+        { name: 'add_reply' },
+        { name: 'responder_id', value: '-2' }
+    ];
+
+    function freshdeskApi(method, path, body) {
+        return new Promise((resolve, reject) => {
+            freshdeskApiRequest({
+                method,
+                path,
+                body,
+                onDone: (error, data) => (error ? reject(error) : resolve(data))
+            });
+        });
+    }
+
+    function describeApiError(error) {
+        const message = String(error?.message || error);
+        if (message === 'no-api-key') return 'no Freshdesk API key set';
+        if (message === 'unauthorized') return 'API key rejected';
+        const detail = cleanText(error?.responseBody || '').slice(0, 160);
+        return detail ? `${message}: ${detail}` : message;
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    function noteLinesToHtml(lines) {
+        return `<div>${lines.map(line => line.bold
+            ? `<strong>${escapeHtml(line.text)}</strong>`
+            : escapeHtml(line.text)).join('<br>')}</div>`;
+    }
+
+    // The scenario's actions translated into one v2 ticket update. The reply
+    // (add_reply) and anything else the public API cannot express are left
+    // out and reported, never guessed at.
+    function scenarioActionsToUpdate(actions, ticket, myAgentId) {
+        const update = {};
+        const customFields = {};
+        const skipped = [];
+        const tags = Array.isArray(ticket?.tags) ? ticket.tags.slice() : [];
+        let tagsChanged = false;
+
+        for (const action of actions || []) {
+            const value = action?.value;
+            switch (action?.name) {
+                case 'status': update.status = Number(value); break;
+                case 'priority': update.priority = Number(value); break;
+                case 'ticket_type': update.type = String(value); break;
+                case 'group_id': update.group_id = Number(value); break;
+                case 'product_id': update.product_id = Number(value); break;
+                case 'responder_id': {
+                    const id = String(value) === '-2' ? myAgentId : Number(value);
+                    if (id) update.responder_id = id;
+                    else skipped.push('responder_id');
+                    break;
+                }
+                case 'add_tag':
+                    String(value || '').split(',').map(tag => tag.trim()).filter(Boolean).forEach(tag => {
+                        if (!tags.some(existing => existing.toLowerCase() === tag.toLowerCase())) {
+                            tags.push(tag);
+                            tagsChanged = true;
+                        }
+                    });
+                    break;
+                default: {
+                    // Scenarios address custom fields as cf_<name>_<accountId>;
+                    // the v2 API wants plain cf_<name>.
+                    const match = /^(cf_.+)_\d+$/.exec(String(action?.name || ''));
+                    if (match && value !== undefined) customFields[match[1]] = value;
+                    else skipped.push(String(action?.name || 'unknown'));
+                }
+            }
+        }
+
+        if (tagsChanged) update.tags = tags;
+        if (Object.keys(customFields).length) update.custom_fields = customFields;
+        return { update, skipped };
+    }
+
+    async function getScenarioActions(name) {
+        try {
+            const data = await freshdeskApi('GET', '/api/_/scenario_automations');
+            const scenario = (data?.scenario_automations || []).find(item => item?.name === name);
+            if (scenario) return { actions: scenario.actions || [], source: 'live' };
+        } catch (error) {
+            console.warn('[BV Refund Assist] Could not read the scenario list; using the built-in copy.', error);
+        }
+        return { actions: REFUNDED_SCENARIO_FALLBACK_ACTIONS, source: 'built-in copy' };
+    }
+
+    async function applyScenarioViaApi(ticketId, name) {
+        const [{ actions, source }, ticket, me] = await Promise.all([
+            getScenarioActions(name),
+            freshdeskApi('GET', `/api/v2/tickets/${ticketId}`),
+            freshdeskApi('GET', '/api/v2/agents/me')
+        ]);
+        const { update, skipped } = scenarioActionsToUpdate(actions, ticket, me?.id);
+        if (!Object.keys(update).length) return { changed: [], skipped, source };
+        await freshdeskApi('PUT', `/api/v2/tickets/${ticketId}`, update);
+        return { changed: Object.keys(update), skipped, source };
     }
 
     function copyText(text) {
@@ -7067,12 +7202,57 @@ if (isCMSHost()) {
         const lines = buildNote({ dryRun, cancelLines, cancelOk, done, failed, skipped });
         lastNoteText = lines.map(line => line.text).join('\n');
         const copied = copyText(lastNoteText);
-        const queued = queueNote(ticketURL, lines);
-        const noteStep = addStep('Summary');
-        endStep(noteStep, queued ? 'done' : 'failed', [
-            copied ? 'copied to clipboard' : 'clipboard failed',
-            queued ? `queued for ticket #${getTicketNumber(ticketURL)} (private note)` : 'could not queue the Freshdesk note'
-        ].join(', '));
+        const ticketId = getTicketNumber(ticketURL);
+
+        // 1. The private note: saved through the API when the agent has a
+        // key; otherwise (and on a dry run) pasted unsaved into the ticket tab.
+        const noteStep = addStep(`Private note on #${ticketId}`);
+        let noteSaved = false;
+        if (!dryRun && getFreshdeskApiKey()) {
+            try {
+                await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
+                    body: noteLinesToHtml(lines),
+                    private: true
+                });
+                noteSaved = true;
+                endStep(noteStep, 'done', `saved via the API${copied ? ', also copied' : ''}`);
+            } catch (error) {
+                endStep(noteStep, 'failed', `API: ${describeApiError(error)} - pasting it into the ticket tab instead`);
+            }
+        }
+        if (!noteSaved) {
+            const queued = queueNote(ticketURL, lines);
+            if (noteStep.state === 'running') {
+                endStep(noteStep, queued ? (dryRun ? 'dry-run' : 'done') : 'failed', [
+                    queued ? 'pasted into the ticket tab, NOT saved - click Add note' : 'could not queue the note',
+                    !dryRun && !getFreshdeskApiKey() ? 'set your key: Tampermonkey > Freshdesk: Set API Key' : '',
+                    copied ? 'copied' : ''
+                ].filter(Boolean).join(' - '));
+            }
+        }
+
+        // 2. The scenario - only when money was actually refunded.
+        if (!dryRun && done.length) {
+            const scenarioStep = addStep(`Scenario: ${REFUNDED_SCENARIO_NAME}`);
+            if (!noteSaved) {
+                // The reply editor would replace the unsaved note draft.
+                endStep(scenarioStep, 'failed', 'not applied - the note is not saved yet; save it, then apply the scenario by hand');
+            } else {
+                try {
+                    const result = await applyScenarioViaApi(ticketId, REFUNDED_SCENARIO_NAME);
+                    // The customer reply cannot go through the API and must
+                    // be reviewed anyway: the ticket tab clicks Apply so it
+                    // lands in the reply editor, unsent.
+                    queueNote(ticketURL, [], { pasteNote: false, applyScenario: REFUNDED_SCENARIO_NAME });
+                    endStep(scenarioStep, 'done', [
+                        `set ${result.changed.join(', ') || 'nothing new'} (${result.source})`,
+                        'the reply opens in the ticket tab for you to review and send'
+                    ].join(' - '));
+                } catch (error) {
+                    endStep(scenarioStep, 'failed', `API: ${describeApiError(error)}`);
+                }
+            }
+        }
 
         running = false;
         render();
@@ -9812,7 +9992,58 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return true;
   }
 
-  function consume(attempt = 0) {
+  function isShown(element) {
+    return Boolean(element && element.getBoundingClientRect().width > 0);
+  }
+
+  // The console is invisible from the page, so the outcome is shown here.
+  function showStatus(message, isError) {
+    let status = document.getElementById('bv-refund-assist-fd-status');
+    if (!status) {
+      status = document.createElement('div');
+      status.id = 'bv-refund-assist-fd-status';
+      status.style.cssText = 'position:fixed;right:18px;bottom:64px;z-index:1000001;max-width:360px;padding:9px 12px;border-radius:7px;color:#fff;font:600 12px/1.4 Arial,sans-serif;box-shadow:0 8px 24px rgba(15,23,42,.22);';
+      document.body.appendChild(status);
+    }
+    status.textContent = message;
+    status.style.background = isError ? '#991b1b' : '#17324d';
+    window.clearTimeout(showStatus.timer);
+    showStatus.timer = window.setTimeout(() => status.remove(), isError ? 12000 : 6000);
+  }
+
+  function fireClick(element) {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const EventType = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      element.dispatchEvent(new EventType(type, { bubbles: true, cancelable: true, view: bvEventView, button: 0 }));
+    }
+  }
+
+  // More > Execute scenarios > <name> > Apply, exactly what the agent does by
+  // hand (chain confirmed live with synthetic events, 2026-09-30). Apply -
+  // not Execute - so the scenario's customer reply lands in the reply editor
+  // unsent. Its status/type/tag/agent were already saved through the API.
+  async function applyScenarioInUi(name) {
+    let modal = document.querySelector('.modal-content.execute-scenarios');
+    if (!modal) {
+      const more = document.querySelector('button[data-test-actions="more"]');
+      if (!more) return 'no More button';
+      fireClick(more);
+      const link = await waitFor(() => Array.from(document.querySelectorAll('a'))
+        .find(a => isShown(a) && cleanText(a.textContent).startsWith('Execute scenarios')), { timeout: 4000, pollMs: 100 });
+      if (!link) return 'no "Execute scenarios" in the More menu';
+      fireClick(link);
+      modal = await waitFor(() => document.querySelector('.modal-content.execute-scenarios'), { timeout: 6000, pollMs: 100 });
+      if (!modal) return 'the scenarios panel did not open';
+    }
+    const item = await waitFor(() => Array.from(modal.querySelectorAll('[data-test-item="execute-scenario-item"]'))
+      .find(candidate => cleanText(candidate.querySelector('.text--semibold')?.textContent) === name), { timeout: 6000, pollMs: 150 });
+    const apply = item?.querySelector('[data-test-button="apply-scenario-btn"] button');
+    if (!apply) return `scenario "${name}" not found`;
+    fireClick(apply);
+    return '';
+  }
+
+  async function consume(attempt = 0) {
     if (pasting) return;
     const ticketId = getTicketId();
     if (!ticketId) return;
@@ -9822,6 +10053,28 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       item && getEntryTicketId(item) === ticketId && Array.isArray(item.lines) &&
       now - Number(item.createdAt || 0) < BV_REFUND_ASSIST_NOTE_TTL_MS);
     if (!entry) return;
+
+    if (entry.pasteNote === false) {
+      if (!entry.applyScenario) {
+        removeEntry(entry);
+        return;
+      }
+      pasting = true;
+      // Removed first: a retry loop that re-clicked Apply could stack the
+      // reply twice. A failure is reported and left to the agent instead.
+      removeEntry(entry);
+      try {
+        const problem = await applyScenarioInUi(entry.applyScenario);
+        if (problem) showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
+        else showStatus(`Refund Assist: "${entry.applyScenario}" applied - review the reply and send it.`);
+      } catch (error) {
+        console.error('[BV Refund Assist] Applying the scenario failed.', error);
+        showStatus(`Refund Assist: applying "${entry.applyScenario}" failed. Apply it by hand.`, true);
+      } finally {
+        pasting = false;
+      }
+      return;
+    }
 
     const editor = findEditor();
     if (!editor) {
@@ -9835,7 +10088,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       editor.focus();
       if (writeLines(editor, entry.lines)) {
         removeEntry(entry);
-        console.info('[BV Refund Assist] Summary pasted into the private note.');
+        showStatus('Refund Assist: summary pasted into a private note - click Add note to save it.');
       }
     } catch (error) {
       console.error('[BV Refund Assist] Could not paste the summary.', error);
