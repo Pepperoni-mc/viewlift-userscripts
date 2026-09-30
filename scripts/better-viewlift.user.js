@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.66.1
+// @version      3.66.2
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -10397,18 +10397,29 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return '';
   }
 
+  function runAutoBold(editor) {
+    if (typeof window.__bvAutoBoldEditor !== 'function') return false;
+    try {
+      window.__bvAutoBoldEditor(editor);
+      return true;
+    } catch (error) {
+      console.warn('[BV Refund Assist] Auto Bold pass failed.', error);
+      return false;
+    }
+  }
+
   // If the email in the sentence is plain text, wrap it in <strong> - the
   // template always has it bold.
-  function boldEmailInSentence(editor, email) {
+  function boldEmailInSentence(editor) {
     if (findReplyEmailNode(editor)?.textContent.includes('@')) return false;
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const index = (node.nodeValue || '').toLowerCase().indexOf(email);
-      if (index < 0 || node.parentElement?.closest('strong, b')) continue;
+      const found = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.exec(node.nodeValue || '');
+      if (!found || node.parentElement?.closest('strong, b')) continue;
       const block = node.parentElement?.closest('div, p');
       if (!block || !REPLY_EMAIL_SENTENCE.test(block.textContent || '')) continue;
-      const emailPart = node.splitText(index);
-      emailPart.splitText(email.length);
+      const emailPart = node.splitText(found.index);
+      emailPart.splitText(found[0].length);
       const strong = document.createElement('strong');
       emailPart.parentNode.replaceChild(strong, emailPart);
       strong.appendChild(emailPart);
@@ -10479,8 +10490,16 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       return { problem: 'the reply changed while it was being cleaned up' };
     }
 
+    // The cleanup rewrites the reply as plain text (every <strong> gone -
+    // seen live on #361824), so the Auto Bold pass (Feature 1) must run
+    // BEFORE the email is looked for; normally a keystroke sets it off, here
+    // nothing does. Whatever email the sentence holds is wrapped by hand if
+    // it still is not bold.
+    runAutoBold(editor);
+    boldEmailInSentence(editor);
+
     const emailNode = findReplyEmailNode(editor);
-    if (!emailNode) return { problem: 'could not find the bold email in the reply' };
+    if (!emailNode || !emailNode.textContent.includes('@')) return { problem: 'could not find the email in the reply' };
 
     const changed = [];
     const shown = cleanText(emailNode.textContent).toLowerCase();
@@ -10492,18 +10511,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       const greeting = fixGreeting(editor, firstName);
       if (greeting) changed.push(greeting);
     }
-    // Bold: the Auto Bold pass (Feature 1) is what bolds "Technical Support
-    // Team", the email and the signature, and normally a keystroke sets it
-    // off. Here nothing does, so it is run on purpose; the email is wrapped
-    // by hand if it still is not bold.
-    if (typeof window.__bvAutoBoldEditor === 'function') {
-      try {
-        window.__bvAutoBoldEditor(editor);
-      } catch (error) {
-        console.warn('[BV Refund Assist] Auto Bold pass failed.', error);
-      }
-    }
-    boldEmailInSentence(editor, expectedEmail);
+    // Once more after the edits: the greeting rewrite can touch text nodes.
+    runAutoBold(editor);
 
     // Read back before sending - never send on the strength of the write.
     const recheck = findReplyEmailNode(editor);
