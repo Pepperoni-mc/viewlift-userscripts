@@ -31,6 +31,15 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.63.1 - resizable panel, short note (same day)
+
+Sebastian ran it and said it works; two asks. The panel "sale muy pequeña": it is now 520x560 by
+default with CSS `resize: both` (drag the bottom-right corner), sticky header/buttons, and the
+size is remembered in GM (`bvRefundAssistPanelSize`) via a ResizeObserver. The note had to be
+short and "no como refund assist": no tool-name heading, no CMS/ticket links - just the
+cancellation line, `Refunded (100%):`, one `date - amount - order` line per charge, a Total only
+when there is more than one, and a "Not refunded" block only when something failed.
+
 ### Live DOM, read 2026-09-30 on an MSN account (ticket #361631)
 
 - Cancel: ACCOUNT tab → side nav `<p role="button">Subscription Plans</p>` → plan card (label/value

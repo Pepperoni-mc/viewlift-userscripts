@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.63.0
+// @version      3.63.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6498,6 +6498,7 @@ if (isCMSHost()) {
     const STEP_TIMEOUT_MS = 15000;
     const SUBMIT_SETTLE_MS = 20000;
     const WORKFLOW_BACKSTOP_MS = 35000;
+    const PANEL_SIZE_KEY = 'bvRefundAssistPanelSize';
 
     let running = false;
     let view = 'select';
@@ -6848,7 +6849,7 @@ if (isCMSHost()) {
             if (!alreadyCancelled) {
                 return { ok: endStep(step, 'failed', `No CANCEL button on the plan (${statuses || 'no plan found'})`), lines };
             }
-            lines.push(`Subscription was already cancelled - ${statuses}`);
+            lines.push(`Account already cancelled - ${statuses}`);
             return { ok: endStep(step, 'done', `Already cancelled (${statuses})`), lines };
         }
 
@@ -6881,7 +6882,7 @@ if (isCMSHost()) {
 
             if (dryRun) {
                 await closeCancelDialog();
-                lines.push(`[dry run] Would cancel ${info.name} with Cancel Now (status was ${info.status || 'unknown'})`);
+                lines.push(`Would cancel now: ${info.name} (status ${info.status || 'unknown'})`);
                 continue;
             }
 
@@ -6895,7 +6896,7 @@ if (isCMSHost()) {
             await sleep(1200);
             const after = getPlanCards().map(readPlanCard).find(card => card.name === info.name);
             const status = after?.status || 'status not shown';
-            lines.push(`${info.name} cancelled with Cancel Now - status: ${status}`);
+            lines.push(`Account cancelled now (${info.name}) - status: ${status}`);
         }
 
         return { ok: endStep(step, dryRun ? 'dry-run' : 'done', lines.join('; ')), lines };
@@ -6966,30 +6967,26 @@ if (isCMSHost()) {
         return endStep(step, 'done', alertText || 'Confirm Refund accepted');
     }
 
-    function buildNote({ dryRun, ticketURL, cancelLines, cancelOk, done, failed, skipped }) {
-        const today = new Date().toLocaleDateString('en-US');
+    // Kept short on purpose: it lands in the ticket as the agent's note, so
+    // it reads like one - what was cancelled, what was refunded, the total.
+    function buildNote({ dryRun, cancelLines, cancelOk, done, failed, skipped }) {
         const lines = [];
-        lines.push({ text: `Refund Assist - ${today}${dryRun ? ' [DRY RUN - nothing was cancelled or refunded]' : ''}`, bold: true });
-        if (cancelLines.length) {
-            lines.push({ text: 'Cancellation:', bold: true });
-            cancelLines.forEach(text => lines.push({ text: `- ${text}` }));
-        } else if (!cancelOk) {
-            lines.push({ text: 'Cancellation: FAILED - no refunds were issued.', bold: true });
-        }
+        if (dryRun) lines.push({ text: 'DRY RUN - nothing was cancelled or refunded', bold: true });
+        cancelLines.forEach(text => lines.push({ text }));
+        if (!cancelOk && !cancelLines.length) lines.push({ text: 'Cancellation failed - no refunds issued', bold: true });
         if (done.length) {
-            lines.push({ text: dryRun ? 'Refunds prepared (100%, not confirmed):' : 'Refunds issued (100%):', bold: true });
-            done.forEach(charge => lines.push({
-                text: `- ${[charge.date, charge.title, charge.order, charge.amount, charge.handler].filter(Boolean).join(' | ')}`
-            }));
-            lines.push({ text: `Total ${dryRun ? 'prepared' : 'refunded'}: ${formatTotal(done)}` });
+            lines.push({ text: dryRun ? 'Refunds prepared (100%):' : 'Refunded (100%):', bold: true });
+            done.forEach(charge => lines.push({ text: `${charge.date} - ${charge.amount} - ${charge.order}` }));
+            if (done.length > 1) lines.push({ text: `Total: ${formatTotal(done)}` });
         }
-        if (failed.length || skipped.length) {
+        const notDone = [
+            ...failed.map(({ charge, reason }) => `${charge.date} - ${charge.amount} - failed: ${reason}`),
+            ...skipped.map(charge => `${charge.date} - ${charge.amount} - not done`)
+        ];
+        if (notDone.length) {
             lines.push({ text: 'Not refunded:', bold: true });
-            failed.forEach(({ charge, reason }) => lines.push({ text: `- ${charge.date} | ${charge.order} | ${charge.amount} - failed: ${reason}` }));
-            skipped.forEach(charge => lines.push({ text: `- ${charge.date} | ${charge.order} | ${charge.amount} - skipped (run stopped)` }));
+            notDone.forEach(text => lines.push({ text }));
         }
-        lines.push({ text: `CMS: ${location.href}` });
-        if (ticketURL) lines.push({ text: `Ticket: ${ticketURL}` });
         return lines;
     }
 
@@ -7067,7 +7064,7 @@ if (isCMSHost()) {
             skipped.push(...picked.filter(charge => !handled.has(charge)));
         }
 
-        const lines = buildNote({ dryRun, ticketURL, cancelLines, cancelOk, done, failed, skipped });
+        const lines = buildNote({ dryRun, cancelLines, cancelOk, done, failed, skipped });
         lastNoteText = lines.map(line => line.text).join('\n');
         const copied = copyText(lastNoteText);
         const queued = queueNote(ticketURL, lines);
@@ -7105,8 +7102,8 @@ if (isCMSHost()) {
         style.textContent = `
 #${BUTTON_ID}{margin-right:8px;padding:6px 12px;border:1px solid #b42318;border-radius:4px;background:#fff;color:#b42318;font:600 13px/1.4 Arial,sans-serif;cursor:pointer;text-transform:uppercase}
 #${BUTTON_ID}:hover{background:#fef3f2}
-#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;width:400px;max-height:calc(100vh - 96px);overflow:auto;background:#fff;color:#1f2937;border:1px solid #d0d5dd;border-radius:10px;box-shadow:0 12px 32px rgba(15,23,42,.22);font:13px/1.45 Arial,sans-serif}
-#${PANEL_ID} header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eaecf0;font-weight:700}
+#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;width:520px;height:560px;min-width:340px;min-height:220px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:auto;resize:both;background:#fff;color:#1f2937;border:1px solid #d0d5dd;border-radius:10px;box-shadow:0 12px 32px rgba(15,23,42,.22);font:13px/1.45 Arial,sans-serif}
+#${PANEL_ID} header{position:sticky;top:0;z-index:1;background:#fff;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eaecf0;font-weight:700}
 #${PANEL_ID} header .bv-ra-x{margin-left:auto;border:0;background:none;font-size:18px;cursor:pointer;color:#667085}
 #${PANEL_ID} .bv-ra-body{padding:10px 12px}
 #${PANEL_ID} .bv-ra-badge{padding:1px 6px;border-radius:9px;font-size:11px;background:#fef0c7;color:#93370d}
@@ -7115,7 +7112,7 @@ if (isCMSHost()) {
 #${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid #f2f4f7;cursor:pointer}
 #${PANEL_ID} label.bv-ra-row.is-off{opacity:.45;cursor:default}
 #${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#${PANEL_ID} .bv-ra-actions{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #eaecf0}
+#${PANEL_ID} .bv-ra-actions{position:sticky;bottom:0;background:#fff;display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #eaecf0}
 #${PANEL_ID} button.bv-ra-btn{padding:6px 12px;border-radius:5px;border:1px solid #d0d5dd;background:#fff;cursor:pointer;font:600 12px Arial,sans-serif}
 #${PANEL_ID} button.bv-ra-primary{background:#d92d20;border-color:#d92d20;color:#fff}
 #${PANEL_ID} button.bv-ra-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -7126,9 +7123,36 @@ if (isCMSHost()) {
 #${PANEL_ID} .is-dry-run .bv-ra-state{color:#b54708}
 #${PANEL_ID} .is-failed .bv-ra-state{color:#b42318}
 #${PANEL_ID} .is-running .bv-ra-state{color:#175cd3}
-#${PANEL_ID} pre{white-space:pre-wrap;background:#f9fafb;border:1px solid #eaecf0;border-radius:6px;padding:8px;font:11px/1.4 Consolas,monospace;max-height:220px;overflow:auto}
+#${PANEL_ID} pre{white-space:pre-wrap;background:#f9fafb;border:1px solid #eaecf0;border-radius:6px;padding:8px;font:12px/1.4 Consolas,monospace;overflow:auto}
 `;
         (document.head || document.documentElement).appendChild(style);
+    }
+
+    // CSS resize:both does the dragging (bottom-right corner); this only
+    // remembers the size so the next open starts where it was left.
+    function restorePanelSize(panel) {
+        try {
+            const size = GM_getValue(PANEL_SIZE_KEY, null);
+            if (size && size.width > 0 && size.height > 0) {
+                panel.style.width = `${Math.round(size.width)}px`;
+                panel.style.height = `${Math.round(size.height)}px`;
+            }
+        } catch (error) {
+            // No stored size - the CSS default applies.
+        }
+        if (typeof ResizeObserver !== 'function') return;
+        let saveTimer = null;
+        new ResizeObserver(() => {
+            window.clearTimeout(saveTimer);
+            saveTimer = window.setTimeout(() => {
+                if (!panel.isConnected) return;
+                try {
+                    GM_setValue(PANEL_SIZE_KEY, { width: panel.offsetWidth, height: panel.offsetHeight });
+                } catch (error) {
+                    // Not remembering the size is harmless.
+                }
+            }, 400);
+        }).observe(panel);
     }
 
     function closePanel() {
@@ -7262,6 +7286,7 @@ if (isCMSHost()) {
         if (!panel) {
             panel = el('div', { id: PANEL_ID, 'data-html2canvas-ignore': 'true' });
             document.body.appendChild(panel);
+            restorePanelSize(panel);
         }
         panel.textContent = '';
 

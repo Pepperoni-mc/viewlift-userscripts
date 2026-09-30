@@ -177,41 +177,41 @@ const charge2 = { date: '8/29/2026', title: 'Monthly Plan', order: 'ch_BBB', amo
 const ticket = 'https://viewlift.freshdesk.com/a/tickets/361631';
 
 const okNote = buildNote({
-  dryRun: false, ticketURL: ticket, cancelOk: true,
-  cancelLines: ['Monthly Plan cancelled with Cancel Now - status: CANCELLED'],
+  dryRun: false, cancelOk: true,
+  cancelLines: ['Account cancelled now (Monthly Plan) - status: CANCELLED'],
   done: [charge, charge2], failed: [], skipped: []
 }).map(line => line.text);
-check('note leads with the cancellation', okNote.indexOf('Cancellation:') === 1 &&
-  okNote[2].includes('cancelled with Cancel Now'), okNote);
-check('note lists every refunded charge', okNote.includes('Refunds issued (100%):') &&
-  okNote.some(t => t.includes('ch_AAA') && t.includes('USD 19.99')) && okNote.some(t => t.includes('ch_BBB')), okNote);
-check('note carries the total', okNote.includes('Total refunded: USD 39.98'), okNote);
-check('a real run is not labelled dry run', !okNote[0].includes('DRY RUN'), okNote[0]);
-check('note links the CMS account and the ticket', okNote.some(t => t.startsWith('CMS: https://cms.')) &&
-  okNote.includes('Ticket: ' + ticket), okNote);
+check('note leads with the cancellation', okNote[0] === 'Account cancelled now (Monthly Plan) - status: CANCELLED', okNote);
+check('note lists every refunded charge, one short line each', okNote[1] === 'Refunded (100%):' &&
+  okNote[2] === '9/29/2026 - USD 19.99 - ch_AAA' && okNote[3] === '8/29/2026 - USD 19.99 - ch_BBB', okNote);
+check('note carries the total when there is more than one', okNote[4] === 'Total: USD 39.98', okNote);
+check('note is short: no tool name, no links, nothing else', okNote.length === 5 &&
+  !okNote.some(t => /refund assist|https?:/i.test(t)), okNote);
+
+const single = buildNote({ dryRun: false, cancelOk: true, cancelLines: ['x'], done: [charge], failed: [], skipped: [] }).map(l => l.text);
+check('one refund has no separate total line', !single.some(t => t.startsWith('Total')), single);
 
 const partial = buildNote({
-  dryRun: false, ticketURL: ticket, cancelOk: true, cancelLines: ['x'],
+  dryRun: false, cancelOk: true, cancelLines: ['x'],
   done: [charge], failed: [{ charge: charge2, reason: 'Refund dialog still open' }], skipped: [{ date: '7/1', order: 'ch_DDD', amount: 'USD 1.00' }]
 }).map(line => line.text);
-check('a failed refund is listed with its reason', partial.some(t => t.includes('ch_BBB') && t.includes('failed: Refund dialog still open')), partial);
-check('charges after the failure are listed as skipped', partial.some(t => t.includes('ch_DDD') && t.includes('skipped')), partial);
-check('the total only counts what was refunded', partial.includes('Total refunded: USD 19.99'), partial);
+check('a failed refund is listed with its reason', partial.includes('8/29/2026 - USD 19.99 - failed: Refund dialog still open'), partial);
+check('charges after the failure are listed as not done', partial.includes('7/1 - USD 1.00 - not done'), partial);
+check('a failed charge is not listed as refunded', !partial.some(t => t.includes('ch_BBB')), partial);
 
 const cancelFailed = buildNote({
-  dryRun: false, ticketURL: ticket, cancelOk: false, cancelLines: [],
+  dryRun: false, cancelOk: false, cancelLines: [],
   done: [], failed: [], skipped: [charge]
 }).map(line => line.text);
-check('a failed cancel says no refund was issued', cancelFailed.some(t => /Cancellation: FAILED - no refunds were issued/.test(t)), cancelFailed);
-check('a failed cancel has no "Refunds issued" block', !cancelFailed.includes('Refunds issued (100%):'), cancelFailed);
+check('a failed cancel says no refund was issued', cancelFailed[0] === 'Cancellation failed - no refunds issued', cancelFailed);
+check('a failed cancel has no "Refunded" block', !cancelFailed.includes('Refunded (100%):'), cancelFailed);
 
 const dry = buildNote({
-  dryRun: true, ticketURL: ticket, cancelOk: true, cancelLines: ['[dry run] Would cancel Monthly Plan'],
+  dryRun: true, cancelOk: true, cancelLines: ['Would cancel now: Monthly Plan (status ACTIVE)'],
   done: [charge], failed: [], skipped: []
 }).map(line => line.text);
-check('a dry run says so in the heading', dry[0].includes('DRY RUN'), dry[0]);
-check('a dry run never says "Refunds issued"', !dry.includes('Refunds issued (100%):') &&
-  dry.includes('Refunds prepared (100%, not confirmed):'), dry);
+check('a dry run says so first', dry[0] === 'DRY RUN - nothing was cancelled or refunded', dry[0]);
+check('a dry run never says "Refunded"', !dry.includes('Refunded (100%):') && dry.includes('Refunds prepared (100%):'), dry);
 
 // ------------------------------------------------------------------ order pin
 
