@@ -2,6 +2,61 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## Refund Assist: pick charges, Cancel Now, refund each, note the ticket - 3.63.0 (2026-09-30)
+
+Sebastian: a dropdown to pick the charges to refund; one click cancels the account with **Cancel
+Now** (ticket info as the comment), then refunds the picked charges at 100% (same as the eye
+assist), then puts the cancellation confirmation + the refund list into the Freshdesk case.
+Order is deliberate: **cancel first** so no new charge lands while the refunds go through. Phase 2
+(not started): merge it with the Refund Capture tool (amounts/handler into the $ panel, sheet row).
+
+### What was built
+
+- **Feature 3b** (CMS, right after the Cancel Subscription comments feature). A `Refund Assist ▾`
+  launcher is inserted before **ADD PLAN**, which only renders on BILLING & PURCHASE > SUBSCRIPTION
+  PLANS AND ENTITLEMENTS. The panel itself is a `position:fixed` float on `<body>` (left side, so it
+  never covers the right-hand detail drawer) because the run switches tabs and CMS unmounts that
+  tab. Views: select (checkbox per row, nothing preselected, only `CHARGE` rows with an eye) →
+  review (explicit list + total) → run (per-step OK/DRY/FAIL + the summary text).
+- **Feature 3 got a bridge**, `window.__bvRefundWorkflow` = `{ start({order, onFinish}), isActive,
+  isDryRun, setDryRun, getTicketURL }`. `start` pins the run to one order number:
+  `triggerMatchesExpectedOrder` refuses to click Refund until the open drawer shows that order, so a
+  stale drawer from the previous charge can never be refunded twice. `finishWorkflow(outcome)`
+  reports `submitted` / `dry-run` / `failed` on every exit path. While Refund Assist clicks the eye
+  it sets `window.__bvRefundAssistDriving`, which makes Feature 3's own listener ignore that click.
+- **Feature 9b** (Freshdesk, outside the load-time `/a/tickets/` block on purpose - Freshdesk moves
+  between tickets without a page load): consumes `BV_REFUND_ASSIST_NOTE_KEY`
+  (`betterViewliftRefundAssistNote`, 1h TTL), opens a private note on the matching ticket and writes
+  the lines as text nodes. Never sends the note. The summary is also put on the clipboard.
+- Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
+  Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
+
+### Live DOM, read 2026-09-30 on an MSN account (ticket #361631)
+
+- Cancel: ACCOUNT tab → side nav `<p role="button">Subscription Plans</p>` → plan card (label/value
+  lines: `Plan Name`, `Status` e.g. `DEFERRED_CANCELLATION`, `End Date`) → `CANCEL`
+  (`MuiButton-outlinedError`) → MUI `[role=dialog]` "Cancel Subscription", required
+  `textarea[placeholder="Add comments"]` (already filled with the ticket link by the existing
+  features), buttons `CANCEL AFTER BILLING PERIOD` (disabled on a deferred cancellation) and
+  `CANCEL NOW` (`MuiButton-containedError`).
+- Charges: one `table.MuiTable-root`, headers `Date | Title | Transaction Type | Order Number |
+  Total Amount | Payment Handler | Offer | Action`, 10 rows per page with a pager. **One-Time
+  Purchases uses the same headers**, so the sub-tab is always clicked before scraping.
+- Eye opens a right `.MuiDrawer-paper` "Details" (status chip `Completed`, Order Number, CloseIcon,
+  `REFUND` text button). The "Issue percentage refund" modal is a `.MuiModal-root` with **no
+  `role=dialog`** and Escape does not close it - use its CloseIcon.
+- Tab labels are CSS-uppercased: compare `textContent`, not `innerText`.
+
+### Verified
+
+- `node tests/run-all.js` passes; new `tests/refund-assist.test.js` (32 checks: header-mapped scrape,
+  refundable rows, per-currency totals, plan-card reading from the live line order, the note for
+  full/partial/failed-cancel/dry-run runs, the order pin).
+- **Live, before this change**: Feature 3's dry run on that account filled 100 / ROTH / ticket link
+  and did not confirm (so the chain Refund Assist reuses works on MSN).
+- **Not yet live**: the new panel and the orchestrated run. First live run should be with the
+  panel's dry-run box ticked. No real Cancel Now or Confirm Refund was clicked by Claude.
+
 ## The FOX queue is in scope now - 3.62.0 (2026-09-30)
 
 Sebastian: "implementa la queue de FOX para todas las funcionalidades y usa este CMS

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.62.0
+// @version      3.63.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -199,6 +199,10 @@
   // different hosts, one script - same shape as the CMS snapshot queue.
   const BV_CASE_TO_CLAUDE_KEY = 'betterFreshdeskCaseToClaude';
   const BV_CASE_TO_CLAUDE_TTL_MS = 3 * 60 * 1000;
+  // CMS Refund Assist queues its "cancelled + refunded" summary here and the
+  // ticket's own Freshdesk tab pastes it into a private note.
+  const BV_REFUND_ASSIST_NOTE_KEY = 'betterViewliftRefundAssistNote';
+  const BV_REFUND_ASSIST_NOTE_TTL_MS = 60 * 60 * 1000;
 
   // Diagnostic channel for things worth knowing about (CMS session dying,
   // a lookup falling back to a worse method). Routed to the console -
@@ -5614,6 +5618,12 @@ if (isCMSHost()) {
     let missingTicketId = false;
     let runTimer = null;
     let lastDebugLine = '';
+    // Set only when Refund Assist drives this workflow (see startWorkflow).
+    // expectedOrder pins the run to one transaction: the Refund button is not
+    // touched until the open detail drawer shows that order number, so a stale
+    // drawer from the previous charge can never be refunded twice.
+    let expectedOrder = '';
+    let finishCallback = null;
 
     function readFlag(key) {
         // Also read the flag off <html data-bv-refund-dry-run="true">, because
@@ -6079,11 +6089,32 @@ if (isCMSHost()) {
         runTimer = window.setTimeout(runWorkflow, delay);
     }
 
+    // Reports how a run ended to whoever started it (Refund Assist). Called
+    // once per run: 'submitted', 'dry-run' or 'failed'.
+    function finishWorkflow(outcome, detail = '') {
+        workflowActive = false;
+        const callback = finishCallback;
+        finishCallback = null;
+        expectedOrder = '';
+        if (typeof callback === 'function') {
+            try {
+                callback({ outcome, detail });
+            } catch (error) {
+                console.warn('[Better CMS Refund] Refund Assist callback threw.', error);
+            }
+        }
+    }
+
+    function triggerMatchesExpectedOrder(trigger) {
+        if (!expectedOrder) return true;
+        const scope = trigger?.closest?.('.MuiDrawer-paper, .MuiDrawer-root, [role="presentation"]');
+        return Boolean(scope && cleanText(scope.innerText || scope.textContent).includes(expectedOrder));
+    }
+
     function runWorkflow() {
         if (!workflowActive) return;
 
         if (Date.now() - workflowStartedAt > WORKFLOW_TIMEOUT_MS) {
-            workflowActive = false;
             const missing = [
                 !percentageFilled && 'percentage',
                 !reasonSelected && 'reason',
@@ -6105,6 +6136,9 @@ if (isCMSHost()) {
                     : `Refund auto-fill stopped - could not set: ${missing.join(', ') || 'unknown field'}. Fill it in by hand and submit manually.`,
                 { level: 'warn', ttl: 10000 }
             );
+            finishWorkflow('failed', missingTicketId
+                ? 'no Freshdesk ticket ID stored'
+                : `could not set: ${missing.join(', ') || 'unknown field'}`);
             return;
         }
 
@@ -6124,7 +6158,9 @@ if (isCMSHost()) {
             }
 
             const trigger = getRefundTrigger();
-            if (trigger) {
+            if (trigger && !triggerMatchesExpectedOrder(trigger)) {
+                debugState(`Refund button found, but the open drawer is not order ${expectedOrder} - waiting.`);
+            } else if (trigger) {
                 sawProgress = true;
                 // This button carries no aria-expanded, so there is no way to
                 // read whether its menu is open - the 1.2s spacing is what
@@ -6143,8 +6179,10 @@ if (isCMSHost()) {
             // then warn about a refund the user never started. Nothing
             // recognised within a few seconds means this was not a refund.
             if (!sawProgress && Date.now() - workflowStartedAt > NO_PROGRESS_MS) {
-                workflowActive = false;
                 debugLog('Nothing refund-shaped appeared - that was not a refund action. Standing down quietly.');
+                finishWorkflow('failed', expectedOrder
+                    ? `no Refund button for order ${expectedOrder}`
+                    : 'no Refund button appeared');
                 return;
             }
 
@@ -6195,13 +6233,13 @@ if (isCMSHost()) {
                 // Dry run exists so this workflow can be debugged live without
                 // moving real money on a real customer's subscription.
                 if (readFlag(DRY_RUN_KEY)) {
-                    workflowActive = false;
                     console.log('[BV Refund] DRY RUN - all fields are set; NOT clicking', JSON.stringify(getText(submitButton)));
                     bvNotify('Refund dry run: fields filled, submit skipped. Review and confirm by hand.', { level: 'info', ttl: 8000 });
+                    finishWorkflow('dry-run');
                     return;
                 }
-                realClick(submitButton, '[Better CMS Refund] Issue Refund clicked automatically.');
-                workflowActive = false;
+                const clicked = realClick(submitButton, '[Better CMS Refund] Issue Refund clicked automatically.');
+                finishWorkflow(clicked ? 'submitted' : 'failed', clicked ? '' : 'Confirm Refund click failed');
                 return;
             }
             debugState('All fields set but no enabled Issue/Confirm Refund button found yet.');
@@ -6219,8 +6257,13 @@ if (isCMSHost()) {
     // percentageChosen: the user picked "Issue percentage refund" themselves.
     // triggerClicked: the user clicked Refund themselves - that only suppresses
     // an immediate re-click, which would close the menu they just opened.
-    function startWorkflow({ percentageChosen = false, triggerClicked = false } = {}) {
-        debugLog(`Workflow started (percentage chosen: ${percentageChosen}, refund menu already clicked: ${triggerClicked}).`);
+    function startWorkflow({ percentageChosen = false, triggerClicked = false, order = '', onFinish = null } = {}) {
+        debugLog(`Workflow started (percentage chosen: ${percentageChosen}, refund menu already clicked: ${triggerClicked}${order ? `, order ${order}` : ''}).`);
+        // A run started by hand replaces any Refund Assist run still pending -
+        // tell its owner instead of leaving it waiting forever.
+        if (finishCallback) finishWorkflow('failed', 'replaced by another refund run');
+        expectedOrder = cleanText(order);
+        finishCallback = typeof onFinish === 'function' ? onFinish : null;
         lastDebugLine = '';
         reasonNativeWriteAt = 0;
         sawProgress = percentageChosen || triggerClicked;
@@ -6236,8 +6279,20 @@ if (isCMSHost()) {
         scheduleRun(80);
     }
 
+    // Refund Assist (next feature) opens the eye itself and then calls start()
+    // with the order it expects, so its own clicks must not ALSO start an
+    // unpinned run from the listener below.
+    window.__bvRefundWorkflow = {
+        start: options => startWorkflow(options || {}),
+        isActive: () => workflowActive,
+        isDryRun: () => readFlag(DRY_RUN_KEY),
+        setDryRun: value => writeFlag(DRY_RUN_KEY, value === true),
+        getTicketURL: () => getFreshdeskTicketURL()
+    };
+
     document.addEventListener('click', function (event) {
         if (internalClick) return;
+        if (window.__bvRefundAssistDriving === true) return;
 
         if (isRefundActionIconClick(event.target)) {
             debugLog('Refund eye clicked - will drive Refund then Issue percentage refund.');
@@ -6408,6 +6463,860 @@ if (isCMSHost()) {
     }
 
     init();
+})();
+
+}
+
+/* ============================================================
+ * Feature 3b: Refund Assist - Cancel Now, then refund the charges picked
+ * A "Refund Assist" dropdown on BILLING & PURCHASE > SUBSCRIPTION PLANS AND
+ * ENTITLEMENTS lists the account's charges with checkboxes. After an explicit
+ * confirm step it:
+ *   1. cancels the subscription with CANCEL NOW (ticket link as Comments),
+ *      so the customer cannot be charged again while the refunds go through;
+ *   2. refunds each selected charge at 100% by driving Feature 3's own
+ *      eye > Refund > Issue percentage refund chain, pinned to that charge's
+ *      order number;
+ *   3. copies a summary and queues it for the ticket's Freshdesk tab, which
+ *      pastes it into a private note (not sent - the agent reviews it).
+ * Stops at the first failure: a failed cancel refunds nothing, a failed
+ * refund leaves the rest untouched. Honors Feature 3's dry run everywhere -
+ * with it on, dialogs get filled and closed, nothing is submitted.
+ * ============================================================ */
+
+if (isCMSHost()) {
+
+(function () {
+    'use strict';
+
+    if (window.__bvRefundAssistInstalled) return;
+    window.__bvRefundAssistInstalled = true;
+
+    const BUTTON_ID = 'bv-refund-assist-button';
+    const PANEL_ID = 'bv-refund-assist-panel';
+    const STYLE_ID = 'bv-refund-assist-style';
+    const STEP_TIMEOUT_MS = 15000;
+    const SUBMIT_SETTLE_MS = 20000;
+    const WORKFLOW_BACKSTOP_MS = 35000;
+
+    let running = false;
+    let view = 'select';
+    let charges = [];
+    let selected = new Set();
+    let cancelFirst = true;
+    let steps = [];
+    let lastNoteText = '';
+    let mountTimer = null;
+
+    function cleanText(value) {
+        return String(value || '')
+            .replace(/ /g, ' ')
+            .replace(/[​-‍﻿]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function lower(element) {
+        return cleanText(element?.textContent).toLowerCase();
+    }
+
+    function isVisible(element) {
+        if (!element || !element.getBoundingClientRect) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => window.setTimeout(resolve, ms));
+    }
+
+    function isOwnUi(element) {
+        return Boolean(element?.closest?.(`#${PANEL_ID}, #${BUTTON_ID}`));
+    }
+
+    // Same event sequence as Feature 3's realClick (bvEventView, not the
+    // sandboxed window - see memory.md 3.46.0), with element.click() as the
+    // fallback when a constructor throws.
+    function realClick(element) {
+        if (!element || !isVisible(element)) return false;
+        try {
+            if (typeof window.PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: bvEventView, button: 0 }));
+            }
+            element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: bvEventView }));
+            if (typeof window.PointerEvent === 'function') {
+                element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: bvEventView, button: 0 }));
+            }
+            element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: bvEventView }));
+            element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: bvEventView }));
+        } catch (error) {
+            try {
+                element.click();
+            } catch (clickError) {
+                console.warn('[BV Refund Assist] Click failed.', clickError);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function setControlledValue(element, value) {
+        if (!element) return false;
+        const previousValue = element.value;
+        const prototype = element.tagName.toLowerCase() === 'textarea'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+        if (descriptor?.set) descriptor.set.call(element, value);
+        else element.value = value;
+        if (element._valueTracker) element._valueTracker.setValue(previousValue);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return element.value === value;
+    }
+
+    // textContent, not innerText: CMS uppercases its tabs with CSS, and
+    // innerText reports the transformed text.
+    function findButtonByText(text, root = document) {
+        const wanted = text.toLowerCase();
+        return Array.from(root.querySelectorAll('button, [role="button"]'))
+            .filter(element => !isOwnUi(element) && isVisible(element))
+            .find(element => lower(element) === wanted) || null;
+    }
+
+    function getBridge() {
+        return window.__bvRefundWorkflow || null;
+    }
+
+    function isDryRun() {
+        return Boolean(getBridge()?.isDryRun?.());
+    }
+
+    function getTicketURL() {
+        return cleanText(getBridge()?.getTicketURL?.() || '');
+    }
+
+    function getTicketNumber(url) {
+        const match = String(url || '').match(/\/tickets\/(\d+)/i);
+        return match ? match[1] : '';
+    }
+
+    /* ---------------- charges table ---------------- */
+
+    function getTableHeaders(table) {
+        return Array.from(table.querySelectorAll('thead th')).map(th => lower(th));
+    }
+
+    function isChargesTable(table) {
+        const headers = getTableHeaders(table);
+        return headers.includes('order number') && headers.includes('transaction type') &&
+            headers.includes('total amount');
+    }
+
+    function getChargesTable() {
+        return Array.from(document.querySelectorAll('table'))
+            .filter(isVisible)
+            .find(isChargesTable) || null;
+    }
+
+    function scrapeCharges(table) {
+        if (!table) return [];
+        const headers = getTableHeaders(table);
+        return Array.from(table.querySelectorAll('tbody tr')).map(row => {
+            const cells = Array.from(row.children);
+            const cell = name => {
+                const index = headers.indexOf(name);
+                return index >= 0 ? cleanText(cells[index]?.textContent) : '';
+            };
+            return {
+                date: cell('date'),
+                title: cell('title'),
+                type: cell('transaction type'),
+                order: cell('order number'),
+                amount: cell('total amount'),
+                handler: cell('payment handler'),
+                hasEye: Boolean(row.querySelector('svg[data-testid="VisibilityIcon"]'))
+            };
+        }).filter(charge => charge.order);
+    }
+
+    function isRefundable(charge) {
+        return charge.type.toUpperCase() === 'CHARGE' && charge.hasEye;
+    }
+
+    function findChargeRow(order) {
+        const table = getChargesTable();
+        if (!table) return null;
+        const headers = getTableHeaders(table);
+        const index = headers.indexOf('order number');
+        return Array.from(table.querySelectorAll('tbody tr')).find(row =>
+            cleanText(row.children[index]?.textContent) === order) || null;
+    }
+
+    // "USD 19.99" -> { currency: 'USD', value: 19.99 }. Currency stays
+    // separate so a mixed list never adds USD to CAD.
+    function parseAmount(text) {
+        const match = cleanText(text).match(/([A-Z]{3})?\s*[$€£]?\s*(-?\d[\d,]*(?:\.\d+)?)/);
+        if (!match) return null;
+        const value = Number(match[2].replace(/,/g, ''));
+        return Number.isFinite(value) ? { currency: match[1] || '', value } : null;
+    }
+
+    function formatTotal(list) {
+        const totals = new Map();
+        for (const charge of list) {
+            const amount = parseAmount(charge.amount);
+            if (!amount) continue;
+            totals.set(amount.currency, (totals.get(amount.currency) || 0) + amount.value);
+        }
+        return Array.from(totals.entries())
+            .map(([currency, value]) => `${currency ? currency + ' ' : ''}${value.toFixed(2)}`)
+            .join(' + ');
+    }
+
+    /* ---------------- navigation ---------------- */
+
+    function getTabButton(name) {
+        // The tab row is the one that has BILLING & PURCHASE in it; looking
+        // there first keeps "Account" from matching some other control.
+        const billing = findButtonByText('billing & purchase');
+        const scoped = billing?.parentElement ? findButtonByText(name, billing.parentElement) : null;
+        return scoped || findButtonByText(name);
+    }
+
+    async function openSubscriptionCharges() {
+        let sub = findButtonByText('subscription plans and entitlements');
+        if (!sub) {
+            const billing = getTabButton('billing & purchase');
+            if (!billing) return null;
+            realClick(billing);
+            sub = await waitFor(() => findButtonByText('subscription plans and entitlements'),
+                { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
+            if (!sub) return null;
+        }
+        // Always clicked: One-Time Purchases uses the same table headers, so
+        // "a charges table is on screen" does not say which tab it is.
+        realClick(sub);
+        await sleep(400);
+        return waitFor(() => {
+            const table = getChargesTable();
+            return table && scrapeCharges(table).length ? table : null;
+        }, { timeout: STEP_TIMEOUT_MS, pollMs: 150 });
+    }
+
+    function isPlanNameLabel(element) {
+        return element.children.length === 0 && cleanText(element.textContent) === 'Plan Name';
+    }
+
+    function getPlanCards() {
+        const cards = [];
+        const labels = Array.from(document.querySelectorAll('p, span, div, h6, dt, label'))
+            .filter(element => isPlanNameLabel(element) && isVisible(element));
+        for (const label of labels) {
+            let card = label.parentElement;
+            for (let depth = 0; card && depth < 8; depth += 1, card = card.parentElement) {
+                const hasCardButton = Array.from(card.querySelectorAll('button'))
+                    .some(button => /^(cancel|revert|apply)$/.test(lower(button)));
+                if (hasCardButton) break;
+            }
+            if (card && !cards.includes(card)) cards.push(card);
+        }
+        return cards;
+    }
+
+    function readPlanCard(card) {
+        const lines = String(card?.innerText || card?.textContent || '')
+            .split('\n').map(cleanText).filter(Boolean);
+        const valueAfter = label => {
+            const index = lines.findIndex(line => line.toLowerCase() === label);
+            return index >= 0 ? (lines[index + 1] || '') : '';
+        };
+        const cancelButton = Array.from(card?.querySelectorAll('button') || [])
+            .find(button => lower(button) === 'cancel' && !button.disabled && isVisible(button)) || null;
+        return {
+            name: valueAfter('plan name') || lines[0] || 'Subscription',
+            status: valueAfter('status'),
+            endDate: valueAfter('end date'),
+            cancelButton
+        };
+    }
+
+    async function openSubscriptionPlans() {
+        const account = getTabButton('account');
+        if (account) realClick(account);
+        const nav = await waitFor(() => Array.from(document.querySelectorAll('p[role="button"], [role="button"], button'))
+            .filter(element => !isOwnUi(element) && isVisible(element))
+            .find(element => lower(element) === 'subscription plans') || null,
+        { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
+        if (!nav) return false;
+        realClick(nav);
+        return Boolean(await waitFor(() => getPlanCards().length ? true : null,
+            { timeout: STEP_TIMEOUT_MS, pollMs: 150 }));
+    }
+
+    /* ---------------- dialogs and drawers ---------------- */
+
+    function getCancelDialog() {
+        return Array.from(document.querySelectorAll('[role="dialog"]'))
+            .filter(isVisible)
+            .find(dialog => /cancel subscription/i.test(cleanText(dialog.textContent))) || null;
+    }
+
+    function getRefundModal() {
+        const title = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+            .filter(isVisible)
+            .find(element => /issue (percentage|fixed amount) refund/i.test(cleanText(element.textContent)));
+        return title ? (title.closest('.MuiModal-root, [role="dialog"], [role="presentation"]') || title.parentElement) : null;
+    }
+
+    function getDrawer() {
+        return Array.from(document.querySelectorAll('.MuiDrawer-paper')).find(isVisible) || null;
+    }
+
+    function clickCloseIcon(root) {
+        const close = root?.querySelector('svg[data-testid="CloseIcon"]')?.closest('button');
+        return close ? realClick(close) : false;
+    }
+
+    async function dismissModal(root, isOpen) {
+        if (!root || !isOpen()) return true;
+        if (!clickCloseIcon(root)) {
+            root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+        }
+        let closed = await waitFor(() => isOpen() ? null : true, { timeout: 2500, pollMs: 100 });
+        if (!closed) {
+            const backdrop = root.closest('.MuiModal-root')?.querySelector('.MuiBackdrop-root') ||
+                document.querySelector('.MuiBackdrop-root');
+            if (backdrop) realClick(backdrop);
+            closed = await waitFor(() => isOpen() ? null : true, { timeout: 2500, pollMs: 100 });
+        }
+        return Boolean(closed);
+    }
+
+    function closeRefundModal() {
+        return dismissModal(getRefundModal(), () => Boolean(getRefundModal()));
+    }
+
+    function closeDrawer() {
+        return dismissModal(getDrawer(), () => Boolean(getDrawer()));
+    }
+
+    function closeCancelDialog() {
+        return dismissModal(getCancelDialog(), () => Boolean(getCancelDialog()));
+    }
+
+    function collectAlerts(into) {
+        for (const alert of document.querySelectorAll('.MuiSnackbarContent-message, .MuiAlert-message, [role="alert"]')) {
+            if (isOwnUi(alert)) continue;
+            const text = cleanText(alert.textContent);
+            if (text) into.add(text.slice(0, 200));
+        }
+    }
+
+    /* ---------------- the run ---------------- */
+
+    function addStep(label) {
+        const step = { label, state: 'running', detail: '' };
+        steps.push(step);
+        render();
+        return step;
+    }
+
+    function endStep(step, state, detail = '') {
+        step.state = state;
+        step.detail = detail;
+        render();
+        return state !== 'failed';
+    }
+
+    async function cancelSubscriptions(ticketURL, dryRun) {
+        const step = addStep('Cancel Now');
+        if (!await openSubscriptionPlans()) {
+            return { ok: endStep(step, 'failed', 'Could not open ACCOUNT > Subscription Plans'), lines: [] };
+        }
+
+        const lines = [];
+        const cards = getPlanCards().map(card => ({ card, info: readPlanCard(card) }));
+        const cancellable = cards.filter(entry => entry.info.cancelButton);
+
+        if (!cancellable.length) {
+            // Nothing left to cancel is only fine if CMS already says so.
+            const statuses = cards.map(entry => `${entry.info.name}: ${entry.info.status || 'unknown'}`).join('; ');
+            const alreadyCancelled = cards.length && cards.every(entry => /cancel/i.test(entry.info.status));
+            if (!alreadyCancelled) {
+                return { ok: endStep(step, 'failed', `No CANCEL button on the plan (${statuses || 'no plan found'})`), lines };
+            }
+            lines.push(`Subscription was already cancelled - ${statuses}`);
+            return { ok: endStep(step, 'done', `Already cancelled (${statuses})`), lines };
+        }
+
+        for (const { info } of cancellable) {
+            realClick(info.cancelButton);
+            const dialog = await waitFor(getCancelDialog, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
+            if (!dialog) return { ok: endStep(step, 'failed', `Cancel dialog did not open for ${info.name}`), lines };
+
+            const comments = dialog.querySelector('textarea[placeholder*="comment" i]') ||
+                dialog.querySelector('textarea');
+            if (!comments) {
+                await closeCancelDialog();
+                return { ok: endStep(step, 'failed', 'Cancel dialog has no Comments field'), lines };
+            }
+            if (!cleanText(comments.value)) setControlledValue(comments, ticketURL);
+            const filled = await waitFor(() => cleanText(comments.value) ? true : null, { timeout: 3000, pollMs: 100 });
+            if (!filled) {
+                await closeCancelDialog();
+                return { ok: endStep(step, 'failed', 'Could not fill the required Comments field'), lines };
+            }
+
+            const cancelNow = await waitFor(() => {
+                const button = findButtonByText('cancel now', dialog);
+                return button && !button.disabled ? button : null;
+            }, { timeout: 5000, pollMs: 100 });
+            if (!cancelNow) {
+                await closeCancelDialog();
+                return { ok: endStep(step, 'failed', 'CANCEL NOW is missing or disabled'), lines };
+            }
+
+            if (dryRun) {
+                await closeCancelDialog();
+                lines.push(`[dry run] Would cancel ${info.name} with Cancel Now (status was ${info.status || 'unknown'})`);
+                continue;
+            }
+
+            realClick(cancelNow);
+            const closed = await waitFor(() => getCancelDialog() ? null : true, { timeout: SUBMIT_SETTLE_MS, pollMs: 150 });
+            if (!closed) {
+                return { ok: endStep(step, 'failed', `The cancel dialog stayed open after CANCEL NOW (${info.name})`), lines };
+            }
+
+            // Let the card re-render, then read what CMS says now.
+            await sleep(1200);
+            const after = getPlanCards().map(readPlanCard).find(card => card.name === info.name);
+            const status = after?.status || 'status not shown';
+            lines.push(`${info.name} cancelled with Cancel Now - status: ${status}`);
+        }
+
+        return { ok: endStep(step, dryRun ? 'dry-run' : 'done', lines.join('; ')), lines };
+    }
+
+    async function refundCharge(charge, dryRun) {
+        const step = addStep(`Refund ${charge.date} ${charge.amount} (${charge.order})`);
+        const bridge = getBridge();
+        if (!bridge?.start) return endStep(step, 'failed', 'The refund workflow (Feature 3) is not loaded');
+
+        if (!await openSubscriptionCharges()) return endStep(step, 'failed', 'Could not open SUBSCRIPTION PLANS AND ENTITLEMENTS');
+        await closeRefundModal();
+        await closeDrawer();
+
+        const row = findChargeRow(charge.order);
+        const eye = row?.querySelector('svg[data-testid="VisibilityIcon"]')?.closest('button');
+        if (!eye) return endStep(step, 'failed', 'Charge not found on this page of the table');
+
+        // The flag keeps Feature 3's own eye listener from also starting an
+        // unpinned run off this click; start() below pins it to the order.
+        window.__bvRefundAssistDriving = true;
+        try {
+            realClick(eye);
+        } finally {
+            window.__bvRefundAssistDriving = false;
+        }
+
+        const drawer = await waitFor(() => {
+            const open = getDrawer();
+            return open && cleanText(open.textContent).includes(charge.order) ? open : null;
+        }, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
+        if (!drawer) return endStep(step, 'failed', 'The charge details drawer did not open');
+
+        const result = await Promise.race([
+            new Promise(resolve => bridge.start({ order: charge.order, onFinish: resolve })),
+            sleep(WORKFLOW_BACKSTOP_MS).then(() => ({ outcome: 'failed', detail: 'refund workflow did not finish' }))
+        ]);
+
+        if (result.outcome === 'dry-run') {
+            await closeRefundModal();
+            await closeDrawer();
+            return endStep(step, 'dry-run', 'Dialog filled (100%, ROTH, ticket link) - not confirmed');
+        }
+        if (result.outcome !== 'submitted') {
+            await closeRefundModal();
+            await closeDrawer();
+            return endStep(step, 'failed', result.detail || 'refund workflow failed');
+        }
+
+        const alerts = new Set();
+        const closed = await waitFor(() => {
+            collectAlerts(alerts);
+            return getRefundModal() ? null : true;
+        }, { timeout: SUBMIT_SETTLE_MS, pollMs: 150 });
+        await sleep(700);
+        collectAlerts(alerts);
+        const alertText = Array.from(alerts).join(' | ');
+
+        if (!closed) {
+            return endStep(step, 'failed', `Refund dialog still open after Confirm Refund${alertText ? ` - ${alertText}` : ''}`);
+        }
+        if (/\b(error|fail(ed|ure)?|unable|could not|invalid|declined)\b/i.test(alertText)) {
+            await closeDrawer();
+            return endStep(step, 'failed', alertText);
+        }
+
+        await closeDrawer();
+        return endStep(step, 'done', alertText || 'Confirm Refund accepted');
+    }
+
+    function buildNote({ dryRun, ticketURL, cancelLines, cancelOk, done, failed, skipped }) {
+        const today = new Date().toLocaleDateString('en-US');
+        const lines = [];
+        lines.push({ text: `Refund Assist - ${today}${dryRun ? ' [DRY RUN - nothing was cancelled or refunded]' : ''}`, bold: true });
+        if (cancelLines.length) {
+            lines.push({ text: 'Cancellation:', bold: true });
+            cancelLines.forEach(text => lines.push({ text: `- ${text}` }));
+        } else if (!cancelOk) {
+            lines.push({ text: 'Cancellation: FAILED - no refunds were issued.', bold: true });
+        }
+        if (done.length) {
+            lines.push({ text: dryRun ? 'Refunds prepared (100%, not confirmed):' : 'Refunds issued (100%):', bold: true });
+            done.forEach(charge => lines.push({
+                text: `- ${[charge.date, charge.title, charge.order, charge.amount, charge.handler].filter(Boolean).join(' | ')}`
+            }));
+            lines.push({ text: `Total ${dryRun ? 'prepared' : 'refunded'}: ${formatTotal(done)}` });
+        }
+        if (failed.length || skipped.length) {
+            lines.push({ text: 'Not refunded:', bold: true });
+            failed.forEach(({ charge, reason }) => lines.push({ text: `- ${charge.date} | ${charge.order} | ${charge.amount} - failed: ${reason}` }));
+            skipped.forEach(charge => lines.push({ text: `- ${charge.date} | ${charge.order} | ${charge.amount} - skipped (run stopped)` }));
+        }
+        lines.push({ text: `CMS: ${location.href}` });
+        if (ticketURL) lines.push({ text: `Ticket: ${ticketURL}` });
+        return lines;
+    }
+
+    function queueNote(ticketURL, lines) {
+        try {
+            let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
+            if (!Array.isArray(queue)) queue = [];
+            const now = Date.now();
+            queue = queue.filter(entry => entry && now - Number(entry.createdAt || 0) < BV_REFUND_ASSIST_NOTE_TTL_MS);
+            queue.push({ ticketUrl: ticketURL, createdAt: now, lines });
+            GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
+            return true;
+        } catch (error) {
+            console.warn('[BV Refund Assist] Could not queue the Freshdesk note.', error);
+            return false;
+        }
+    }
+
+    function copyText(text) {
+        try {
+            GM_setClipboard(text, 'text');
+            return true;
+        } catch (error) {
+            console.warn('[BV Refund Assist] Clipboard write failed.', error);
+            return false;
+        }
+    }
+
+    async function runAssist() {
+        if (running) return;
+        const ticketURL = getTicketURL();
+        if (!ticketURL) return;
+        const picked = charges.filter(charge => selected.has(charge.order));
+        const dryRun = isDryRun();
+
+        running = true;
+        view = 'run';
+        steps = [];
+        lastNoteText = '';
+        render();
+
+        let cancelLines = [];
+        let cancelOk = true;
+        const done = [];
+        const failed = [];
+        const skipped = [];
+
+        try {
+            if (cancelFirst) {
+                const cancel = await cancelSubscriptions(ticketURL, dryRun);
+                cancelLines = cancel.lines;
+                cancelOk = cancel.ok;
+            }
+
+            if (!cancelOk) {
+                skipped.push(...picked);
+            } else {
+                for (let index = 0; index < picked.length; index += 1) {
+                    const charge = picked[index];
+                    const ok = await refundCharge(charge, dryRun);
+                    if (ok) {
+                        done.push(charge);
+                    } else {
+                        failed.push({ charge, reason: steps[steps.length - 1]?.detail || 'failed' });
+                        skipped.push(...picked.slice(index + 1));
+                        break;
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[BV Refund Assist] Run crashed.', error);
+            addStep('Unexpected error').state = 'failed';
+            steps[steps.length - 1].detail = String(error?.message || error);
+            const handled = new Set([...done, ...failed.map(entry => entry.charge), ...skipped]);
+            skipped.push(...picked.filter(charge => !handled.has(charge)));
+        }
+
+        const lines = buildNote({ dryRun, ticketURL, cancelLines, cancelOk, done, failed, skipped });
+        lastNoteText = lines.map(line => line.text).join('\n');
+        const copied = copyText(lastNoteText);
+        const queued = queueNote(ticketURL, lines);
+        const noteStep = addStep('Summary');
+        endStep(noteStep, queued ? 'done' : 'failed', [
+            copied ? 'copied to clipboard' : 'clipboard failed',
+            queued ? `queued for ticket #${getTicketNumber(ticketURL)} (private note)` : 'could not queue the Freshdesk note'
+        ].join(', '));
+
+        running = false;
+        render();
+    }
+
+    /* ---------------- UI ---------------- */
+
+    function el(tag, attrs = {}, children = []) {
+        const node = document.createElement(tag);
+        for (const [key, value] of Object.entries(attrs)) {
+            if (key === 'class') node.className = value;
+            else if (key === 'text') node.textContent = value;
+            else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+            else if (value === true) node.setAttribute(key, '');
+            else if (value !== false && value != null) node.setAttribute(key, value);
+        }
+        for (const child of [].concat(children)) {
+            if (child == null || child === false) continue;
+            node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+        }
+        return node;
+    }
+
+    function addStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = el('style', { id: STYLE_ID });
+        style.textContent = `
+#${BUTTON_ID}{margin-right:8px;padding:6px 12px;border:1px solid #b42318;border-radius:4px;background:#fff;color:#b42318;font:600 13px/1.4 Arial,sans-serif;cursor:pointer;text-transform:uppercase}
+#${BUTTON_ID}:hover{background:#fef3f2}
+#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;width:400px;max-height:calc(100vh - 96px);overflow:auto;background:#fff;color:#1f2937;border:1px solid #d0d5dd;border-radius:10px;box-shadow:0 12px 32px rgba(15,23,42,.22);font:13px/1.45 Arial,sans-serif}
+#${PANEL_ID} header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eaecf0;font-weight:700}
+#${PANEL_ID} header .bv-ra-x{margin-left:auto;border:0;background:none;font-size:18px;cursor:pointer;color:#667085}
+#${PANEL_ID} .bv-ra-body{padding:10px 12px}
+#${PANEL_ID} .bv-ra-badge{padding:1px 6px;border-radius:9px;font-size:11px;background:#fef0c7;color:#93370d}
+#${PANEL_ID} .bv-ra-warn{padding:8px;border-radius:6px;background:#fef3f2;color:#b42318;margin-bottom:8px}
+#${PANEL_ID} .bv-ra-muted{color:#667085;font-size:12px}
+#${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid #f2f4f7;cursor:pointer}
+#${PANEL_ID} label.bv-ra-row.is-off{opacity:.45;cursor:default}
+#${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} .bv-ra-actions{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #eaecf0}
+#${PANEL_ID} button.bv-ra-btn{padding:6px 12px;border-radius:5px;border:1px solid #d0d5dd;background:#fff;cursor:pointer;font:600 12px Arial,sans-serif}
+#${PANEL_ID} button.bv-ra-primary{background:#d92d20;border-color:#d92d20;color:#fff}
+#${PANEL_ID} button.bv-ra-btn:disabled{opacity:.5;cursor:not-allowed}
+#${PANEL_ID} ol{margin:6px 0 0 18px;padding:0}
+#${PANEL_ID} .bv-ra-step{margin-bottom:6px}
+#${PANEL_ID} .bv-ra-state{font-weight:700;margin-right:4px}
+#${PANEL_ID} .is-done .bv-ra-state{color:#067647}
+#${PANEL_ID} .is-dry-run .bv-ra-state{color:#b54708}
+#${PANEL_ID} .is-failed .bv-ra-state{color:#b42318}
+#${PANEL_ID} .is-running .bv-ra-state{color:#175cd3}
+#${PANEL_ID} pre{white-space:pre-wrap;background:#f9fafb;border:1px solid #eaecf0;border-radius:6px;padding:8px;font:11px/1.4 Consolas,monospace;max-height:220px;overflow:auto}
+`;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function closePanel() {
+        if (running) return;
+        document.getElementById(PANEL_ID)?.remove();
+        view = 'select';
+    }
+
+    async function openPanel() {
+        addStyles();
+        view = 'select';
+        steps = [];
+        render(true);
+        const table = await openSubscriptionCharges();
+        charges = scrapeCharges(table);
+        // Nothing preselected: every refund is an explicit choice.
+        selected = new Set(Array.from(selected).filter(order => charges.some(c => c.order === order && isRefundable(c))));
+        render();
+    }
+
+    function renderSelect(body, actions, loading) {
+        const ticketURL = getTicketURL();
+        if (!ticketURL) {
+            body.appendChild(el('div', { class: 'bv-ra-warn', text: 'No Freshdesk ticket stored. Open the ticket in Freshdesk first (or set it in the $ panel) - it is the required comment for the cancel and every refund.' }));
+        } else {
+            body.appendChild(el('div', { class: 'bv-ra-muted', text: `Ticket #${getTicketNumber(ticketURL)} - used as the comment everywhere.` }));
+        }
+
+        if (loading) {
+            body.appendChild(el('p', { text: 'Loading charges...' }));
+            return;
+        }
+        if (!charges.length) {
+            body.appendChild(el('p', { text: 'No charges found on SUBSCRIPTION PLANS AND ENTITLEMENTS.' }));
+        }
+
+        const refundable = charges.filter(isRefundable);
+        if (refundable.length) {
+            const allOn = refundable.every(charge => selected.has(charge.order));
+            body.appendChild(el('label', { class: 'bv-ra-muted', style: 'display:block;margin:8px 0 4px;cursor:pointer' }, [
+                el('input', { type: 'checkbox', checked: allOn, onchange: event => {
+                    refundable.forEach(charge => event.target.checked ? selected.add(charge.order) : selected.delete(charge.order));
+                    render();
+                } }),
+                ' Select all charges on this page'
+            ]));
+        }
+
+        for (const charge of charges) {
+            const on = isRefundable(charge);
+            body.appendChild(el('label', { class: `bv-ra-row${on ? '' : ' is-off'}`, title: on ? '' : `${charge.type} - not a refundable charge` }, [
+                el('input', { type: 'checkbox', disabled: !on, checked: selected.has(charge.order), onchange: event => {
+                    if (event.target.checked) selected.add(charge.order);
+                    else selected.delete(charge.order);
+                    render();
+                } }),
+                el('span', { text: charge.date }),
+                el('span', { class: 'bv-ra-order', text: `${charge.title} - ${charge.order}` }),
+                el('strong', { text: charge.amount })
+            ]));
+        }
+
+        body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Only the current page of the table is listed.' }));
+        body.appendChild(el('label', { style: 'display:block;margin-top:6px;cursor:pointer' }, [
+            el('input', { type: 'checkbox', checked: cancelFirst, onchange: event => { cancelFirst = event.target.checked; render(); } }),
+            ' Cancel the subscription first (CANCEL NOW)'
+        ]));
+        body.appendChild(el('label', { style: 'display:block;margin-top:4px;cursor:pointer' }, [
+            el('input', { type: 'checkbox', checked: isDryRun(), onchange: event => { getBridge()?.setDryRun?.(event.target.checked); render(); } }),
+            ' Dry run (fill every dialog, submit nothing)'
+        ]));
+
+        const picked = charges.filter(charge => selected.has(charge.order));
+        actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Refresh', onclick: openPanel }));
+        actions.appendChild(el('button', {
+            class: 'bv-ra-btn bv-ra-primary',
+            disabled: !ticketURL || (!picked.length && !cancelFirst),
+            text: 'Review',
+            onclick: () => { view = 'confirm'; render(); }
+        }));
+    }
+
+    function renderConfirm(body, actions) {
+        const picked = charges.filter(charge => selected.has(charge.order));
+        const ticketURL = getTicketURL();
+        const dryRun = isDryRun();
+        if (dryRun) body.appendChild(el('div', { class: 'bv-ra-warn', style: 'background:#fffaeb;color:#93370d', text: 'DRY RUN - dialogs are filled and closed, nothing is cancelled or refunded.' }));
+        body.appendChild(el('p', { text: 'This will, in order:' }));
+        const list = el('ol');
+        if (cancelFirst) list.appendChild(el('li', { text: 'Cancel the subscription with CANCEL NOW (not after the billing period).' }));
+        if (picked.length) {
+            list.appendChild(el('li', {}, [
+                `Refund 100% of ${picked.length} charge${picked.length === 1 ? '' : 's'} - total ${formatTotal(picked)}:`,
+                el('ul', {}, picked.map(charge => el('li', { class: 'bv-ra-order', text: `${charge.date} ${charge.amount} ${charge.order}` })))
+            ]));
+        }
+        list.appendChild(el('li', { text: `Copy the summary and paste it into a private note on ticket #${getTicketNumber(ticketURL)}.` }));
+        body.appendChild(list);
+        body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
+
+        actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Back', onclick: () => { view = 'select'; render(); } }));
+        actions.appendChild(el('button', {
+            class: 'bv-ra-btn bv-ra-primary',
+            text: dryRun ? 'Run dry run' : 'Confirm - cancel & refund',
+            onclick: runAssist
+        }));
+    }
+
+    function renderRun(body, actions) {
+        const list = el('ol');
+        for (const step of steps) {
+            const label = { running: '...', done: 'OK', 'dry-run': 'DRY', failed: 'FAIL' }[step.state] || step.state;
+            list.appendChild(el('li', { class: `bv-ra-step is-${step.state}` }, [
+                el('span', { class: 'bv-ra-state', text: label }),
+                step.label,
+                step.detail ? el('div', { class: 'bv-ra-muted', text: step.detail }) : null
+            ]));
+        }
+        body.appendChild(list);
+        if (running) {
+            body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Running - do not click around in CMS until it finishes.' }));
+            return;
+        }
+        if (lastNoteText) body.appendChild(el('pre', { text: lastNoteText }));
+        actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Copy again', disabled: !lastNoteText, onclick: () => copyText(lastNoteText) }));
+        actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Close', onclick: closePanel }));
+    }
+
+    function render(loading = false) {
+        let panel = document.getElementById(PANEL_ID);
+        if (!panel) {
+            panel = el('div', { id: PANEL_ID, 'data-html2canvas-ignore': 'true' });
+            document.body.appendChild(panel);
+        }
+        panel.textContent = '';
+
+        const header = el('header', {}, [
+            'Refund Assist',
+            isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
+            el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Close', disabled: running, text: '×', onclick: closePanel })
+        ]);
+        const body = el('div', { class: 'bv-ra-body' });
+        const actions = el('div', { class: 'bv-ra-actions' });
+
+        if (view === 'confirm') renderConfirm(body, actions);
+        else if (view === 'run') renderRun(body, actions);
+        else renderSelect(body, actions, loading);
+
+        panel.appendChild(header);
+        panel.appendChild(body);
+        if (actions.children.length) panel.appendChild(actions);
+    }
+
+    // The launcher sits next to ADD PLAN, which only renders on the
+    // SUBSCRIPTION PLANS AND ENTITLEMENTS tab.
+    function mountButton() {
+        const addPlan = findButtonByText('add plan');
+        const existing = document.getElementById(BUTTON_ID);
+        if (!addPlan || !getChargesTable()) {
+            if (existing && !running) existing.remove();
+            return;
+        }
+        if (existing && existing.nextElementSibling === addPlan) return;
+        existing?.remove();
+        addStyles();
+        const button = el('button', {
+            id: BUTTON_ID,
+            type: 'button',
+            'data-html2canvas-ignore': 'true',
+            text: 'Refund Assist ▾',
+            onclick: event => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (document.getElementById(PANEL_ID) && !running) closePanel();
+                else if (!running) openPanel();
+            }
+        });
+        try {
+            addPlan.parentElement.insertBefore(button, addPlan);
+        } catch (error) {
+            console.warn('[BV Refund Assist] Could not place the launcher.', error);
+        }
+    }
+
+    onRouteChange(function () {
+        window.clearTimeout(mountTimer);
+        mountTimer = window.setTimeout(mountButton, 250);
+    });
 })();
 
 }
@@ -8788,6 +9697,148 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   init();
 })();
 }
+
+/* ============================================================
+ * Feature 9b: Paste the Refund Assist summary into a private note
+ * Consumer half of CMS Refund Assist (Feature 3b): when the ticket the
+ * summary belongs to is open, opens a private note and writes the
+ * cancellation confirmation plus the refund list into it. The note is left
+ * unsent for the agent to review. Checks the path on every pass instead of
+ * at load, because Freshdesk moves between tickets without a page load.
+ * ============================================================ */
+
+(function () {
+  'use strict';
+
+  if (location.hostname !== 'viewlift.freshdesk.com') return;
+
+  const MAX_LINES = 80;
+  let pasting = false;
+
+  function cleanText(value) {
+    return String(value || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function getTicketId() {
+    const match = location.pathname.match(/^\/a\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  function getEntryTicketId(entry) {
+    const match = String(entry && entry.ticketUrl || '').match(/\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  function readQueue() {
+    try {
+      const value = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
+      return Array.isArray(value) ? value : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function removeEntry(entry) {
+    const queue = readQueue().filter(item =>
+      !(item && item.createdAt === entry.createdAt && item.ticketUrl === entry.ticketUrl));
+    try {
+      if (queue.length) GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
+      else GM_deleteValue(BV_REFUND_ASSIST_NOTE_KEY);
+    } catch (error) {
+      console.warn('[BV Refund Assist] Could not clear the queued note.', error);
+    }
+  }
+
+  function findEditor() {
+    return document.querySelector(
+      '[contenteditable="true"][role="textbox"], .fr-element[contenteditable="true"], [contenteditable="true"]'
+    );
+  }
+
+  function clickPrivateNote() {
+    const noteButton = document.querySelector('[data-test-id="add-note"], [data-test-note-action="add"]');
+    if (noteButton && !noteButton.disabled) {
+      noteButton.click();
+      return true;
+    }
+    return false;
+  }
+
+  // Came out of GM storage, so it goes in as text nodes only, capped - the
+  // same trust rule as the snapshot note's subscription details.
+  function writeLines(editor, lines) {
+    const paragraph = document.createElement('p');
+    lines.slice(0, MAX_LINES).forEach((line, index) => {
+      const text = cleanText(line && line.text).slice(0, 300);
+      if (!text) return;
+      if (index > 0) paragraph.appendChild(document.createElement('br'));
+      if (line.bold) {
+        const strong = document.createElement('strong');
+        strong.textContent = text;
+        paragraph.appendChild(strong);
+      } else {
+        paragraph.appendChild(document.createTextNode(text));
+      }
+    });
+    if (!paragraph.childNodes.length) return false;
+    editor.appendChild(paragraph);
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function consume(attempt = 0) {
+    if (pasting) return;
+    const ticketId = getTicketId();
+    if (!ticketId) return;
+
+    const now = Date.now();
+    const entry = readQueue().find(item =>
+      item && getEntryTicketId(item) === ticketId && Array.isArray(item.lines) &&
+      now - Number(item.createdAt || 0) < BV_REFUND_ASSIST_NOTE_TTL_MS);
+    if (!entry) return;
+
+    const editor = findEditor();
+    if (!editor) {
+      clickPrivateNote();
+      if (attempt < 10) window.setTimeout(() => consume(attempt + 1), 700);
+      return;
+    }
+
+    pasting = true;
+    try {
+      editor.focus();
+      if (writeLines(editor, entry.lines)) {
+        removeEntry(entry);
+        console.info('[BV Refund Assist] Summary pasted into the private note.');
+      }
+    } catch (error) {
+      console.error('[BV Refund Assist] Could not paste the summary.', error);
+    } finally {
+      pasting = false;
+    }
+  }
+
+  function init() {
+    if (!document.body) {
+      window.setTimeout(init, 300);
+      return;
+    }
+    window.setTimeout(consume, 400);
+    try {
+      if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener(BV_REFUND_ASSIST_NOTE_KEY, function (_name, _old, _new, remote) {
+          if (remote) consume();
+        });
+      }
+    } catch (error) {
+      console.warn('[BV Refund Assist] Could not subscribe to note updates.', error);
+    }
+    window.setInterval(consume, 3000);
+  }
+
+  init();
+})();
 
 /* ============================================================
  * Feature 10: Copy the whole case to the clipboard
