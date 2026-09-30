@@ -12,8 +12,10 @@
 // the fixture: if a brand is renamed in Freshdesk, update it here and this test
 // says which rule stopped matching.
 //
-// FOX is deliberately not covered - out of scope for this project (B2C excluding
-// FOX, see memory.md) - and its chip does read "CASE" today.
+// FOX joined on 2026-09-30, when the user brought the FOX queue in scope and
+// confirmed its CMS (foxone.cms.viewlift.com). Its rule used to match only
+// "fox sports", which the stored name "FOX One B2C" does not contain, so every
+// FOX ticket read "CASE".
 //
 // Run with: node tests/brand-chip.test.js
 const fs = require('fs');
@@ -51,7 +53,8 @@ const CLIENT_NAMES = {
   'Altitude B2C': ['ALTITUDE', 'altitudeplus.com'],
   'LivGolf B2C': ['LIV', 'livgolfplus.com'],
   'DIRTVision B2C': ['DIRT', 'dirtvision.com'],
-  'MSN B2C (Monumental Sports Network)': ['MSN', 'monumentalsports.com']
+  'MSN B2C (Monumental Sports Network)': ['MSN', 'monumentalsports.com'],
+  'FOX One B2C': ['FOX', 'fox.com']
 };
 
 let failures = 0;
@@ -93,6 +96,16 @@ Object.keys(CLIENT_NAMES).forEach(clientName => {
       .map(rule => rule.label);
     check('"' + clientName + '" is claimed by no other brand', others.join(','), '');
   });
+}
+
+// ---------------------------------------------------------------------------
+// FOX specifically: the rule only knew "fox sports" until 2026-09-30.
+// ---------------------------------------------------------------------------
+{
+  check('the stored client name reads as FOX', chipFor('FOX One B2C'), 'FOX');
+  check('so does the product name on its own', chipFor('FOX One'), 'FOX');
+  check('and the old FOX Sports wording still works', chipFor('fox sports app issue'), 'FOX');
+  check('and it is no longer the generic label', chipFor('FOX One B2C') === 'CASE', false);
 }
 
 {

@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.61.0
+// @version      3.62.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
 // @match        https://cms-gcp.viewlift.com/*
 // @match        https://cms-qcp.viewlift.com/*
+// @match        https://foxone.cms.viewlift.com/*
 // @match        https://cms.monumentalsportsnetwork.com/*
 // @match        https://claude.ai/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
@@ -27,6 +28,7 @@
 // @connect      cms.viewlift.com
 // @connect      cms-gcp.viewlift.com
 // @connect      cms-qcp.viewlift.com
+// @connect      foxone.cms.viewlift.com
 // @connect      cms.monumentalsportsnetwork.com
 // @connect      viewlift.com
 // @connect      viewlift.freshdesk.com
@@ -52,8 +54,13 @@
   }
   installMarker.setAttribute('data-better-viewlift-installed', installedVersion);
 
+  // foxone.cms.viewlift.com is FOX One's own CMS instance (user-confirmed
+  // 2026-09-30). It sits on viewlift.com like the others but as a deeper
+  // subdomain, so the cms(-gcp|-qcp) pattern never matched it - and this one
+  // predicate is what gates snapshots, refund capture, credential capture and
+  // the session keep-alive, so all of them were silently off on FOX tickets.
   function isCMSHost(hostname = location.hostname) {
-    return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
+    return /^(?:cms(?:-gcp|-qcp)?\.viewlift\.com|foxone\.cms\.viewlift\.com|cms\.monumentalsportsnetwork\.com)$/i.test(hostname);
   }
 
   // Tampermonkey hands userscripts a sandboxed `window` Proxy, and
@@ -1893,7 +1900,7 @@
     if (/monumental|\bmsn\b/i.test(context)) return 'msn';
     if (/golden knights|\bvgk\b/i.test(context)) return 'vgk';
     if (/chsn|cubs|blackhawks|\bchicago\b/i.test(context)) return 'chsn';
-    if (/foxone|fox sports|\bfox\b/i.test(context)) return 'fox';
+    if (/foxone|fox\s*one|fox sports|fox\.com|\bfox\b/i.test(context)) return 'fox';
     if (/rootsport|root sports/i.test(context)) return 'rootsport';
     if (/dirtvision|dirt vision/i.test(context)) return 'dirt';
     if (/\blnp\b|league network/i.test(context)) return 'lnp';
@@ -3227,6 +3234,7 @@
         'https://cms.viewlift.com/api/auth/verify',
         'https://cms-gcp.viewlift.com/api/auth/verify',
         'https://cms-qcp.viewlift.com/api/auth/verify',
+        'https://foxone.cms.viewlift.com/api/auth/verify',
         'https://cms.monumentalsportsnetwork.com/api/auth/verify'
     ];
     const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
@@ -7987,7 +7995,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     { label: 'ALTITUDE', patterns: [/altitude/i, /altitudeplus/i] },
     { label: 'MSN', patterns: [/monumental\s*sports/i, /msn\b/i, /monumentalsportsnetwork/i] },
     { label: 'SCHN', patterns: [/\bschn\b/i, /space\s*city/i, /spacecityhn/i, /sc-appsupport/i] },
-    { label: 'FOX', patterns: [/fox\s*sports/i, /foxsports/i, /foxsports\.com/i] }
+    // Freshdesk stores this brand as "FOX One B2C" and its mail arrives on
+    // fox.com - neither contains "fox sports", which is why FOX tickets read
+    // "CASE". Kept last in the list so the bare /\bfox\b/ fallback can only
+    // win once every more specific brand has already failed to match.
+    { label: 'FOX', patterns: [/\bfox\s*one\b/i, /\bfoxone\b/i, /fox\s*sports/i, /foxsports/i, /foxsports\.com/i, /\bfox\.com\b/i, /\bfox\b/i] }
   ];
 
   function cleanText(value) {
@@ -11147,7 +11159,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     const CMS_USERS_URLS = {
         standard: 'https://cms.viewlift.com/users/search',
         gcp: 'https://cms-gcp.viewlift.com/users/search',
-        msn: 'https://cms.monumentalsportsnetwork.com/users/search'
+        msn: 'https://cms.monumentalsportsnetwork.com/users/search',
+        fox: 'https://foxone.cms.viewlift.com/users/search'
     };
     const BUTTON_ID = 'viewlift-open-cms-header-button';
     const CMS_EMAIL_PARAM = 'openCmsEmail';
@@ -11353,7 +11366,12 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             [/dirtvision\.com/, 'standard'],
             [/livgolfplus\.com/, 'gcp'],
             [/spacecityhn\.com/, 'gcp'],
-            [/tampabaylightning\.com/, 'gcp']
+            [/tampabaylightning\.com/, 'gcp'],
+            // FOX One's mail arrives on fox.com (its cf_b2b_client_name is
+            // "FOX One B2C"). Listed with the other domains because it is the
+            // one unambiguous FOX signal - the bare word "fox" is not.
+            [/\bfox\.com\b/, 'fox'],
+            [/foxsports\.com/, 'fox']
         ];
 
         for (const [pattern, key] of brandDomains) {
@@ -11372,6 +11390,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
             return 'standard';
         }
 
+        // FOX is tested LAST on purpose. "FOX One" and "FOX Sports" are as
+        // specific as any other brand token, but a bare "fox" is an ordinary
+        // English word and a common surname, and the fallback context this
+        // runs against is the whole ticket body. Testing it after every other
+        // brand means a stray "fox" can only change the answer for a ticket
+        // that matched nothing at all - which used to fall through to the
+        // standard CMS, the one host a FOX customer is certainly not on.
+        if (/\bfox\s*one\b|\bfoxone\b|\bfox\s*sports\b/i.test(normalized)) {
+            return 'fox';
+        }
+
+        // ...and a bare "fox" only when the text names no other known brand at
+        // all. MOTV is recognized here even though it has no host yet (see
+        // UNROUTED_KNOWN_BRANDS below), so an MOTV ticket that happens to say
+        // "fox" keeps falling through to the standard host and its warning
+        // instead of being quietly handed to FOX's CMS.
+        if (/\bfox\b/i.test(normalized) && !/\bmotv\b/i.test(normalized)) {
+            return 'fox';
+        }
+
         return '';
     }
 
@@ -11381,11 +11419,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     // Unlike that generic case, this one is worth calling out loud: the
     // search will likely run against the wrong CMS instance entirely for
     // these tickets, not just show a plausible-but-wrong result.
-    // User confirmed (2026-08-12) MOTV and FOX One aren't worth routing -
-    // left unmapped deliberately, not an oversight. Knight Time is Vegas
-    // Golden Knights on the standard host, now routed above.
+    // FOX One left this list on 2026-09-30: the user confirmed its CMS is
+    // foxone.cms.viewlift.com, so it now routes above like every other brand.
+    // Knight Time is Vegas Golden Knights on the standard host, also routed
+    // above. MOTV is the last one with no confirmed host.
     const UNROUTED_KNOWN_BRANDS = [
-        { label: 'FOX One', re: /\bfox\s*one\b/i },
         { label: 'MOTV', re: /\bmotv\b/i }
     ];
 

@@ -110,6 +110,8 @@ function check(label, actual, expected) {
   check('Monumental', detect('monumental sports network'), 'msn');
   check('Golden Knights', detect('vegas golden knights'), 'vgk');
   check('FOX', detect('fox sports app'), 'fox');
+  check('the stored FOX client name', detect('client name fox one b2c'), 'fox');
+  check('and the FOX support domain', detect('to support@fox.com'), 'fox');
   check('DIRTVision', detect('dirtvision billing'), 'dirt');
   check('nothing recognisable yields nothing', detect('hello there'), '');
   check('empty input yields nothing', detect(''), '');

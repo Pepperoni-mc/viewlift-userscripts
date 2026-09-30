@@ -2,6 +2,75 @@
 
 Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
 
+## The FOX queue is in scope now - 3.62.0 (2026-09-30)
+
+Sebastian: "implementa la queue de FOX para todas las funcionalidades y usa este CMS
+https://foxone.cms.viewlift.com/users". That reverses two earlier decisions recorded in this file -
+"B2C excluding FOX" as the project scope, and the 2026-08-12 "MOTV and FOX One aren't worth routing"
+("no me importa"). **FOX One is a routed brand from here on**; MOTV is the only entry left in
+`UNROUTED_KNOWN_BRANDS`.
+
+### The host is a different shape from the other four, and that was the whole problem
+
+`foxone.cms.viewlift.com` is a **deeper subdomain**, not another `cms-*` sibling. `isCMSHost()` -
+the single predicate that gates Feature 2 (refund capture), Feature 9 (snapshots), the credential
+capture module, `toSafeCmsUrl()` and the keep-alive - tested
+`^cms(-gcp|-qcp)?\.viewlift\.com# Better Viewlift — Project Memory
+
+Context file for AI assistants (GPT/Codex, Claude, etc.) picking up work on this repo.
+
+, so **every one of those features was silently off** on the FOX
+CMS even before routing was considered. Adding the brand to `CMS_USERS_URLS` alone would have sent
+agents to a host where none of the tooling loads. Both `@match` and `@connect` needed it too.
+
+Nothing per-host is hardcoded beyond that: API origin, xApiKey and the site slug are all learned
+from the CMS's own traffic by `bvRecordCmsCreds`, so FOX picks those up the first time a real FOX
+page is opened. `foxone` serves one brand, so `resolveCmsSite`'s last-seen-slug fallback is safe
+there - no `MULTI_BRAND_CMS_SITES` entry needed (that list is only for the three brands sharing
+`cms.viewlift.com`).
+
+### What FOX actually looks like in Freshdesk
+
+`cf_b2b_client_name` is **`FOX One B2C`** and the mail arrives on **fox.com** - neither contains
+"fox sports", which is all the old `BRAND_RULES` entry and `detectRefundClientKeyFromText` knew
+about. That is why the chip read `CASE` on FOX tickets. Same class of bug as Tampa/`TBL B2C`
+(2026-08-22): the brand's real stored name was never the thing being matched.
+
+### Why a bare `\bfox\b` is allowed, and where it stops
+
+"fox" on its own is an English word and a common surname, and `getCMSKeyFromClientText`'s fallback
+context is `document.body.innerText` - the whole ticket. So it is split in two:
+
+* `fox one` / `foxone` / `fox sports` / `fox.com` are treated as brand tokens like any other, with
+  `fox.com` and `foxsports.com` in the `brandDomains` list that runs first.
+* the bare `\bfox\b` is the **last rule in the function**, and is additionally suppressed when the
+  text says `motv`. Everything else has already matched by then, so a stray "fox" can only change
+  the answer for a ticket that previously resolved to nothing and fell through to the standard
+  host - which is the one host a FOX customer is certainly not on. The MOTV guard keeps the
+  known-but-unrouted brand on its existing warning path instead of quietly handing it to FOX.
+
+The chip's context (`getContextText`) is much narrower - title, ticket-property dropdowns, mailto
+hrefs - so `\bfox\b` last in `BRAND_RULES` carries the same ordering logic at lower risk.
+
+### Refund side was already half-built
+
+`REFUND_SHEETS.fox` (gid `1677210455`, the DATE_COMMENTS layout) and a `fox` branch in
+`detectRefundClientKeyFromText` had existed all along - only the detector's patterns were too
+narrow. Widened to `fox one` and `fox.com`. Nothing about the sheet changed.
+
+### Known, deliberate: the Switch Account button
+
+Feature 1c renders on any `isCMSHost()`, so it now also appears on `foxone` offering
+lightning/liv-golf/schn - exactly as it already does on `cms.monumentalsportsnetwork.com` and
+`cms.viewlift.com`. Pre-existing behaviour, not introduced here, and left alone.
+
+### Tests
+
+FOX coverage added to `brand-routing.test.js` (both hosts, the domain, the bare-fox ordering and the
+MOTV guard), `brand-chip.test.js` (`FOX One B2C` added to the `CLIENT_NAMES` fixture, which also
+pulls it into the existing "claimed by no other brand" loop) and `refund-client-detection.test.js`.
+`node tests/run-all.js` - all steps pass.
+
 ## Julio joins both agent rosters - 3.61.0 (2026-09-17)
 
 Sebastian asked for Julio in the agent list and in the capture tool. Those are two separate hardcoded
@@ -154,7 +223,7 @@ file** - guessing at these is what caused all three bugs below.
 | `Altitude B2C` | altitudeplus.com | ALTITUDE | standard |
 | `DIRTVision B2C` | dirtvision.com | DIRT | standard |
 | `MSN B2C (Monumental Sports Network)` | **monumentalsports.com** | MSN | msn |
-| `FOX One B2C` | fox.com | (out of scope) | (unrouted) |
+| `FOX One B2C` | fox.com | FOX | foxone (`foxone.cms.viewlift.com`, added 2026-09-30) |
 
 Note MSN: the inbox is `monumentalsports.com`, while `monumentalsportsnetwork.com` is the CMS host.
 Only the longer form was in the domain list; both are now.

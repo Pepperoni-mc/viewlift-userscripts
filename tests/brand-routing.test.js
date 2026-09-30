@@ -342,6 +342,22 @@ const altitudeTicket = {
   check('"MSN B2C (Monumental Sports Network)" goes to the MSN host', key('MSN B2C (Monumental Sports Network)'), 'msn');
   check('and the address MSN mail really arrives on does too', key('to support@monumentalsports.com'), 'msn');
   check('which is a third host, not either of the others', host('Client Name MSN B2C'), 'cms.monumentalsportsnetwork.com');
+
+  // FOX One, routed for the first time on 2026-09-30. Until then it was in
+  // UNROUTED_KNOWN_BRANDS and every FOX ticket opened cms.viewlift.com - a
+  // host that has none of these customers - behind a warning notification.
+  check('"FOX One B2C" routes to its own CMS', key('FOX One B2C'), 'fox');
+  check('and the address FOX mail arrives on does too', key('to support@fox.com'), 'fox');
+  check('so a FOX ticket opens the foxone host', host('Client Name FOX One B2C'), 'foxone.cms.viewlift.com');
+  check('and no longer the standard one it used to fall through to', host('Client Name FOX One B2C') === 'cms.viewlift.com', false);
+  check('the URL comes from the mapping, not a literal', api.CMS_USERS_URLS.fox, 'https://foxone.cms.viewlift.com/users/search');
+
+  // The bare /\bfox\b/ fallback is deliberately the very last rule. It has to
+  // catch a FOX ticket that only says "fox", and lose to every real brand.
+  check('a lone "fox" with no other brand present still reaches FOX', key('cancel my fox subscription'), 'fox');
+  check('but it loses to another brand token', key('DIRTVision B2C - handled by Megan Fox'), 'standard');
+  check('and to another brand support address', key('to customersupport@altitudeplus.com about the fox'), 'standard');
+  check('and to MOTV, which is known but still has no host', key('MOTV ticket - the fox logo is missing'), '');
 }
 
 if (failures) {
