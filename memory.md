@@ -31,6 +31,34 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.66.0 - the scenario reply is checked and SENT; Google Play refunds paired (same day)
+
+Sebastian (after 3.65.0 "funciona"): check the email in the scenario reply is the one just
+refunded; if not, change it keeping the bold; greet with the CMS account's first name (none in CMS
+→ leave it); then **Send and set as → Waiting on End User**. This reverses the earlier "leave the
+reply for review" rule - his call, stated explicitly.
+
+- Contact: `readAccountContact()` at the start of the run - ACCOUNT > Personal Information,
+  `input#email` / `input#name` (live). `firstNameOf()` keeps the first word only if it looks like a
+  name (no initials, no email). Passed on the applyScenario queue entry as
+  `replyEmail` / `replyFirstName`.
+- Freshdesk side, after the UI Apply: `checkAndSendReply()` waits for the editor holding "associated
+  with the email address", takes the `<strong>` in that sentence (template read from sent
+  replies: `...email address <strong>x</strong> has been successfully canceled...`), rewrites its
+  text (same node → bold kept), fixes "Hello J.," via a TreeWalker, **reads both back**, then
+  `button[aria-label="Send and set as"]` → `a[data-test-link="dropdown-submit-Waiting on End User"]`
+  (both read live). Anything it cannot verify → not sent, red status on the ticket page.
+  Verified live on a detached copy of a real sent reply (email + greeting rewritten, bold kept);
+  **the send itself was not clicked by Claude**.
+- **Google Play pairing bug**: the REFUND row reuses the charge's order number
+  (`GPA.3393-7153-0266-92083..5` on both, live). 3.65.0 looked the refund up by number and found
+  the charge again → "Refund row not shown". Now `markRefundedCharges()` stores the REFUND row
+  itself, pairs by identical number first, and the 16-char core rule is **Stripe-only** (`re_` vs
+  `ch_`/`py_`) - the new test caught that on GPA ids it would have marked *every* charge of the plan
+  refunded. `findChargeRow()` and `picked` now also require type CHARGE (same-number twin rows).
+- Note table: Freshdesk kept the bare `<table>` but rendered the cells jammed together; cells now
+  carry inline padding plus a trailing `&nbsp;` gap in case the style is stripped. Not yet seen live.
+
 ### 3.65.0 - the note carries the refund ids; CMS closes and the ticket comes forward (same day)
 
 Sebastian pasted the note he wants (his own, for an Annual Plan): `(Plan)` / `CMS: <link>` /

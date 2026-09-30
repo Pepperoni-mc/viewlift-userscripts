@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.65.0
+// @version      3.66.0
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6664,14 +6664,30 @@ if (isCMSHost()) {
     // first 6 characters differ between payments; the rest is the account.
     const REFUND_MATCH_CHARS = 16;
 
+    // Two pairings, both read live on 2026-09-30:
+    //   * Google Play (ANDROID) gives the REFUND row the SAME order number as
+    //     its charge (GPA.3393-7153-0266-92083..5 on both);
+    //   * Stripe gives it a different id sharing the payment-intent core.
+    // The pairing stores the REFUND row itself, because with Google Play
+    // looking a refund up by order number alone finds the charge again.
     function markRefundedCharges(list) {
         const core = order => cleanText(order).replace(/^[a-z]+_/i, '').slice(0, REFUND_MATCH_CHARS);
-        const refunds = list.filter(charge => charge.type.toUpperCase() === 'REFUND' &&
-            core(charge.order).length === REFUND_MATCH_CHARS);
+        const refunds = list.filter(charge => charge.type.toUpperCase() === 'REFUND');
         for (const charge of list) {
             if (charge.type.toUpperCase() !== 'CHARGE') continue;
-            const match = refunds.find(refund => core(refund.order) === core(charge.order));
-            if (match) charge.refundedBy = match.order;
+            // The core rule is Stripe-only (re_ against ch_/py_): Google
+            // Play ids of one subscription share far more than 16 leading
+            // characters (GPA.3393-7153-0266-92083..4 / ..5), so applying it
+            // there would mark every charge of the plan as refunded.
+            const isStripeCharge = /^(ch|py)_/i.test(charge.order);
+            const match = refunds.find(refund => refund.order === charge.order) ||
+                (isStripeCharge && refunds.find(refund => /^re_/i.test(refund.order) &&
+                    core(refund.order).length === REFUND_MATCH_CHARS &&
+                    core(refund.order) === core(charge.order)));
+            if (match) {
+                charge.refundedBy = match.order;
+                charge.refundedRow = match;
+            }
         }
         return list;
     }
@@ -6681,8 +6697,12 @@ if (isCMSHost()) {
         if (!table) return null;
         const headers = getTableHeaders(table);
         const index = headers.indexOf('order number');
+        const typeIndex = headers.indexOf('transaction type');
+        // The CHARGE row, never its REFUND twin: Google Play reuses the order
+        // number, so matching the number alone could open the refund row.
         return Array.from(table.querySelectorAll('tbody tr')).find(row =>
-            cleanText(row.children[index]?.textContent) === order) || null;
+            cleanText(row.children[index]?.textContent) === order &&
+            (typeIndex < 0 || cleanText(row.children[typeIndex]?.textContent).toUpperCase() === 'CHARGE')) || null;
     }
 
     // "USD 19.99" -> { currency: 'USD', value: 19.99 }. Currency stays
@@ -6778,6 +6798,37 @@ if (isCMSHost()) {
             endDate: valueAfter('end date'),
             cancelButton
         };
+    }
+
+    // ACCOUNT > Personal Information holds the account's own Name and Email
+    // as plain inputs (#name, #email - read live 2026-09-30). They are what
+    // the customer reply is checked against: the email the refund was for,
+    // and the first name for the greeting.
+    async function readAccountContact() {
+        const account = getTabButton('account');
+        if (account) realClick(account);
+        const nav = await waitFor(() => Array.from(document.querySelectorAll('p[role="button"], [role="button"], button'))
+            .filter(element => !isOwnUi(element) && isVisible(element))
+            .find(element => lower(element) === 'personal information') || null,
+        { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
+        if (nav) realClick(nav);
+        const inputs = await waitFor(() => {
+            const email = document.querySelector('input#email');
+            return email && !isOwnUi(email) ? { email, name: document.querySelector('input#name') } : null;
+        }, { timeout: 8000, pollMs: 150 });
+        const email = cleanText(inputs?.email?.value || '').toLowerCase();
+        return {
+            email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '',
+            firstName: firstNameOf(inputs?.name?.value || '')
+        };
+    }
+
+    // "John Vera" -> "John". Nothing that does not look like a name - an
+    // email pasted into the field, digits, an empty value - so the greeting
+    // is left as the scenario wrote it.
+    function firstNameOf(fullName) {
+        const first = cleanText(fullName).split(' ')[0] || '';
+        return /^[\p{L}][\p{L}'-]*$/u.test(first) && first.length > 1 ? first : '';
     }
 
     async function openSubscriptionPlans() {
@@ -7082,7 +7133,7 @@ if (isCMSHost()) {
     // clicks Apply on that scenario so its customer reply lands in the reply
     // editor for review - only queued once the note is already saved,
     // because the reply editor replaces an open note draft.
-    function queueNote(ticketURL, note, { pasteNote = true, applyScenario = '' } = {}) {
+    function queueNote(ticketURL, note, { pasteNote = true, applyScenario = '', replyEmail = '', replyFirstName = '' } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
@@ -7095,7 +7146,9 @@ if (isCMSHost()) {
                 rows: pasteNote ? (note?.rows || []) : [],
                 after: pasteNote ? (note?.after || []) : [],
                 pasteNote,
-                applyScenario
+                applyScenario,
+                replyEmail,
+                replyFirstName
             });
             GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
             return true;
@@ -7170,8 +7223,11 @@ if (isCMSHost()) {
         const parts = [];
         if (note.lines.length) parts.push(noteLinesToHtml(note.lines));
         if (note.rows.length) {
-            parts.push(`<table><tbody>${note.rows.map(cells =>
-                `<tr>${cells.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+            // Freshdesk keeps the <table> but gives its cells no padding, so
+            // the columns ran together (live, 2026-09-30). Inline padding,
+            // plus a trailing gap in case the style attribute is stripped.
+            parts.push(`<table style="border-collapse:collapse"><tbody>${note.rows.map(cells =>
+                `<tr>${cells.map(cell => `<td style="padding:6px 18px 6px 0;vertical-align:top">${escapeHtml(cell)}&nbsp;&nbsp;&nbsp;</td>`).join('')}</tr>`).join('')}</tbody></table>`);
         }
         if (note.after.length) parts.push(noteLinesToHtml(note.after));
         return parts.join('<br>');
@@ -7261,7 +7317,7 @@ if (isCMSHost()) {
         if (running) return;
         const ticketURL = getTicketURL();
         if (!ticketURL) return;
-        const picked = charges.filter(charge => selected.has(charge.order));
+        const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
         const dryRun = isDryRun();
 
         running = true;
@@ -7274,6 +7330,13 @@ if (isCMSHost()) {
         const done = [];
         const failed = [];
         const skipped = [];
+
+        let contact = { email: '', firstName: '' };
+        try {
+            contact = await readAccountContact();
+        } catch (error) {
+            console.warn('[BV Refund Assist] Could not read the account name/email.', error);
+        }
 
         try {
             if (cancelFirst) {
@@ -7369,10 +7432,17 @@ if (isCMSHost()) {
                     // The customer reply cannot go through the API and must
                     // be reviewed anyway: the ticket tab clicks Apply so it
                     // lands in the reply editor, unsent.
-                    queueNote(ticketURL, null, { pasteNote: false, applyScenario: REFUNDED_SCENARIO_NAME });
+                    queueNote(ticketURL, null, {
+                        pasteNote: false,
+                        applyScenario: REFUNDED_SCENARIO_NAME,
+                        replyEmail: contact.email,
+                        replyFirstName: contact.firstName
+                    });
                     endStep(scenarioStep, 'done', [
                         `set ${result.changed.join(', ') || 'nothing new'} (${result.source})`,
-                        'the reply opens in the ticket tab for you to review and send'
+                        contact.email
+                            ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / "Hello ${contact.firstName}"` : ''} and sends it (Waiting on End User)`
+                            : 'no account email read - the reply is left in the editor for you to send'
                     ].join(' - '));
                 } catch (error) {
                     endStep(scenarioStep, 'failed', `API: ${describeApiError(error)}`);
@@ -7392,10 +7462,11 @@ if (isCMSHost()) {
 
     // A refund issued seconds ago is not in the list CMS already fetched, so
     // the table is reloaded (One-Time Purchases and back) until each refunded
-    // Stripe charge has its REFUND row, or the time runs out. Other handlers'
-    // ids cannot be paired (see markRefundedCharges), so they are not waited on.
+    // Stripe / Google Play charge has its REFUND row, or the time runs out.
+    // Toggling the sub-tab is the same fix Sebastian uses by hand. Other
+    // handlers' ids have no known pairing, so they are not waited on.
     async function attachRefundRows(done) {
-        const waitable = done.filter(charge => /^ch_/i.test(charge.order));
+        const waitable = done.filter(charge => /^(ch_|GPA\.)/i.test(charge.order));
         const deadline = Date.now() + 15000;
         while (Date.now() < deadline) {
             const oneTime = findButtonByText('one-time purchases');
@@ -7406,8 +7477,9 @@ if (isCMSHost()) {
             const table = await openSubscriptionCharges();
             const rows = markRefundedCharges(scrapeCharges(table));
             for (const charge of done) {
-                const row = rows.find(candidate => candidate.order === charge.order);
-                if (row?.refundedBy) charge.refundRow = rows.find(candidate => candidate.order === row.refundedBy) || null;
+                const row = rows.find(candidate => candidate.order === charge.order &&
+                    candidate.type.toUpperCase() === 'CHARGE');
+                if (row?.refundedRow) charge.refundRow = row.refundedRow;
             }
             if (waitable.every(charge => charge.refundRow)) return;
             await sleep(2000);
@@ -7617,7 +7689,7 @@ if (isCMSHost()) {
             ' Dry run (fill every dialog, submit nothing)'
         ]));
 
-        const picked = charges.filter(charge => selected.has(charge.order));
+        const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Refresh', onclick: openPanel }));
         actions.appendChild(el('button', {
             class: 'bv-ra-btn bv-ra-primary',
@@ -7628,7 +7700,7 @@ if (isCMSHost()) {
     }
 
     function renderConfirm(body, actions) {
-        const picked = charges.filter(charge => selected.has(charge.order));
+        const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
         const ticketURL = getTicketURL();
         const dryRun = isDryRun();
         if (dryRun) body.appendChild(el('div', { class: 'bv-ra-warn', style: 'background:#fffaeb;color:#93370d', text: 'DRY RUN - dialogs are filled and closed, nothing is cancelled or refunded.' }));
@@ -10279,6 +10351,94 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return '';
   }
 
+  const REPLY_EMAIL_SENTENCE = /associated with the email address/i;
+
+  function findScenarioReplyEditor() {
+    return Array.from(document.querySelectorAll('[contenteditable="true"]'))
+      .find(editor => isShown(editor) && REPLY_EMAIL_SENTENCE.test(editor.textContent || '')) || null;
+  }
+
+  // The template reads "...associated with the email address <strong>x</strong>
+  // has been successfully canceled..." (read from sent replies, 2026-09-30).
+  // The bold node inside that sentence is the email - the one holding an @
+  // first, else the first bold node of the sentence.
+  function findReplyEmailNode(editor) {
+    const blocks = Array.from(editor.querySelectorAll('div, p'))
+      .filter(block => REPLY_EMAIL_SENTENCE.test(block.textContent || ''))
+      .sort((a, b) => a.textContent.length - b.textContent.length);
+    const block = blocks[0];
+    if (!block) return null;
+    const bold = Array.from(block.querySelectorAll('strong, b'));
+    return bold.find(node => node.textContent.includes('@')) || bold[0] || null;
+  }
+
+  // "Hello J.," -> "Hello John," in the first greeting line only. The name
+  // comes from the CMS account; with none there the greeting is left alone.
+  function fixGreeting(editor, firstName) {
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.nodeValue || '';
+      if (!cleanText(text)) continue;
+      const match = text.match(/^(\s*(?:Hello|Hi|Dear)\s+)([^,\n]+?)(\s*,)/i);
+      if (!match) return '';
+      if (cleanText(match[2]) === firstName) return '';
+      node.nodeValue = match[1] + firstName + match[3] + text.slice(match[0].length);
+      return `greeting "${cleanText(match[2])}" -> "${firstName}"`;
+    }
+    return '';
+  }
+
+  // Sebastian's rule (2026-09-30): send the scenario reply only once it names
+  // the email that was actually refunded. Wrong email -> correct it (bold
+  // kept, the node itself is reused), then Send and set as Waiting on End
+  // User. Anything that cannot be checked is NOT sent - it is left in the
+  // editor with the reason on screen.
+  async function checkAndSendReply(expectedEmail, firstName) {
+    if (!expectedEmail) return { problem: 'CMS gave no account email to check the reply against' };
+    const editor = await waitFor(findScenarioReplyEditor, { timeout: 10000, pollMs: 200 });
+    if (!editor) return { problem: 'the scenario reply did not appear in the editor' };
+
+    const emailNode = findReplyEmailNode(editor);
+    if (!emailNode) return { problem: 'could not find the bold email in the reply' };
+
+    const changed = [];
+    const shown = cleanText(emailNode.textContent).toLowerCase();
+    if (shown !== expectedEmail) {
+      emailNode.textContent = expectedEmail;
+      changed.push(`email ${shown || '(empty)'} -> ${expectedEmail}`);
+    }
+    if (firstName) {
+      const greeting = fixGreeting(editor, firstName);
+      if (greeting) changed.push(greeting);
+    }
+    if (changed.length) {
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Read back before sending - never send on the strength of the write.
+    const recheck = findReplyEmailNode(editor);
+    if (!recheck || cleanText(recheck.textContent).toLowerCase() !== expectedEmail) {
+      return { problem: 'the corrected email did not stick in the editor', changed };
+    }
+
+    const toggle = document.querySelector('button[aria-label="Send and set as"]');
+    if (!isShown(toggle)) return { problem: 'no "Send and set as" button', changed };
+    fireClick(toggle);
+    const option = await waitFor(() => {
+      const link = document.querySelector('a[data-test-link="dropdown-submit-Waiting on End User"]');
+      return isShown(link) ? link : null;
+    }, { timeout: 4000, pollMs: 100 });
+    if (!option) return { problem: 'no "Waiting on End User" option in the send menu', changed };
+    fireClick(option);
+
+    const closed = await waitFor(() => (editor.isConnected && isShown(editor) ? null : true), { timeout: 15000, pollMs: 300 });
+    return closed
+      ? { sent: true, changed }
+      : { problem: 'clicked Send, but the reply is still open - check the ticket', changed };
+  }
+
   async function consume(attempt = 0) {
     if (pasting) return;
     const ticketId = getTicketId();
@@ -10301,8 +10461,17 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       removeEntry(entry);
       try {
         const problem = await applyScenarioInUi(entry.applyScenario);
-        if (problem) showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
-        else showStatus(`Refund Assist: "${entry.applyScenario}" applied - review the reply and send it.`);
+        if (problem) {
+          showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
+        } else {
+          const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName));
+          const fixes = result.changed && result.changed.length ? ` (fixed ${result.changed.join('; ')})` : '';
+          if (result.sent) {
+            showStatus(`Refund Assist: reply sent to the customer, ticket set to Waiting on End User${fixes}.`);
+          } else {
+            showStatus(`Refund Assist: "${entry.applyScenario}" applied but the reply was NOT sent - ${result.problem}${fixes}. Review it and send by hand.`, true);
+          }
+        }
       } catch (error) {
         console.error('[BV Refund Assist] Applying the scenario failed.', error);
         showStatus(`Refund Assist: applying "${entry.applyScenario}" failed. Apply it by hand.`, true);

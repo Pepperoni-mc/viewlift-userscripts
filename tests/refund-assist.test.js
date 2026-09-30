@@ -102,6 +102,7 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'isRefundable')}
   const REFUND_MATCH_CHARS = 16;
   ${extractFunction(assistSrc, 'markRefundedCharges')}
+  ${extractFunction(assistSrc, 'firstNameOf')}
   ${extractFunction(assistSrc, 'parseAmount')}
   ${extractFunction(assistSrc, 'formatTotal')}
   ${extractFunction(assistSrc, 'readPlanCard')}
@@ -115,7 +116,7 @@ const loader = new Function('ctx', 'bvEventView', `
   function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -129,7 +130,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -222,8 +223,10 @@ check('clipboard copy is the lines, a blank line, then tab-separated rows', text
 
 const noteHtml = noteToHtml(okNote);
 check('note HTML links the CMS account', noteHtml.includes(`CMS: <a href="${CMS_URL}"`), noteHtml);
-check('note HTML renders the rows as a table', noteHtml.includes('<table><tbody><tr><td>9/30/2026</td>') &&
-  noteHtml.includes('<td>re_3UL9b7JtJXFjDDk501KK4Zho</td>'), noteHtml);
+check('note HTML renders the rows as a table', /<table[^>]*><tbody><tr><td[^>]*>9\/30\/2026/.test(noteHtml) &&
+  /<td[^>]*>re_3UL9b7JtJXFjDDk501KK4Zho/.test(noteHtml), noteHtml);
+// Live 2026-09-30: Freshdesk kept the bare <table> but the columns ran together.
+check('table cells carry their own padding and a trailing gap', /<td style="padding:[^"]+">9\/30\/2026&nbsp;/.test(noteHtml), noteHtml);
 const offHost = noteToHtml({ lines: [{ text: 'CMS: https://evil.example/x', href: 'https://evil.example/x' }], rows: [], after: [] });
 check('only a CMS host ever becomes a link', !offHost.includes('<a '), offHost);
 
@@ -277,6 +280,26 @@ check('a charge with a matching REFUND row is marked refunded', afterRun[1].refu
 check('an already-refunded charge cannot be picked again', !isRefundable(afterRun[1]));
 check('the other charges stay refundable (shared account suffix is not a match)',
   isRefundable(afterRun[2]) && isRefundable(afterRun[3]) && !afterRun[2].refundedBy, afterRun.slice(2));
+
+// Google Play (live, cms-gcp, 2026-09-30): the REFUND row reuses the charge's order number.
+const gpa = markRefundedCharges(scrapeCharges(makeTable(HEADERS, [
+  ['9/30/2026', 'Monthly Plan', 'REFUND', 'GPA.3393-7153-0266-92083..5', 'USD 19.99', 'ANDROID', 'N/A', ''],
+  ['9/26/2026', 'Monthly Plan', 'CHARGE', 'GPA.3393-7153-0266-92083..5', 'USD 19.99', 'ANDROID', 'N/A', ''],
+  ['8/26/2026', 'Monthly Plan', 'CHARGE', 'GPA.3393-7153-0266-92083..4', 'USD 19.99', 'ANDROID', 'N/A', '']
+])));
+check('a Google Play charge pairs with the REFUND row that has its own order number',
+  gpa[1].refundedRow === gpa[0] && gpa[1].refundedRow.type === 'REFUND', gpa[1]);
+check('the paired refund row is the REFUND, not the charge itself', gpa[1].refundedRow !== gpa[1]);
+check('the next Google Play charge (..4) is not paired with ..5', !gpa[2].refundedBy && isRefundable(gpa[2]), gpa[2]);
+check('Stripe pairing still stores the REFUND row', afterRun[1].refundedRow === afterRun[0], afterRun[1]);
+
+// ------------------------------------------------------------------ account contact
+
+check('first name only', firstNameOf('John Vera') === 'John', firstNameOf('John Vera'));
+check('accented names survive', firstNameOf('José Pérez') === 'José', firstNameOf('José Pérez'));
+check('no name -> no greeting change', firstNameOf('') === '' && firstNameOf('   ') === '');
+check('an email in the name field is not a name', firstNameOf('john@x.com') === '', firstNameOf('john@x.com'));
+check('an initial is not a name', firstNameOf('J.') === '' && firstNameOf('J') === '', firstNameOf('J.'));
 
 // ------------------------------------------------------------------ Freshdesk API
 
