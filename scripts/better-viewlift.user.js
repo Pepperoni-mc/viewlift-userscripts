@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.66.0
+// @version      3.66.1
 // @author       Happy, Potato
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9357,6 +9357,15 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   scanEditors();
 
+  // Refund Assist (Feature 9b) sends the scenario reply itself, with no
+  // keystroke in between to set this off - so it asks for the pass directly
+  // before it syncs Froala and sends (2026-09-30: a reply went out with no
+  // bold at all).
+  window.__bvAutoBoldEditor = function (editor) {
+    normalizeEditorFormatting(editor);
+    processEditor(editor);
+  };
+
   document.addEventListener("keydown", handleCannedCommandKeydown, true);
   document.addEventListener("paste", handlePaste, true);
   document.addEventListener("input", handleChange, true);
@@ -10388,15 +10397,87 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return '';
   }
 
+  // If the email in the sentence is plain text, wrap it in <strong> - the
+  // template always has it bold.
+  function boldEmailInSentence(editor, email) {
+    if (findReplyEmailNode(editor)?.textContent.includes('@')) return false;
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const index = (node.nodeValue || '').toLowerCase().indexOf(email);
+      if (index < 0 || node.parentElement?.closest('strong, b')) continue;
+      const block = node.parentElement?.closest('div, p');
+      if (!block || !REPLY_EMAIL_SENTENCE.test(block.textContent || '')) continue;
+      const emailPart = node.splitText(index);
+      emailPart.splitText(email.length);
+      const strong = document.createElement('strong');
+      emailPart.parentNode.replaceChild(strong, emailPart);
+      strong.appendChild(emailPart);
+      return true;
+    }
+    return false;
+  }
+
+  // Pushes the DOM into Froala's own model and returns the HTML Froala will
+  // hand to Freshdesk on send (null when the instance cannot be found).
+  // Froala lives in the page, hence unsafeWindow.
+  function syncFroala(editor) {
+    let pageWindow = window;
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) pageWindow = unsafeWindow;
+    } catch (error) {
+      // Fall back to the sandbox window.
+    }
+    const Froala = pageWindow.FroalaEditor;
+    const instance = Froala && Array.from(Froala.INSTANCES || []).find(item => item && item.el === editor);
+    if (!instance) return null;
+    try {
+      instance.undo.saveStep();
+      instance.events.trigger('contentChanged');
+      return String(instance.html.get() || '');
+    } catch (error) {
+      console.warn('[BV Refund Assist] Froala sync failed.', error);
+      return null;
+    }
+  }
+
   // Sebastian's rule (2026-09-30): send the scenario reply only once it names
   // the email that was actually refunded. Wrong email -> correct it (bold
   // kept, the node itself is reused), then Send and set as Waiting on End
   // User. Anything that cannot be checked is NOT sent - it is left in the
   // editor with the reason on screen.
-  async function checkAndSendReply(expectedEmail, firstName) {
+  async function checkAndSendReply(expectedEmail, firstName, { send = true } = {}) {
     if (!expectedEmail) return { problem: 'CMS gave no account email to check the reply against' };
     const editor = await waitFor(findScenarioReplyEditor, { timeout: 10000, pollMs: 200 });
     if (!editor) return { problem: 'the scenario reply did not appear in the editor' };
+
+    // Let Freshdesk finish inserting the scenario into the reply, then run
+    // the Apply cleanup (Feature 2) that strips the default template's
+    // duplicate greeting and signature - normally it runs on its own timer,
+    // which the send used to beat.
+    let lastText = '';
+    let stableSince = Date.now();
+    await waitFor(() => {
+      const text = editor.textContent || '';
+      if (text !== lastText) {
+        lastText = text;
+        stableSince = Date.now();
+        return null;
+      }
+      return Date.now() - stableSince >= 1000 ? true : null;
+    }, { timeout: 6000, pollMs: 200 });
+    if (typeof window.__bvCleanAppliedReply === 'function') {
+      try {
+        window.__bvCleanAppliedReply(editor);
+      } catch (error) {
+        console.warn('[BV Refund Assist] Apply cleanup failed.', error);
+      }
+    } else {
+      // Cleanup not loaded on this page - at least outwait its own timer.
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    if (!editor.isConnected || !REPLY_EMAIL_SENTENCE.test(editor.textContent || '')) {
+      return { problem: 'the reply changed while it was being cleaned up' };
+    }
 
     const emailNode = findReplyEmailNode(editor);
     if (!emailNode) return { problem: 'could not find the bold email in the reply' };
@@ -10411,17 +10492,50 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       const greeting = fixGreeting(editor, firstName);
       if (greeting) changed.push(greeting);
     }
-    if (changed.length) {
-      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
-      editor.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(resolve => setTimeout(resolve, 500));
+    // Bold: the Auto Bold pass (Feature 1) is what bolds "Technical Support
+    // Team", the email and the signature, and normally a keystroke sets it
+    // off. Here nothing does, so it is run on purpose; the email is wrapped
+    // by hand if it still is not bold.
+    if (typeof window.__bvAutoBoldEditor === 'function') {
+      try {
+        window.__bvAutoBoldEditor(editor);
+      } catch (error) {
+        console.warn('[BV Refund Assist] Auto Bold pass failed.', error);
+      }
     }
+    boldEmailInSentence(editor, expectedEmail);
 
     // Read back before sending - never send on the strength of the write.
     const recheck = findReplyEmailNode(editor);
     if (!recheck || cleanText(recheck.textContent).toLowerCase() !== expectedEmail) {
       return { problem: 'the corrected email did not stick in the editor', changed };
     }
+
+    // THE bug behind the unbolded reply (2026-09-30): Freshdesk sends
+    // Froala's copy of the content, not the DOM, and that copy only updates
+    // on Froala's own events. Measured live: after undo.saveStep() the
+    // saved draft carried the DOM's <strong> tags. So: sync, then check what
+    // FROALA will send - not what the page shows.
+    const froalaHtml = syncFroala(editor);
+    if (froalaHtml === null) return { problem: 'could not reach the Froala editor to sync it', changed };
+    const html = froalaHtml.toLowerCase();
+    if (!html.includes(`<strong>${expectedEmail}</strong>`)) {
+      return { problem: 'the email is not bold in what Freshdesk would send', changed };
+    }
+    if (/regards,/i.test(html) && !/<strong>[^<]*regards,/i.test(html)) {
+      return { problem: 'the signature is not bold in what Freshdesk would send', changed };
+    }
+    // The template's own layout, once: one greeting, one "Thank you for
+    // contacting", one signature (a reply went out with two of each).
+    const text = froalaHtml.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+    const count = pattern => (text.match(pattern) || []).length;
+    if (count(/regards,/gi) !== 1) return { problem: `the reply has ${count(/regards,/gi)} signatures`, changed };
+    if (count(/\b(hello|hi|dear)\s+[^,]{1,40},/gi) > 1) return { problem: 'the reply has more than one greeting', changed };
+    if (count(/thank you for contacting/gi) > 1) return { problem: 'the reply repeats "Thank you for contacting"', changed };
+
+    // Test mode (see the data-bv-reply-check hook below): everything up to
+    // here ran for real on the editor, only the send is skipped.
+    if (!send) return { wouldSend: true, changed, html: froalaHtml };
 
     const toggle = document.querySelector('button[aria-label="Send and set as"]');
     if (!isShown(toggle)) return { problem: 'no "Send and set as" button', changed };
@@ -10536,6 +10650,26 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
       console.warn('[BV Refund Assist] Could not subscribe to note updates.', error);
     }
     window.setInterval(consume, 3000);
+
+    // Live test hook, no send: set <html data-bv-reply-check="email|FirstName">
+    // on a ticket whose reply editor holds the scenario reply; the check runs
+    // on it (cleanup, email, greeting, bold, Froala sync, layout checks) and
+    // the outcome lands in data-bv-reply-check-result as JSON. A data
+    // attribute because the page cannot reach this sandbox any other way.
+    new MutationObserver(async function () {
+      const root = document.documentElement;
+      const request = root.getAttribute('data-bv-reply-check');
+      if (!request) return;
+      root.removeAttribute('data-bv-reply-check');
+      const [email, firstName] = request.split('|');
+      let result;
+      try {
+        result = await checkAndSendReply(cleanText(email).toLowerCase(), cleanText(firstName || ''), { send: false });
+      } catch (error) {
+        result = { problem: String(error && error.message || error) };
+      }
+      root.setAttribute('data-bv-reply-check-result', JSON.stringify(result));
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bv-reply-check'] });
   }
 
   init();
@@ -12884,6 +13018,27 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
         childList: true,
         subtree: true
     });
+
+    // Refund Assist (Feature 9b) clicks Apply itself and then sends. The
+    // click above schedules this same cleanup 0.3-2.5s later, and the send
+    // used to beat it - a reply went out with the default template's greeting
+    // and signature still wrapped around the scenario (2026-09-30). So it
+    // runs the cleanup now, on the editor it names, and cancels the pending
+    // one so it cannot rewrite the reply (dropping its bold) after the sync.
+    window.__bvCleanAppliedReply = function (editor) {
+        scheduledCleanRunId += 1;
+        if (editor) {
+            lastEditor = editor;
+            try {
+                editor.focus();
+            } catch (error) {
+                // Focus is only a hint for getEditor().
+            }
+        }
+        clearCannedResponseMode(editor || getEditor());
+        markForceRewrite('apply');
+        cleanCurrentEditor();
+    };
 
     // Manual cleanup shortcut: Ctrl + Shift + L
     document.addEventListener('keydown', function (event) {
