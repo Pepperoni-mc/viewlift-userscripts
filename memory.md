@@ -3456,3 +3456,7 @@ editor (Froala is still uploading the image at that point).
 
 `tests/subscription-details.test.js` pins all of it against both panel layouts plus the note side.
 Not yet click-tested on a live account page — no CMS user page was open in this session.
+
+## 3.78.1
+- Fix: 3.78.0 crashed at the first redraw of a run ("seconds is not a function"): a local `const seconds` in renderRun shadowed the `seconds(ms)` helper. Renamed to `elapsedSeconds`. Live test #361636: run aborted before any CMS write (plan still COMPLETED, no REFUND row).
+- The panel render is now wrapped in try/catch: a display bug shows an error line but can no longer abort a run mid-cancel/refund.

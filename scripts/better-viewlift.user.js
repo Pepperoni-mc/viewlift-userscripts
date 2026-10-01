@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.78.0
+// @version      3.78.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -9079,12 +9079,12 @@ if (isCMSHost()) {
         const nowText = running
             ? (current ? (current.log[current.log.length - 1] || current.label) : 'Warming up...')
             : (failedSteps ? 'Stopped - see the red step' : 'All done');
-        const seconds = Math.max(0, Math.round((Date.now() - runStartedAt) / 1000));
+        const elapsedSeconds = Math.max(0, Math.round((Date.now() - runStartedAt) / 1000));
 
         body.appendChild(el('div', { class: `bv-ra-hud${running ? ' is-live' : (failedSteps ? ' is-lost' : ' is-won')}` }, [
             el('div', { class: 'bv-ra-hud-top' }, [
                 el('span', { class: 'bv-ra-level', text: `LEVEL ${Math.min(finished + (running ? 1 : 0), total)} / ${total}` }),
-                el('span', { class: 'bv-ra-xp', text: `${percent}%  \u00b7  ${seconds}s` })
+                el('span', { class: 'bv-ra-xp', text: `${percent}%  \u00b7  ${elapsedSeconds}s` })
             ]),
             el('div', { class: 'bv-ra-bar' }, [el('div', { class: 'bv-ra-fill', style: `width:${percent}%` })]),
             el('div', { class: 'bv-ra-now', text: nowText })
@@ -9115,7 +9115,7 @@ if (isCMSHost()) {
             el('div', { class: 'bv-ra-result-title', text: failedSteps ? '\u26a0\ufe0f Run stopped' : '\ud83c\udfc6 Run complete' }),
             el('div', { class: 'bv-ra-muted', text: failedSteps
                 ? `${failedSteps} step${failedSteps === 1 ? '' : 's'} failed - the red one says why.`
-                : `${steps.length} steps in ${seconds}s.` })
+                : `${steps.length} steps in ${elapsedSeconds}s.` })
         ]));
         if (lastNoteText) body.appendChild(el('pre', { text: lastNoteText }));
         // Offered whenever the run did not finish clean: it re-reads CMS
@@ -9216,9 +9216,17 @@ if (isCMSHost()) {
         const body = el('div', { class: 'bv-ra-body' });
         const actions = el('div', { class: 'bv-ra-actions' });
 
-        if (view === 'confirm') renderConfirm(body, actions);
-        else if (view === 'run') renderRun(body, actions);
-        else renderSelect(body, actions, loading);
+        // A drawing bug must never abort a run that is cancelling/refunding
+        // (3.78.0 died at its first redraw): show the error, keep going.
+        try {
+            if (view === 'confirm') renderConfirm(body, actions);
+            else if (view === 'run') renderRun(body, actions);
+            else renderSelect(body, actions, loading);
+        } catch (error) {
+            console.error('[BV Refund Assist] Panel render failed.', error);
+            body.textContent = '';
+            body.appendChild(el('p', { text: `Panel display error (${error.message}) - the run itself continues; see the console.` }));
+        }
 
         panel.appendChild(header);
         panel.appendChild(body);
