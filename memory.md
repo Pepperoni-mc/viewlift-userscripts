@@ -31,6 +31,30 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.69.0 - the $ / toolbar vanished after entering a ticket from a list; panel restyle (same day)
+
+Sebastian: "el botón de $ aparece pero desaparece en Freshdesk". He confirmed the 3.68.0 sheet
+test works. **Reproduced live**: load a ticket directly → toolbar and `$` stay for 20s+; load a
+ticket LIST and click into a ticket → the toolbar (chip, CMS, `$`) **never installs** and the
+refund panel stays a loose float on `<body>`. Cause: Freshdesk is an SPA and several features
+checked the path **once, at load**: Feature 8 (toolbar), Feature 9 (snapshot paste), Feature 5
+(mentioned-email chips) returned unless `/a/tickets/<id>`, and two big blocks (Auto Bold +
+Feature 8/9..., and Feature 2's reply cleanup) were wrapped in `pathname.startsWith('/a/tickets/')`
+- a session started on the dashboard got none of them. Now those blocks check the host only,
+Features 9/5 already read the path per pass, and Feature 8's `installToolbar()` checks
+`isTicketDetailPath()` on every pass.
+
+Also: Refund Capture's **Copy Summary** button and `copyCurrentSummary()` removed (asked for).
+Refund Assist panel and launcher restyled to the Refund Capture look (white 18px-radius card,
+`#f8fbff→#edf6ff` header, round blue `$` icon, 28px header buttons, 9-10px-radius fields/rows,
+`#0b5cab` primary, green/amber states); still resizable (flex column, body scrolls).
+
+**Tooling trap hit while doing it**: `String.prototype.replace(str, replacement)` treats `$'` in
+the replacement as "everything after the match" - a replacement containing `text: '$'` spliced
+the rest of the 270 KB file into one line. Recovered exactly (the tail appeared twice; kept one
+copy, verified by `git diff` = only the intended edits). Use a function replacement or
+`split().join()` whenever the new text may contain `$`.
+
 ### 3.68.0 - the refund log row is written by the script (no Apps Script) (same day)
 
 Sebastian asked for the refund-capture row to land in the refund log by itself, without Apps

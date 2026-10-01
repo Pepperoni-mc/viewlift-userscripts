@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.68.0
+// @version      3.69.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2771,33 +2771,6 @@
 
   // A human-readable block for a note or Slack message - "Copy Row" above
   // is tab-separated for pasting into the refund sheet, not for reading.
-  function copyCurrentSummary() {
-    runCapture(false);
-
-    const fields = [
-      ['Email', 'refund-email'],
-      ['Freshdesk', 'refund-freshdesk'],
-      ['CMS', 'refund-cms'],
-      ['Payment handler', 'refund-payment'],
-      ['Amount', 'refund-amount'],
-      ['Refunder', 'refund-refunder']
-    ];
-
-    const lines = fields
-      .map(([label, id]) => {
-        const value = cleanText(document.getElementById(id)?.value);
-        return value ? `${label}: ${value}` : '';
-      })
-      .filter(Boolean);
-
-    if (!lines.length) {
-      setStatus('Nothing captured yet to summarize.', 'warn');
-      return;
-    }
-
-    GM_setClipboard(lines.join('\n'));
-    setStatus('Summary copied to clipboard.');
-  }
 
   function addStyles() {
     GM_addStyle(`
@@ -3364,7 +3337,6 @@
         </div>
 
         <button id="refund-copy" class="refund-action-button" type="button" style="margin-top:8px;">Copy Row</button>
-        <button id="refund-copy-summary" class="refund-action-button" type="button" style="margin-top:8px;" title="Copies a readable text block - for a note or Slack message, not the sheet">Copy Summary</button>
         <button id="refund-copy-sheet" class="refund-action-button" type="button" style="margin-top:8px;">Open Refund Sheet</button>
 
         <div id="refund-status"></div>
@@ -3397,11 +3369,6 @@
 
     document.getElementById('refund-copy').addEventListener('click', function () {
       copyCurrentRow();
-      anchorPanelBottomRight(panel);
-    });
-
-    document.getElementById('refund-copy-summary').addEventListener('click', function () {
-      copyCurrentSummary();
       anchorPanelBottomRight(panel);
     });
 
@@ -8105,30 +8072,43 @@ if (isCMSHost()) {
         if (document.getElementById(STYLE_ID)) return;
         const style = el('style', { id: STYLE_ID });
         style.textContent = `
-#${BUTTON_ID}{margin-right:8px;padding:6px 12px;border:1px solid #b42318;border-radius:4px;background:#fff;color:#b42318;font:600 13px/1.4 Arial,sans-serif;cursor:pointer;text-transform:uppercase}
-#${BUTTON_ID}:hover{background:#fef3f2}
-#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;width:520px;height:560px;min-width:340px;min-height:220px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:auto;resize:both;background:#fff;color:#1f2937;border:1px solid #d0d5dd;border-radius:10px;box-shadow:0 12px 32px rgba(15,23,42,.22);font:13px/1.45 Arial,sans-serif}
-#${PANEL_ID} header{position:sticky;top:0;z-index:1;background:#fff;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eaecf0;font-weight:700}
-#${PANEL_ID} header .bv-ra-x{margin-left:auto;border:0;background:none;font-size:18px;cursor:pointer;color:#667085}
-#${PANEL_ID} .bv-ra-body{padding:10px 12px}
-#${PANEL_ID} .bv-ra-badge{padding:1px 6px;border-radius:9px;font-size:11px;background:#fef0c7;color:#93370d}
-#${PANEL_ID} .bv-ra-warn{padding:8px;border-radius:6px;background:#fef3f2;color:#b42318;margin-bottom:8px}
-#${PANEL_ID} .bv-ra-muted{color:#667085;font-size:12px}
-#${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid #f2f4f7;cursor:pointer}
-#${PANEL_ID} label.bv-ra-row.is-off{opacity:.45;cursor:default}
-#${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#475467;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#${PANEL_ID} .bv-ra-actions{position:sticky;bottom:0;background:#fff;display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #eaecf0}
-#${PANEL_ID} button.bv-ra-btn{padding:6px 12px;border-radius:5px;border:1px solid #d0d5dd;background:#fff;cursor:pointer;font:600 12px Arial,sans-serif}
-#${PANEL_ID} button.bv-ra-primary{background:#d92d20;border-color:#d92d20;color:#fff}
-#${PANEL_ID} button.bv-ra-btn:disabled{opacity:.5;cursor:not-allowed}
+/* Same look as the Refund Capture panel (#refund-capture-panel) - Sebastian,
+   2026-09-30: "que el refund assist tenga la misma apariencia". */
+#${BUTTON_ID}{margin-right:8px;padding:6px 12px;border:1px solid #0b5cab;border-radius:10px;background:#0b5cab;color:#fff;font:700 12px/1.4 Arial,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(11,92,171,.22);transition:background 140ms ease,transform 140ms ease}
+#${BUTTON_ID}:hover{background:#084f95;transform:translateY(-1px)}
+#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#fff;color:#17324d;border:1px solid rgba(15,23,42,.14);border-radius:18px;box-shadow:0 22px 55px rgba(15,23,42,.28);font:12px/1.45 Arial,sans-serif}
+#${PANEL_ID} header{flex:0 0 auto;min-height:46px;display:flex;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#f8fbff 0%,#edf6ff 100%);border-bottom:1px solid rgba(15,23,42,.08);font-weight:700;box-sizing:border-box}
+#${PANEL_ID} .bv-ra-icon{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;background:linear-gradient(180deg,#2f7fe0 0%,#0b5cab 100%);box-shadow:0 2px 6px rgba(11,92,171,.32),inset 0 1px 0 rgba(255,255,255,.22);color:#fff;font-weight:800;font-size:14px}
+#${PANEL_ID} header .bv-ra-x{margin-left:auto;width:28px;height:28px;border:1px solid rgba(15,23,42,.16);border-radius:10px;background:#fff;color:#17324d;font-size:14px;line-height:1;cursor:pointer;transition:background 140ms ease,transform 140ms ease}
+#${PANEL_ID} header .bv-ra-x:hover{background:#f4f8fc;transform:translateY(-1px)}
+#${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed;transform:none}
+#${PANEL_ID} .bv-ra-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px;scrollbar-width:thin}
+#${PANEL_ID} .bv-ra-body::-webkit-scrollbar{width:8px}
+#${PANEL_ID} .bv-ra-body::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}
+#${PANEL_ID} .bv-ra-badge{padding:2px 8px;border-radius:999px;font-size:11px;background:#fffbeb;color:#92400e;border:1px solid #fde68a}
+#${PANEL_ID} .bv-ra-warn{margin-bottom:10px;padding:8px 10px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;color:#92400e;font-weight:600;line-height:1.4}
+#${PANEL_ID} .bv-ra-muted{color:#64748b;font-size:12px}
+#${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:8px;align-items:center;margin:0 0 6px;padding:7px 9px;border:1px solid #b9c5d4;border-radius:9px;background:#fff;cursor:pointer;transition:border-color 140ms ease,background 140ms ease}
+#${PANEL_ID} label.bv-ra-row:hover{border-color:#0b5cab;background:#f8fbff}
+#${PANEL_ID} label.bv-ra-row:has(input:checked){border-color:rgba(6,122,24,.45);background:#fbfffc}
+#${PANEL_ID} label.bv-ra-row.is-off{opacity:.5;cursor:default;background:#f8fafc}
+#${PANEL_ID} label.bv-ra-row.is-off:hover{border-color:#b9c5d4}
+#${PANEL_ID} input[type="checkbox"]{accent-color:#0b5cab;margin:0}
+#${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} .bv-ra-actions{flex:0 0 auto;display:flex;gap:10px;justify-content:flex-end;padding:10px 12px;border-top:1px solid rgba(15,23,42,.08);background:#fff}
+#${PANEL_ID} button.bv-ra-btn{box-sizing:border-box;min-width:96px;padding:8px 12px;border:1px solid #b9c5d4;border-radius:10px;background:#fff;color:#17324d;cursor:pointer;font:600 12px Arial,sans-serif;transition:background 140ms ease,transform 140ms ease,box-shadow 140ms ease}
+#${PANEL_ID} button.bv-ra-btn:hover{background:#f7fafc;transform:translateY(-1px)}
+#${PANEL_ID} button.bv-ra-primary{background:#0b5cab;border-color:#0b5cab;color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(11,92,171,.22)}
+#${PANEL_ID} button.bv-ra-primary:hover{background:#084f95;box-shadow:0 10px 22px rgba(11,92,171,.28)}
+#${PANEL_ID} button.bv-ra-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
 #${PANEL_ID} ol{margin:6px 0 0 18px;padding:0}
-#${PANEL_ID} .bv-ra-step{margin-bottom:6px}
+#${PANEL_ID} .bv-ra-step{margin-bottom:8px}
 #${PANEL_ID} .bv-ra-state{font-weight:700;margin-right:4px}
-#${PANEL_ID} .is-done .bv-ra-state{color:#067647}
-#${PANEL_ID} .is-dry-run .bv-ra-state{color:#b54708}
+#${PANEL_ID} .is-done .bv-ra-state{color:#067a18}
+#${PANEL_ID} .is-dry-run .bv-ra-state{color:#9a5b00}
 #${PANEL_ID} .is-failed .bv-ra-state{color:#b42318}
-#${PANEL_ID} .is-running .bv-ra-state{color:#175cd3}
-#${PANEL_ID} pre{white-space:pre-wrap;background:#f9fafb;border:1px solid #eaecf0;border-radius:6px;padding:8px;font:12px/1.4 Consolas,monospace;overflow:auto}
+#${PANEL_ID} .is-running .bv-ra-state{color:#0b5cab}
+#${PANEL_ID} pre{white-space:pre-wrap;background:#f8fbff;border:1px solid #b9c5d4;border-radius:9px;padding:9px;font:12px/1.4 Consolas,monospace;overflow:auto}
 `;
         (document.head || document.documentElement).appendChild(style);
     }
@@ -8298,6 +8278,7 @@ if (isCMSHost()) {
         panel.textContent = '';
 
         const header = el('header', {}, [
+            el('span', { class: 'bv-ra-icon', text: '$' }),
             'Refund Assist',
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
             el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Close', disabled: running, text: '×', onclick: closePanel })
@@ -9519,7 +9500,10 @@ if (isCMSHost()) {
  * Feature 1: Freshdesk Auto Bold Support Text
  * ============================================================ */
 
-if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWith('/a/tickets/')) {
+// Host only, not the path: Freshdesk is a single-page app, so a session that
+// starts on a list or the dashboard reaches its tickets without a page load,
+// and a load-time path check left these features off for the whole session.
+if (location.hostname === 'viewlift.freshdesk.com') {
 (function () {
   "use strict";
 
@@ -9998,7 +9982,11 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
-  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+  // No load-time path check (2026-09-30): opened from a ticket LIST, the
+  // page never reloads on the way into a ticket, so a check here meant no
+  // toolbar - no chip, no CMS button, no $ - for the rest of the session.
+  // installToolbar() checks the path on every pass instead.
+  const isTicketDetailPath = () => /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
 
   const TOOLBAR_ID = 'better-freshdesk-unified-toolbar';
   const BRAND_ID = 'better-freshdesk-case-brand';
@@ -10385,6 +10373,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function installToolbar() {
+    if (!isTicketDetailPath()) return;
     addStyles();
     const actionBar = getActionBarWithFallback();
     if (!actionBar) return;
@@ -10549,7 +10538,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
-  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+  // Path read on every pass, not at load - see Feature 8 (2026-09-30).
 
   const SNAPSHOT_KEY = BV_SNAPSHOT_KEY;
   const STATUS_ID = 'better-freshdesk-snapshot-note-status';
@@ -12332,7 +12321,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   'use strict';
 
   if (location.hostname !== 'viewlift.freshdesk.com') return;
-  if (!/^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname)) return;
+  // Path read on every pass, not at load - see Feature 8 (2026-09-30).
 
   const STYLE_ID = 'better-freshdesk-mentioned-emails-style';
   const ROW_CLASS = 'better-freshdesk-mentioned-emails';
@@ -12635,7 +12624,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
  * Feature 2: Freshdesk Reply Template Cleanup and Apply Duplicate Cleanup
  * ============================================================ */
 
-if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWith('/a/tickets/')) {
+// Host only, not the path: Freshdesk is a single-page app, so a session that
+// starts on a list or the dashboard reaches its tickets without a page load,
+// and a load-time path check left these features off for the whole session.
+if (location.hostname === 'viewlift.freshdesk.com') {
 (function () {
     'use strict';
 
