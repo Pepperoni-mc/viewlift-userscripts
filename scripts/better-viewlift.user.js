@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.77.0
+// @version      3.78.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2584,6 +2584,17 @@
 
     GM_setClipboard(result.row.join('\t'));
     markAllFieldStates();
+
+    // Refund Assist: no row lookup here at all - the writer on the sheet
+    // finds the first free row itself before it pastes (it always re-checked
+    // anyway), so this side just queues and opens. That lookup was ~15
+    // sequential queries spent before anything else could happen.
+    if (background) {
+      const queued = queueRefundSheetRow(result.sheetKey, result.row, 0, { closeWhenDone: true });
+      if (queued) GM_openInTab(sheetUrl, { active: false, insert: true });
+      setStatus(queued ? 'Sent to ' + client + ' - the sheet tab writes it on the first free row.' : 'Copied for ' + client + '.');
+      return Promise.resolve({ sheetKey: result.sheetKey, row: 0, queued });
+    }
     setStatus('Copied for ' + client + '. Finding the next free row...');
 
     // GM_openInTab rather than window.open: the row count is fetched first,
@@ -7065,6 +7076,9 @@ if (isCMSHost()) {
     let initialRefundKeys = new Set();
     let plannedSteps = 0;
     let runClaimedRefundKeys = new Set();
+    // Set when Cancel Now went through the API: CMS does not refresh the plan
+    // card after it, so the card's status is stale - this is the real one.
+    let lastCancelStatus = '';
     // What the last run did and left undone - Recheck picks it up from here.
     let lastRun = null;
     let runStartedAt = 0;
@@ -7213,7 +7227,11 @@ if (isCMSHost()) {
     }
 
     function isRefundable(charge) {
-        return charge.type.toUpperCase() === 'CHARGE' && charge.hasEye && !charge.refundedBy;
+        // A "N/A" order or a zero amount is a placeholder row (a free / USD 0
+        // period, live 2026-10-01) - nothing to refund there.
+        const amount = parseAmount(charge.amount);
+        return charge.type.toUpperCase() === 'CHARGE' && charge.hasEye && !charge.refundedBy &&
+            !/^n\/?a$/i.test(cleanText(charge.order)) && !(amount && amount.value <= 0);
     }
 
     // A refunded charge stays a CHARGE row; the refund shows up as its own
@@ -7381,6 +7399,36 @@ if (isCMSHost()) {
     // as plain inputs (#name, #email - read live 2026-09-30). They are what
     // the customer reply is checked against: the email the refund was for,
     // and the first name for the greeting.
+    // The account's email and name straight from CMS's identity record -
+    // no trip to ACCOUNT > Personal Information. Field names are looked for
+    // rather than assumed; anything not found falls back to the screen.
+    async function readAccountContactViaApi(ctx) {
+        const parsed = await cmsInvoke(ctx, {
+            url: `v2/admin/identity/${ctx.userId}`,
+            method: 'GET',
+            role: 'Customer Support',
+            auth: { site: ctx.site, userId: ctx.userId },
+            query: { site: ctx.site },
+            body: {}
+        });
+        const found = {};
+        (function walk(node, depth) {
+            if (!node || typeof node !== 'object' || depth > 3) return;
+            for (const [key, value] of Object.entries(node)) {
+                if (typeof value === 'string') {
+                    if (!found.email && /^e-?mail$/i.test(key) && /@/.test(value)) found.email = value;
+                    if (!found.name && /^(name|fullName|displayName)$/i.test(key)) found.name = value;
+                    if (!found.first && /^first_?name$/i.test(key)) found.first = value;
+                } else if (value && typeof value === 'object') {
+                    walk(value, depth + 1);
+                }
+            }
+        })(parsed, 0);
+        const email = cleanText(found.email || '').toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+        return { email, firstName: firstNameOf(found.first || found.name || '') };
+    }
+
     async function readAccountContact() {
         const account = getTabButton('account');
         if (account) realClick(account);
@@ -7512,8 +7560,55 @@ if (isCMSHost()) {
         render();
     }
 
+    // Newest subscription record first - its handler and status are the
+    // live plan's.
+    function latestSubscriptionRecord(records) {
+        const time = record => Date.parse(record.completedAt || record.initiatedAt || record.addedDate || '') || 0;
+        return records.filter(record => !isRefundRecord(record)).sort((a, b) => time(b) - time(a))[0] || null;
+    }
+
     async function cancelSubscriptions(ticketURL, dryRun) {
         const step = addStep('Cancel Now');
+        // API first, with no screen at all: the billing history gives the
+        // plan's handler and status, and CANCEL NOW is one call.
+        const quickCtx = cmsApiContext();
+        if (quickCtx && !dryRun) {
+            try {
+                stepLog(step, '\u26a1 API: reading the plan from the billing history');
+                const latest = latestSubscriptionRecord(await cmsBillingRecords(quickCtx));
+                if (latest && latest.paymentHandler) {
+                    const name = cleanText(latest.planTitle) || 'Subscription';
+                    if (/^cancel/i.test(cleanText(latest.subscriptionStatus))) {
+                        lastCancelStatus = cleanText(latest.subscriptionStatus);
+                        return { ok: endStep(step, 'done', `Already cancelled (${name}: ${latest.subscriptionStatus})`), lines: [`Account already cancelled - ${name}`] };
+                    }
+                    stepLog(step, `\u26a1 API: CANCEL NOW - ${name} (${latest.paymentHandler}, was ${latest.subscriptionStatus || 'unknown'})`);
+                    const response = await cmsInvoke(quickCtx, {
+                        url: 'subscription-misc/refund',
+                        method: 'POST',
+                        role: 'Customer Support',
+                        auth: { site: quickCtx.site, userId: quickCtx.userId },
+                        query: { site: quickCtx.site },
+                        body: {
+                            userId: quickCtx.userId,
+                            site: quickCtx.site,
+                            comment: ticketURL,
+                            paymentHandler: latest.paymentHandler,
+                            cancellation: { option: 'CANCEL' },
+                            deactivate: false
+                        }
+                    });
+                    if (response && 'error' in response) throw new Error(String(response.error).slice(0, 200));
+                    // Fire-and-forget: the cancel is done; the log must not hold the run up.
+                    cmsAuditLog(quickCtx, { actionType: 'cancelSubscription', comments: ticketURL, reason: ticketURL });
+                    lastCancelStatus = 'CANCELLED';
+                    return { ok: endStep(step, 'done', `\u26a1 cancelled now via the API (${name})`), lines: [`Account cancelled now (${name})`] };
+                }
+                stepLog(step, 'No subscription record with a payment handler - using the screen');
+            } catch (error) {
+                stepLog(step, `API cancel not possible (${error.message}) - using the screen`);
+            }
+        }
         stepLog(step, 'Opening ACCOUNT \u203a Subscription Plans');
         if (!await openSubscriptionPlans()) {
             return { ok: endStep(step, 'failed', 'Could not open ACCOUNT > Subscription Plans'), lines: [] };
@@ -8243,6 +8338,7 @@ if (isCMSHost()) {
         steps = [];
         lastNoteText = '';
         runClaimedRefundKeys = new Set();
+        lastCancelStatus = '';
         // How many steps this run should take, for the progress bar: cancel,
         // one per refund, refund ids, contact/plan read, note, scenario,
         // refund-log row, back to the ticket. A real run can only grow it.
@@ -8270,11 +8366,16 @@ if (isCMSHost()) {
         };
         lastRun = run;
 
-        try {
-            run.contact = await readAccountContact();
-        } catch (error) {
-            console.warn('[BV Refund Assist] Could not read the account name/email.', error);
-        }
+        // Contact by API in the background while the cancel/refunds run;
+        // only if that fails is the screen used, AFTER them (it navigates).
+        const apiCtx = cmsApiContext();
+        const contactPromise = apiCtx
+            ? readAccountContactViaApi(apiCtx).catch(error => {
+                console.warn('[BV Refund Assist] Identity read by API failed.', error);
+                return null;
+            })
+            : Promise.resolve(null);
+        run.apiCtx = apiCtx;
 
         try {
             if (cancelFirst) {
@@ -8292,6 +8393,16 @@ if (isCMSHost()) {
             steps[steps.length - 1].detail = String(error?.message || error);
             const handled = new Set([...run.done, ...run.failed.map(entry => entry.charge), ...run.skipped]);
             run.skipped.push(...picked.filter(charge => !handled.has(charge)));
+        }
+
+        run.contact = await contactPromise;
+        if (!run.contact) {
+            try {
+                run.contact = await readAccountContact();
+            } catch (error) {
+                console.warn('[BV Refund Assist] Could not read the account name/email.', error);
+                run.contact = { email: '', firstName: '' };
+            }
         }
 
         await finishRun(run);
@@ -8388,7 +8499,13 @@ if (isCMSHost()) {
         }
         let plan = null;
         try {
-            plan = await readFinalPlan(run.cancelWanted && run.cancelOk && !dryRun, run.picked[0]?.title || '');
+            // After an API cancel the card never refreshes, so waiting for
+            // it to say CANCELLED only cost 8s (live 2026-10-01, and the note
+            // then said "CMS still showed DEFERRED_CANCELLATION"): read it
+            // once and take the status from the cancel itself.
+            const apiCancelled = Boolean(lastCancelStatus);
+            plan = await readFinalPlan(run.cancelWanted && run.cancelOk && !dryRun && !apiCancelled, run.picked[0]?.title || '');
+            if (plan && apiCancelled) plan = Object.assign({}, plan, { status: lastCancelStatus });
         } catch (error) {
             console.warn('[BV Refund Assist] Could not re-read the plan card.', error);
         }
@@ -8396,6 +8513,39 @@ if (isCMSHost()) {
         const note = buildNote({ dryRun, cancelOk: run.cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
         lastNoteText = noteToText(note);
         const copied = copyText(lastNoteText);
+
+        // 3. The refund-log row runs ALONGSIDE the note and the scenario -
+        // it only needs the refunds, which are done by now.
+        const sheetTask = (async () => {
+            // 3. The refund log row, through the Refund Capture panel - only
+            // for refunds that really happened, and only once.
+            const sheetBridge = window.__bvRefundSheet;
+            if (done.length && !dryRun && !run.sheetDone) {
+                const sheetStep = addStep('Refund log row');
+                if (!sheetBridge?.fillAndSend) {
+                    endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
+                } else {
+                    stepLog(sheetStep, 'Filling the Refund Capture panel and finding the first free row');
+                    try {
+                        const handlers = Array.from(new Set(done.map(charge => cleanText(charge.handler)).filter(Boolean)));
+                        const sent = await sheetBridge.fillAndSend({
+                            email: contact.email,
+                            freshdesk: ticketURL,
+                            cms: location.href,
+                            payment: handlers.join(' / '),
+                            amount: formatRefundAmount(done)
+                        });
+                        if (sent?.queued) run.sheetDone = true;
+                        endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
+                            ? `${String(sent.sheetKey || '').toUpperCase()}${sent.row ? ` row ${sent.row}` : ''} - written by the sheet tab on the first free row; it closes itself when saved`
+                            : (sent?.reason || 'could not find the next free row - the row is on your clipboard'));
+                    } catch (error) {
+                        endStep(sheetStep, 'failed', String(error?.message || error));
+                    }
+                }
+            }
+
+        })();
 
         // 1. The private note. With a key it is saved through the API. When
         // the API is unavailable - no key, or the account-wide rate limit
@@ -8498,33 +8648,8 @@ if (isCMSHost()) {
             }
         }
 
-        // 3. The refund log row, through the Refund Capture panel - only
-        // for refunds that really happened, and only once.
-        const sheetBridge = window.__bvRefundSheet;
-        if (done.length && !dryRun && !run.sheetDone) {
-            const sheetStep = addStep('Refund log row');
-            if (!sheetBridge?.fillAndSend) {
-                endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
-            } else {
-                stepLog(sheetStep, 'Filling the Refund Capture panel and finding the first free row');
-                try {
-                    const handlers = Array.from(new Set(done.map(charge => cleanText(charge.handler)).filter(Boolean)));
-                    const sent = await sheetBridge.fillAndSend({
-                        email: contact.email,
-                        freshdesk: ticketURL,
-                        cms: location.href,
-                        payment: handlers.join(' / '),
-                        amount: formatRefundAmount(done)
-                    });
-                    if (sent?.queued) run.sheetDone = true;
-                    endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
-                        ? `${String(sent.sheetKey || '').toUpperCase()} row ${sent.row} - written by the sheet tab, which closes itself when saved`
-                        : (sent?.reason || 'could not find the next free row - the row is on your clipboard'));
-                } catch (error) {
-                    endStep(sheetStep, 'failed', String(error?.message || error));
-                }
-            }
-        }
+        // The refund log row was started alongside the note (see sheetTask).
+        await sheetTask;
 
         running = false;
         render();
@@ -8535,6 +8660,7 @@ if (isCMSHost()) {
         // bringing that tab forward is exactly what lets it finish the job.
         const allGood = !dryRun && run.cancelOk && (run.noteSaved || run.handedToTicketTab) &&
             !failed.length && !skipped.length && steps.every(step => step.state !== 'failed');
+        saveRunTimings(run, allGood);
         if (allGood) await handOffToTicket(ticketId);
     }
 
@@ -8589,6 +8715,42 @@ if (isCMSHost()) {
         }
     }
 
+    // Per-step durations of the last run, kept in GM so they survive CMS
+    // closing itself - measuring is how "is it faster?" gets answered.
+    const LAST_RUN_KEY = 'bvRefundAssistLastRun';
+
+    function saveRunTimings(run, clean) {
+        try {
+            GM_setValue(LAST_RUN_KEY, {
+                at: Date.now(),
+                totalMs: Date.now() - runStartedAt,
+                refunds: run.done.length,
+                api: Boolean(run.apiCtx),
+                clean,
+                steps: steps.map(step => ({
+                    label: step.label,
+                    state: step.state,
+                    ms: (step.endedAt || Date.now()) - (step.startedAt || Date.now())
+                }))
+            });
+        } catch (error) {
+            // Timing is a nicety - never let it break a run.
+        }
+    }
+
+    function readRunTimings() {
+        try {
+            const value = GM_getValue(LAST_RUN_KEY, null);
+            return value && Array.isArray(value.steps) ? value : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function seconds(ms) {
+        return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
+    }
+
     function refundRowKey(row) {
         return [row.type, row.order, row.date, row.amount].map(cleanText).join('|');
     }
@@ -8640,7 +8802,7 @@ if (isCMSHost()) {
             }
         }
         endStep(step, 'done', `${acked ? 'ticket tab focused' : 'ticket opened in a new tab'} - closing CMS`);
-        await sleep(1500);
+        await sleep(400);
         try {
             window.close();
         } catch (error) {
@@ -8742,6 +8904,7 @@ if (isCMSHost()) {
 #${PANEL_ID} .bv-ra-quest-icon.is-spinning{display:inline-block;animation:bv-ra-spin 1.1s linear infinite}
 #${PANEL_ID} .bv-ra-quest-num{font:700 10px/1 Consolas,monospace;color:#64748b}
 #${PANEL_ID} .bv-ra-quest-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} .bv-ra-quest-time{margin-left:auto;padding-left:8px;font:700 10px/1 Consolas,monospace;color:#64748b;white-space:nowrap}
 #${PANEL_ID} .bv-ra-quest-log{margin:6px 0 0 26px;font:11px/1.5 Consolas,monospace;color:#94a3b8}
 #${PANEL_ID} .bv-ra-quest-log div:last-child{color:#cbd5e1}
 #${PANEL_ID} .bv-ra-quest-step.is-running .bv-ra-quest-log div:last-child{color:#5eead4}
@@ -8814,6 +8977,16 @@ if (isCMSHost()) {
             body.appendChild(el('div', { class: 'bv-ra-warn', text: 'No Freshdesk ticket stored. Open the ticket in Freshdesk first (or set it in the $ panel) - it is the required comment for the cancel and every refund.' }));
         } else {
             body.appendChild(el('div', { class: 'bv-ra-muted', text: `Ticket #${getTicketNumber(ticketURL)} - used as the comment everywhere.` }));
+        }
+
+        const lastTimings = readRunTimings();
+        if (lastTimings && lastTimings.steps.length) {
+            const slowest = lastTimings.steps.slice().sort((a, b) => b.ms - a.ms)[0];
+            body.appendChild(el('div', {
+                class: 'bv-ra-muted',
+                title: lastTimings.steps.map(step => `${seconds(step.ms)}  ${step.label}`).join('\n'),
+                text: `Last run: ${seconds(lastTimings.totalMs)}${lastTimings.api ? ' (\u26a1 API)' : ''} \u00b7 ${lastTimings.refunds} refund${lastTimings.refunds === 1 ? '' : 's'} \u00b7 slowest: ${slowest.label} (${seconds(slowest.ms)})`
+            }));
         }
 
         if (loading) {
@@ -8925,7 +9098,8 @@ if (isCMSHost()) {
                 el('div', { class: 'bv-ra-quest-head' }, [
                     el('span', { class: `bv-ra-quest-icon${step.state === 'running' ? ' is-spinning' : ''}`, text: icon }),
                     el('span', { class: 'bv-ra-quest-num', text: String(index + 1).padStart(2, '0') }),
-                    el('span', { class: 'bv-ra-quest-label', text: step.label })
+                    el('span', { class: 'bv-ra-quest-label', text: step.label }),
+                    step.endedAt ? el('span', { class: 'bv-ra-quest-time', text: seconds(step.endedAt - step.startedAt) }) : null
                 ]),
                 lines.length ? el('div', { class: 'bv-ra-quest-log' }, lines.map(line => el('div', { text: `\u203a ${line}` }))) : null,
                 step.detail ? el('div', { class: 'bv-ra-quest-detail', text: step.detail }) : null

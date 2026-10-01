@@ -31,6 +31,31 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.78.0 - the rest of the run made fast; every run timed (2026-10-01)
+
+First live API run (Sebastian, cms-gcp, ticket #361728, 1 Stripe charge USD 74.69 + Cancel Now):
+clean end to end - note with REFUND `re_…` saved by API, reply sent 10s later (bold, one greeting /
+signature), status 12 / Refund / Refunded, CMS closed itself. But "dura básicamente el mismo
+tiempo": the API only sped up the refund/cancel calls themselves; with one charge the run is
+dominated by everything else, which was still screen work and fixed waits (estimated from the
+code - that run was not timed). Now:
+- **contact** by API (`v2/admin/identity/<userId>`, GET, email/name found by key name), started
+  in parallel with the cancel/refunds; the Personal Information screen only as a fallback, after.
+- **Cancel Now with no screen**: newest subscription record (`latestSubscriptionRecord`) gives
+  `paymentHandler` and `subscriptionStatus` (already `CANCEL…` → skip); one API call; audit log
+  fire-and-forget. Sets `lastCancelStatus`, so `readFinalPlan` reads the card once instead of
+  waiting 8s for a status the card never refreshes to, and the note says CANCELLED (fixes "Cancel
+  Now done (CMS still showed DEFERRED_CANCELLATION)").
+- **Refund-log row**: Refund Assist's `copyForRefundSheet({background})` no longer looks the row
+  up (~15 sequential gviz queries) - it queues with `expectedRow 0` and opens the sheet; the writer
+  finds the row as it always did. That step runs **in parallel** with the note and scenario.
+- Hand-off's fixed 1.5s wait → 0.4s.
+- **Timing**: every step shows its duration; `bvRefundAssistLastRun` (GM) keeps the last run's
+  per-step ms through CMS closing; the select view shows "Last run: Xs · slowest: …" (hover = every
+  step). Use it to judge the next change.
+- "N/A" / zero-amount charge rows are no longer selectable (a "Season Plan - N/A - USD 0" row was).
+- Expected ~10-15s for 1 charge + Cancel Now; not measured yet.
+
 ### 3.77.0 - Refund Assist API mode: refunds and Cancel Now through the CMS API (2026-10-01)
 
 Built on the findings below. `cmsApiContext()` = site (`bvGetSiteForCmsHost(location.hostname)`,

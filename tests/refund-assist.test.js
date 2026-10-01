@@ -327,6 +327,11 @@ check('no name -> no greeting change', firstNameOf('') === '' && firstNameOf('  
 check('an email in the name field is not a name', firstNameOf('john@x.com') === '', firstNameOf('john@x.com'));
 check('an initial is not a name', firstNameOf('J.') === '' && firstNameOf('J') === '', firstNameOf('J.'));
 
+// 2026-10-01: a "Season Plan - N/A - USD 0" row was selectable (live).
+check('a N/A order is not refundable', !isRefundable({ type: 'CHARGE', hasEye: true, order: 'N/A', amount: 'USD 0' }));
+check('a zero-amount charge is not refundable', !isRefundable({ type: 'CHARGE', hasEye: true, order: 'ch_ZERO', amount: 'USD 0.00' }));
+check('a normal charge still is', isRefundable({ type: 'CHARGE', hasEye: true, order: 'ch_3UKsOcGGxYz3BqpO0dUFc24D', amount: 'USD 74.69' }));
+
 // ------------------------------------------------------------------ CMS API mode
 
 // Billing-history records, shaped as /v3/billing/history returns them (2026-10-01).
