@@ -31,6 +31,40 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.76.0 - a refund that worked was reported failed; Recheck (2nd run); refund count in the reply (2026-10-01)
+
+Sebastian's run on MSN `fcbe5d0e-…` (Google Play, `GPA.3358-3903-1484-26377`, USD 21.34): step
+"Refund dialog still open after Confirm Refund - ViewLift - CMS Tools", run stopped - but the
+refund HAD gone through (live: REFUND row with the same order number at the top of the table,
+its title "Monthly Plan (Monumental+)" vs the charge's "N/A"). He then reproduced "it fails
+when more than one charge is selected". Three causes / fixes:
+- **CMS can keep the dialog open after a successful Confirm.** `refundCharge` no longer treats
+  that as failure: it closes the dialog and drawer and asks the table (`attachRefundRows([charge],
+  step, 25000)`); a REFUND row = done. Only a dialog that stays open AND no REFUND row fails.
+- **"ViewLift - CMS Tools" was the app's route announcer** (`[role=alert]` repeating the page
+  title); `collectAlerts` now skips it and any alert equal to `document.title`.
+- **Google Play renewals are prefixes of each other** (`GPA.3303-1537-6618-70405` and
+  `…70405..0`), and both the drawer check and Feature 3's `triggerMatchesExpectedOrder` used
+  `includes` - with several charges one charge's drawer could pass for another's. Now
+  `textHasOrder(text, order)` = the order not followed by `[\w.]` (only the end anchored: the
+  drawer's text runs "Order NumberGPA…" with no separator), `innerText` for the drawer, and a
+  drawer that will not close stops the step. A live **dry run with those two exact charges**
+  (3.75.0) filled both dialogs on the right drawers and left nothing open - so the multi-charge
+  failure is after Confirm, i.e. the dialog-left-open case above.
+- `runAssist` keeps a `run` record (done / failed / skipped, noteSaved, scenarioDone, sheetDone);
+  the tail is `finishRun(run)`. **Recheck (2nd run)** button (shown when anything failed): re-reads
+  CMS for every failed/skipped charge's REFUND row first (never refunds twice), refunds only what
+  is really missing, then finishes only what was not done (a corrected note when something
+  changed; scenario and sheet row at most once). `runClaimedRefundKeys` is shared per run so one
+  new REFUND row is never given to two charges.
+- **Reply mentions the number of refunds** when > 1 (`refundCount` on the queue entry,
+  `addRefundCount()`): "The refund process for your N charges has been initiated" / FOX "Se ha
+  iniciado el proceso de reembolso de sus N cargos". Verified live on detached copies of real
+  sent replies (EN 2, ES 3; 1 = unchanged; idempotent). Not found → still sent, status says so.
+- The fallback-paste note's table now has the same cell padding as the API note (it ran
+  together), and a dry run no longer sends anything to Freshdesk (one test left a DRY RUN draft in
+  #361662's editor - discarded via "Leave without saving", nothing saved).
+
 ### 3.75.0 - Refund Capture retired behind Refund Assist; agent picker in its header (same day)
 
 Sebastian: choose the agent written into the refund log from Refund Assist ("como el de refund

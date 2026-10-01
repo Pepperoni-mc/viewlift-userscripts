@@ -127,6 +127,7 @@ new Function('ctx', `
   let expectedOrder = '';
   ${extractFunction(workflowSrc, 'cleanText')}
   ${extractFunction(workflowSrc, 'triggerMatchesExpectedOrder')}
+  ${extractFunction(workflowSrc, 'textHasOrder')}
   ctx.setOrder = value => { expectedOrder = value; };
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
@@ -276,6 +277,18 @@ workflowCtx.setOrder('ch_AAA');
 check('the pinned order in the drawer passes', workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_AAA Plan')));
 check('a stale drawer for another order is refused', !workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order Number ch_BBB Plan')));
 check('a Refund button outside any drawer is refused', !workflowCtx.triggerMatchesExpectedOrder({ closest: () => null }));
+
+// 2026-10-01: Google Play renewals are prefixes of each other, and the drawer's
+// text runs "Order NumberGPA..." with no separator in front.
+workflowCtx.setOrder('GPA.3303-1537-6618-70405');
+check('a renewal drawer (..0) does not pass for the base order',
+  !workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order NumberGPA.3303-1537-6618-70405..0 Plan')));
+check('the base order drawer passes, with no separator in front',
+  workflowCtx.triggerMatchesExpectedOrder(triggerIn('Details Completed Order NumberGPA.3303-1537-6618-70405 Plan')));
+workflowCtx.setOrder('GPA.3303-1537-6618-70405..1');
+check('..1 does not pass for ..10',
+  !workflowCtx.triggerMatchesExpectedOrder(triggerIn('Order NumberGPA.3303-1537-6618-70405..10')));
+check('..1 passes for ..1', workflowCtx.triggerMatchesExpectedOrder(triggerIn('Order NumberGPA.3303-1537-6618-70405..1\nPlan')));
 
 // ------------------------------------------------------------------ already refunded
 

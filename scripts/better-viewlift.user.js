@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.75.0
+// @version      3.76.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6659,7 +6659,18 @@ if (isCMSHost()) {
     function triggerMatchesExpectedOrder(trigger) {
         if (!expectedOrder) return true;
         const scope = trigger?.closest?.('.MuiDrawer-paper, .MuiDrawer-root, [role="presentation"]');
-        return Boolean(scope && cleanText(scope.innerText || scope.textContent).includes(expectedOrder));
+        return Boolean(scope && textHasOrder(cleanText(scope.innerText || scope.textContent), expectedOrder));
+    }
+
+    // The WHOLE order number, not a substring of a longer one: Google Play
+    // renewals are prefixes of each other (GPA.3303-1537-6618-70405 and
+    // GPA.3303-1537-6618-70405..0, live 2026-10-01), so "includes" let one
+    // charge's drawer pass for the other's when several were refunded. Only
+    // the END is anchored: the drawer's text runs "Order NumberGPA..." with
+    // no separator in front.
+    function textHasOrder(text, order) {
+        const escaped = String(order).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`${escaped}(?![\\w.])`).test(String(text || ''));
     }
 
     function runWorkflow() {
@@ -7053,6 +7064,9 @@ if (isCMSHost()) {
     // run issues is a row that is NOT in here (see attachRefundRows).
     let initialRefundKeys = new Set();
     let plannedSteps = 0;
+    let runClaimedRefundKeys = new Set();
+    // What the last run did and left undone - Recheck picks it up from here.
+    let lastRun = null;
     let runStartedAt = 0;
     let mountTimer = null;
 
@@ -7136,6 +7150,13 @@ if (isCMSHost()) {
 
     function getBridge() {
         return window.__bvRefundWorkflow || null;
+    }
+
+    // Whole order number only - see textHasOrder in Feature 3 (GPA renewals
+    // are prefixes of each other; only the end is anchored).
+    function textHasOrder(text, order) {
+        const escaped = String(order).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`${escaped}(?![\\w.])`).test(String(text || ''));
     }
 
     function isDryRun() {
@@ -7453,8 +7474,13 @@ if (isCMSHost()) {
     function collectAlerts(into) {
         for (const alert of document.querySelectorAll('.MuiSnackbarContent-message, .MuiAlert-message, [role="alert"]')) {
             if (isOwnUi(alert)) continue;
+            // The app's route announcer is a [role=alert] that just repeats
+            // the page title - it came back as the "reason" "ViewLift - CMS
+            // Tools" on a refund that had worked (2026-10-01).
+            if (alert.closest('next-route-announcer, #__next-route-announcer__')) continue;
             const text = cleanText(alert.textContent);
-            if (text) into.add(text.slice(0, 200));
+            if (!text || text === cleanText(document.title)) continue;
+            into.add(text.slice(0, 200));
         }
     }
 
@@ -7579,7 +7605,9 @@ if (isCMSHost()) {
         stepLog(step, 'Opening SUBSCRIPTION PLANS AND ENTITLEMENTS');
         if (!await openSubscriptionCharges()) return endStep(step, 'failed', 'Could not open SUBSCRIPTION PLANS AND ENTITLEMENTS');
         await closeRefundModal();
-        await closeDrawer();
+        if (!await closeDrawer()) {
+            return endStep(step, 'failed', 'The previous charge\'s details drawer would not close - stopped so this refund cannot land on the wrong charge');
+        }
 
         const row = findChargeRow(charge.order);
         const eye = row?.querySelector('svg[data-testid="VisibilityIcon"]')?.closest('button');
@@ -7597,7 +7625,7 @@ if (isCMSHost()) {
 
         const drawer = await waitFor(() => {
             const open = getDrawer();
-            return open && cleanText(open.textContent).includes(charge.order) ? open : null;
+            return open && textHasOrder(cleanText(open.innerText || open.textContent), charge.order) ? open : null;
         }, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
         if (!drawer) return endStep(step, 'failed', 'The charge details drawer did not open');
         stepLog(step, `Drawer confirms order ${charge.order}`);
@@ -7631,7 +7659,17 @@ if (isCMSHost()) {
         const alertText = Array.from(alerts).join(' | ');
 
         if (!closed) {
-            return endStep(step, 'failed', `Refund dialog still open after Confirm Refund${alertText ? ` - ${alertText}` : ''}`);
+            // CMS sometimes keeps the dialog up although the refund went
+            // through (live 2026-10-01, a Google Play charge: the REFUND row
+            // was in the table). The table is the truth, not the dialog.
+            stepLog(step, 'CMS kept the dialog open - checking the table for the refund');
+            await closeRefundModal();
+            await closeDrawer();
+            await attachRefundRows([charge], step, 25000);
+            if (charge.refundRow) {
+                return endStep(step, 'done', `CMS kept the dialog open, but REFUND ${charge.refundRow.order} is in the table`);
+            }
+            return endStep(step, 'failed', `Refund dialog still open after Confirm Refund and no REFUND row in the table${alertText ? ` - ${alertText}` : ''} - use Recheck`);
         }
         if (/\b(error|fail(ed|ure)?|unable|could not|invalid|declined)\b/i.test(alertText)) {
             await closeDrawer();
@@ -7709,7 +7747,7 @@ if (isCMSHost()) {
     // clicks Apply on that scenario so its customer reply lands in the reply
     // editor for review - only queued once the note is already saved,
     // because the reply editor replaces an open note draft.
-    function queueNote(ticketURL, note, { pasteNote = true, submitNote = false, applyScenario = '', replyEmail = '', replyFirstName = '', updateProperties = false } = {}) {
+    function queueNote(ticketURL, note, { pasteNote = true, submitNote = false, applyScenario = '', replyEmail = '', replyFirstName = '', refundCount = 0, updateProperties = false } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
@@ -7727,6 +7765,8 @@ if (isCMSHost()) {
                 applyScenario,
                 replyEmail,
                 replyFirstName,
+                // How many refunds the reply should mention (only said when > 1).
+                refundCount,
                 // Click the properties Update after the send (the API could
                 // not set the scenario fields).
                 updateProperties
@@ -7941,6 +7981,7 @@ if (isCMSHost()) {
         view = 'run';
         steps = [];
         lastNoteText = '';
+        runClaimedRefundKeys = new Set();
         // How many steps this run should take, for the progress bar: cancel,
         // one per refund, refund ids, contact/plan read, note, scenario,
         // refund-log row, back to the ticket. A real run can only grow it.
@@ -7949,14 +7990,27 @@ if (isCMSHost()) {
         runStartedAt = Date.now();
         render();
 
-        let cancelOk = true;
-        const done = [];
-        const failed = [];
-        const skipped = [];
+        // Everything the run did and left undone, kept for Recheck.
+        const run = {
+            ticketURL,
+            ticketId: getTicketNumber(ticketURL),
+            dryRun,
+            picked,
+            cancelWanted: cancelFirst,
+            cancelOk: true,
+            done: [],
+            failed: [],
+            skipped: [],
+            contact: { email: '', firstName: '' },
+            noteSaved: false,
+            handedToTicketTab: false,
+            scenarioDone: false,
+            sheetDone: false
+        };
+        lastRun = run;
 
-        let contact = { email: '', firstName: '' };
         try {
-            contact = await readAccountContact();
+            run.contact = await readAccountContact();
         } catch (error) {
             console.warn('[BV Refund Assist] Could not read the account name/email.', error);
         }
@@ -7964,38 +8018,105 @@ if (isCMSHost()) {
         try {
             if (cancelFirst) {
                 const cancel = await cancelSubscriptions(ticketURL, dryRun);
-                cancelOk = cancel.ok;
+                run.cancelOk = cancel.ok;
             }
-
-            if (!cancelOk) {
-                skipped.push(...picked);
+            if (!run.cancelOk) {
+                run.skipped.push(...picked);
             } else {
-                for (let index = 0; index < picked.length; index += 1) {
-                    const charge = picked[index];
-                    const ok = await refundCharge(charge, dryRun);
-                    if (ok) {
-                        done.push(charge);
-                    } else {
-                        failed.push({ charge, reason: steps[steps.length - 1]?.detail || 'failed' });
-                        skipped.push(...picked.slice(index + 1));
-                        break;
-                    }
-                }
+                await refundEach(run, picked);
             }
         } catch (error) {
             console.error('[BV Refund Assist] Run crashed.', error);
             addStep('Unexpected error').state = 'failed';
             steps[steps.length - 1].detail = String(error?.message || error);
-            const handled = new Set([...done, ...failed.map(entry => entry.charge), ...skipped]);
-            skipped.push(...picked.filter(charge => !handled.has(charge)));
+            const handled = new Set([...run.done, ...run.failed.map(entry => entry.charge), ...run.skipped]);
+            run.skipped.push(...picked.filter(charge => !handled.has(charge)));
         }
+
+        await finishRun(run);
+    }
+
+    // Refunds the given charges in order; the first failure stops the rest,
+    // which are listed as skipped.
+    async function refundEach(run, list) {
+        for (let index = 0; index < list.length; index += 1) {
+            const charge = list[index];
+            const ok = await refundCharge(charge, run.dryRun);
+            if (ok) {
+                run.done.push(charge);
+            } else {
+                run.failed.push({ charge, reason: steps[steps.length - 1]?.detail || 'failed' });
+                run.skipped.push(...list.slice(index + 1));
+                break;
+            }
+        }
+    }
+
+    // "2nd run" (Sebastian, 2026-10-01: a refund went through but the run
+    // reported it failed - "un botón como de recheck"). Looks for every
+    // failed / skipped charge's REFUND row first - a refund that did happen
+    // is never issued twice - refunds only what is really still unrefunded,
+    // then finishes whatever the first run left undone.
+    async function recheckRun() {
+        const run = lastRun;
+        if (!run || running || run.dryRun) return;
+        running = true;
+        view = 'run';
+        steps = [];
+        runStartedAt = Date.now();
+        const pending = [...run.failed.map(entry => entry.charge), ...run.skipped];
+        plannedSteps = 1 + (run.cancelWanted && !run.cancelOk ? 1 : 0) + pending.length + 4;
+        render();
+
+        try {
+            if (run.cancelWanted && !run.cancelOk) {
+                const cancel = await cancelSubscriptions(run.ticketURL, false);
+                run.cancelOk = cancel.ok;
+            }
+
+            const checkStep = addStep('Recheck - are the refunds in CMS after all?');
+            run.failed = [];
+            run.skipped = [];
+            if (pending.length) {
+                await attachRefundRows(pending, checkStep, 20000);
+            }
+            const confirmed = pending.filter(charge => charge.refundRow);
+            const still = pending.filter(charge => !charge.refundRow);
+            confirmed.forEach(charge => {
+                run.done.push(charge);
+                stepLog(checkStep, `${charge.date} ${charge.amount} is refunded in CMS`);
+            });
+            endStep(checkStep, 'done', pending.length
+                ? `${confirmed.length} confirmed in CMS, ${still.length} still to refund`
+                : 'nothing was pending - finishing the remaining steps');
+
+            if (still.length) {
+                if (run.cancelOk) await refundEach(run, still);
+                else run.skipped.push(...still);
+            }
+        } catch (error) {
+            console.error('[BV Refund Assist] Recheck crashed.', error);
+            addStep('Unexpected error').state = 'failed';
+            steps[steps.length - 1].detail = String(error?.message || error);
+        }
+
+        await finishRun(run, { recheck: true });
+    }
+
+    // Everything after the refunds: refund ids, the note, the scenario, the
+    // refund-log row, and the hand-off. On a recheck, only what is still
+    // missing is done (the note is posted again so the ticket ends up with
+    // the corrected record).
+    async function finishRun(run, { recheck = false } = {}) {
+        const { dryRun, done, failed, skipped, contact, ticketURL, ticketId } = run;
 
         // What the note reports is read back from CMS after the fact - the
         // refund ids and the plan's final status - never assumed.
-        if (!dryRun && done.length) {
+        const needIds = done.filter(charge => !charge.refundRow);
+        if (!dryRun && needIds.length) {
             const refundStep = addStep('Read the refund ids back from CMS');
             try {
-                await attachRefundRows(done, refundStep);
+                await attachRefundRows(needIds, refundStep);
                 const missing = done.filter(charge => !charge.refundRow).length;
                 endStep(refundStep, 'done', missing
                     ? `${done.length - missing} of ${done.length} found - CMS has not listed the rest yet`
@@ -8006,15 +8127,14 @@ if (isCMSHost()) {
         }
         let plan = null;
         try {
-            plan = await readFinalPlan(cancelFirst && cancelOk && !dryRun, picked[0]?.title || '');
+            plan = await readFinalPlan(run.cancelWanted && run.cancelOk && !dryRun, run.picked[0]?.title || '');
         } catch (error) {
             console.warn('[BV Refund Assist] Could not re-read the plan card.', error);
         }
 
-        const note = buildNote({ dryRun, cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
+        const note = buildNote({ dryRun, cancelOk: run.cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
         lastNoteText = noteToText(note);
         const copied = copyText(lastNoteText);
-        const ticketId = getTicketNumber(ticketURL);
 
         // 1. The private note. With a key it is saved through the API. When
         // the API is unavailable - no key, or the account-wide rate limit
@@ -8023,53 +8143,64 @@ if (isCMSHost()) {
         // scenario, check and send the reply, Update the properties. The UI
         // runs on Freshdesk's own internal API, which kept working while
         // /api/v2 was blocked. A dry run only pastes the note, unsaved.
-        const noteStep = addStep(`Private note on #${ticketId}`);
+        // A recheck posts it again only when the record changed.
         const scenarioName = getRefundedScenarioName();
-        const wantsScenario = !dryRun && done.length > 0;
-        let noteSaved = false;
-        let apiProblem = '';
-        if (!dryRun && getFreshdeskApiKey()) {
-            stepLog(noteStep, 'Posting the private note through the Freshdesk API');
-            try {
-                await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
-                    body: noteToHtml(note),
-                    private: true
-                });
-                noteSaved = true;
-                endStep(noteStep, 'done', `saved via the API${copied ? ', also copied' : ''}`);
-            } catch (error) {
-                apiProblem = describeApiError(error);
+        const wantsScenario = !dryRun && done.length > 0 && !run.scenarioDone;
+        const noteChanged = !recheck || done.length > 0;
+        let noteSavedNow = false;
+        let handedNow = false;
+        if (noteChanged) {
+            const noteStep = addStep(`Private note on #${ticketId}${recheck ? ' (corrected)' : ''}`);
+            let apiProblem = '';
+            if (!dryRun && getFreshdeskApiKey()) {
+                stepLog(noteStep, 'Posting the private note through the Freshdesk API');
+                try {
+                    await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
+                        body: noteToHtml(note),
+                        private: true
+                    });
+                    noteSavedNow = true;
+                    run.noteSaved = true;
+                    endStep(noteStep, 'done', `saved via the API${copied ? ', also copied' : ''}`);
+                } catch (error) {
+                    apiProblem = describeApiError(error);
+                }
+            } else if (!dryRun) {
+                apiProblem = 'no Freshdesk API key set (Tampermonkey > Freshdesk: Set API Key)';
             }
-        } else if (!dryRun) {
-            apiProblem = 'no Freshdesk API key set (Tampermonkey > Freshdesk: Set API Key)';
-        }
 
-        let handedToTicketTab = false;
-        if (!noteSaved) {
-            const queued = queueNote(ticketURL, note, dryRun ? {} : {
-                submitNote: true,
-                applyScenario: wantsScenario ? scenarioName : '',
-                replyEmail: contact.email,
-                replyFirstName: contact.firstName,
-                updateProperties: wantsScenario
-            });
-            handedToTicketTab = queued && !dryRun;
-            endStep(noteStep, queued ? (dryRun ? 'dry-run' : 'done') : 'failed', dryRun
-                ? `pasted into the ticket tab, NOT saved (dry run)${copied ? ' - copied' : ''}`
-                : (queued
+            if (dryRun) {
+                // The dry run is a test-only path now (page attribute, no
+                // menu): it never reaches Freshdesk - a test once left a DRY
+                // RUN draft in a real ticket's editor (2026-10-01).
+                endStep(noteStep, 'dry-run', `not sent to Freshdesk (dry run)${copied ? ' - copied to the clipboard' : ''}`);
+            } else if (!noteSavedNow) {
+                const queued = queueNote(ticketURL, note, {
+                    submitNote: true,
+                    applyScenario: wantsScenario ? scenarioName : '',
+                    replyEmail: contact.email,
+                    replyFirstName: contact.firstName,
+                    refundCount: done.length,
+                    updateProperties: wantsScenario
+                });
+                handedNow = queued;
+                if (handedNow) run.handedToTicketTab = true;
+                endStep(noteStep, queued ? 'done' : 'failed', queued
                     ? `${apiProblem} - the ticket tab adds it through Freshdesk itself`
-                    : `${apiProblem} - and it could not be queued for the ticket tab`));
+                    : `${apiProblem} - and it could not be queued for the ticket tab`);
+            }
         }
 
-        // 2. The scenario - only when money was actually refunded.
+        // 2. The scenario - only when money was actually refunded, once.
         if (wantsScenario) {
             const scenarioStep = addStep(`Scenario: ${scenarioName}`);
             const replyPlan = contact.email
-                ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / greets ${contact.firstName}` : ''} and sends it (Waiting on End User)`
+                ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / greets ${contact.firstName}` : ''}${done.length > 1 ? ` / mentions the ${done.length} refunds` : ''} and sends it (Waiting on End User)`
                 : 'no account email read - the reply is left in the editor for you to send';
-            if (handedToTicketTab) {
+            if (handedNow) {
+                run.scenarioDone = true;
                 endStep(scenarioStep, 'done', `Apply + Update done by the ticket tab after the note - ${replyPlan}`);
-            } else if (!noteSaved) {
+            } else if (!noteSavedNow && !run.noteSaved) {
                 endStep(scenarioStep, 'failed', 'not applied - the note could not be saved or queued');
             } else {
                 stepLog(scenarioStep, 'Reading the scenario and setting its fields through the API');
@@ -8082,8 +8213,10 @@ if (isCMSHost()) {
                         pasteNote: false,
                         applyScenario: scenarioName,
                         replyEmail: contact.email,
-                        replyFirstName: contact.firstName
+                        replyFirstName: contact.firstName,
+                        refundCount: done.length
                     });
+                    run.scenarioDone = true;
                     endStep(scenarioStep, 'done', `set ${result.changed.join(', ') || 'nothing new'} (${result.source}) - ${replyPlan}`);
                 } catch (error) {
                     // The note is saved; let the ticket tab do the scenario in
@@ -8093,8 +8226,10 @@ if (isCMSHost()) {
                         applyScenario: scenarioName,
                         replyEmail: contact.email,
                         replyFirstName: contact.firstName,
+                        refundCount: done.length,
                         updateProperties: true
                     });
+                    if (queued) run.scenarioDone = true;
                     endStep(scenarioStep, queued ? 'done' : 'failed', queued
                         ? `API: ${describeApiError(error)} - the ticket tab applies it and clicks Update instead - ${replyPlan}`
                         : `API: ${describeApiError(error)}`);
@@ -8103,9 +8238,9 @@ if (isCMSHost()) {
         }
 
         // 3. The refund log row, through the Refund Capture panel - only
-        // for refunds that really happened.
+        // for refunds that really happened, and only once.
         const sheetBridge = window.__bvRefundSheet;
-        if (done.length && !dryRun) {
+        if (done.length && !dryRun && !run.sheetDone) {
             const sheetStep = addStep('Refund log row');
             if (!sheetBridge?.fillAndSend) {
                 endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
@@ -8120,6 +8255,7 @@ if (isCMSHost()) {
                         payment: handlers.join(' / '),
                         amount: formatRefundAmount(done)
                     });
+                    if (sent?.queued) run.sheetDone = true;
                     endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
                         ? `${String(sent.sheetKey || '').toUpperCase()} row ${sent.row} - written by the sheet tab, which closes itself when saved`
                         : (sent?.reason || 'could not find the next free row - the row is on your clipboard'));
@@ -8133,11 +8269,11 @@ if (isCMSHost()) {
         render();
 
         // Only a run where everything worked closes CMS: anything that failed
-        // stays on screen in this panel, which is where it is explained.
-        // Handed to the ticket tab counts as done: bringing that tab forward is
-        // exactly what lets it finish the job.
-        const allGood = !dryRun && cancelOk && (noteSaved || handedToTicketTab) && !failed.length && !skipped.length &&
-            steps.every(step => step.state !== 'failed');
+        // stays on screen in this panel, which is where it is explained (and
+        // where Recheck is). Handed to the ticket tab counts as done:
+        // bringing that tab forward is exactly what lets it finish the job.
+        const allGood = !dryRun && run.cancelOk && (run.noteSaved || run.handedToTicketTab) &&
+            !failed.length && !skipped.length && steps.every(step => step.state !== 'failed');
         if (allGood) await handOffToTicket(ticketId);
     }
 
@@ -8153,9 +8289,11 @@ if (isCMSHost()) {
     // Pairing: the id rules first (markRefundedCharges); for a handler with no
     // known rule, a REFUND row that was NOT in the table when the panel
     // opened, with the same title and amount, is this refund's.
-    async function attachRefundRows(done, step) {
-        const deadline = Date.now() + 45000;
-        const claimed = new Set();
+    async function attachRefundRows(done, step, timeoutMs = 45000) {
+        const deadline = Date.now() + timeoutMs;
+        // Shared for the whole run (and its recheck), so one new REFUND row
+        // is never handed to two charges of the same amount.
+        const claimed = runClaimedRefundKeys;
         let pass = 0;
         while (Date.now() < deadline) {
             pass += 1;
@@ -8544,6 +8682,16 @@ if (isCMSHost()) {
                 : `${steps.length} steps in ${seconds}s.` })
         ]));
         if (lastNoteText) body.appendChild(el('pre', { text: lastNoteText }));
+        // Offered whenever the run did not finish clean: it re-reads CMS
+        // before refunding anything again, so it is safe to press.
+        if (lastRun && !lastRun.dryRun && (failedSteps || lastRun.failed.length || lastRun.skipped.length)) {
+            actions.appendChild(el('button', {
+                class: 'bv-ra-btn bv-ra-primary',
+                text: '↻ Recheck (2nd run)',
+                title: 'Looks for the refunds in CMS again, refunds only what is really missing, then finishes the note, scenario and refund log',
+                onclick: recheckRun
+            }));
+        }
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Copy again', disabled: !lastNoteText, onclick: () => copyText(lastNoteText) }));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Close', onclick: closePanel }));
     }
@@ -11240,7 +11388,11 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       const tr = document.createElement('tr');
       cells.slice(0, 10).forEach(cell => {
         const td = document.createElement('td');
-        td.textContent = cleanText(cell).slice(0, 120);
+        // Same spacing as the API note's table: without it the cells run
+        // together ("4/22/2026Monthly PlanCHARGE...", seen live 2026-10-01).
+        td.style.padding = '6px 18px 6px 0';
+        td.style.verticalAlign = 'top';
+        td.textContent = cleanText(cell).slice(0, 120) + '   ';
         tr.appendChild(td);
       });
       body.appendChild(tr);
@@ -11447,7 +11599,42 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   // kept, the node itself is reused), then Send and set as Waiting on End
   // User. Anything that cannot be checked is NOT sent - it is left in the
   // editor with the reason on screen.
-  async function checkAndSendReply(expectedEmail, firstName, { send = true } = {}) {
+  // Several refunds -> the reply says how many (Sebastian, 2026-10-01).
+  // Matched on the template's own refund sentence, in both languages:
+  //   "The refund process has been initiated, ..."  (B2C Account Refunded)
+  //   "Se ha iniciado el proceso de reembolso y ..." (FOX Refunded)
+  const REFUND_COUNT_SENTENCES = [
+    {
+      find: /The refund process has been initiated/i,
+      said: /The refund process for your \d+ charges/i,
+      make: count => `The refund process for your ${count} charges has been initiated`
+    },
+    {
+      find: /Se ha iniciado el proceso de reembolso/i,
+      said: /proceso de reembolso de sus \d+ cargos/i,
+      make: count => `Se ha iniciado el proceso de reembolso de sus ${count} cargos`
+    }
+  ];
+
+  // '' = nothing to do (one refund, or already said), a description of the
+  // change, or 'not-found' when the template no longer has the sentence.
+  function addRefundCount(editor, count) {
+    if (!(count > 1)) return '';
+    if (REFUND_COUNT_SENTENCES.some(rule => rule.said.test(editor.textContent || ''))) return '';
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const rule of REFUND_COUNT_SENTENCES) {
+        const match = rule.find.exec(node.nodeValue || '');
+        if (!match) continue;
+        node.nodeValue = node.nodeValue.slice(0, match.index) + rule.make(count) +
+          node.nodeValue.slice(match.index + match[0].length);
+        return `mentions the ${count} refunds`;
+      }
+    }
+    return 'not-found';
+  }
+
+  async function checkAndSendReply(expectedEmail, firstName, { send = true, refundCount = 0 } = {}) {
     if (!expectedEmail) return { problem: 'CMS gave no account email to check the reply against' };
     const editor = await waitFor(findScenarioReplyEditor, { timeout: 10000, pollMs: 200 });
     if (!editor) return { problem: 'the scenario reply did not appear in the editor' };
@@ -11502,6 +11689,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       const greeting = fixGreeting(editor, firstName);
       if (greeting) changed.push(greeting);
     }
+    const countChange = addRefundCount(editor, Number(refundCount) || 0);
+    if (countChange === 'not-found') changed.push(`the ${refundCount} refunds could NOT be added - the refund sentence was not found`);
+    else if (countChange) changed.push(countChange);
     // Once more after the edits: the greeting rewrite can touch text nodes.
     runAutoBold(editor);
 
@@ -11577,7 +11767,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
       return;
     }
-    const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName));
+    const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName), {
+      refundCount: Number(entry.refundCount) || 0
+    });
     const fixes = result.changed && result.changed.length ? ` (fixed ${result.changed.join('; ')})` : '';
     if (!result.sent) {
       showStatus(`Refund Assist: "${entry.applyScenario}" applied but the reply was NOT sent - ${result.problem}${fixes}. Review it and send by hand.`, true);
@@ -11705,10 +11897,10 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       const request = root.getAttribute('data-bv-reply-check');
       if (!request) return;
       root.removeAttribute('data-bv-reply-check');
-      const [email, firstName] = request.split('|');
+      const [email, firstName, count] = request.split('|');
       let result;
       try {
-        result = await checkAndSendReply(cleanText(email).toLowerCase(), cleanText(firstName || ''), { send: false });
+        result = await checkAndSendReply(cleanText(email).toLowerCase(), cleanText(firstName || ''), { send: false, refundCount: Number(count) || 0 });
       } catch (error) {
         result = { problem: String(error && error.message || error) };
       }
