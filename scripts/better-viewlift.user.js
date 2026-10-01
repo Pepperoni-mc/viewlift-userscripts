@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.73.1
+// @version      3.74.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7031,6 +7031,11 @@ if (isCMSHost()) {
     let cancelFirst = true;
     let steps = [];
     let lastNoteText = '';
+    // REFUND rows already in the table when the panel opened - a refund the
+    // run issues is a row that is NOT in here (see attachRefundRows).
+    let initialRefundKeys = new Set();
+    let plannedSteps = 0;
+    let runStartedAt = 0;
     let mountTimer = null;
 
     function cleanText(value) {
@@ -7438,7 +7443,7 @@ if (isCMSHost()) {
     /* ---------------- the run ---------------- */
 
     function addStep(label) {
-        const step = { label, state: 'running', detail: '' };
+        const step = { label, state: 'running', detail: '', log: [], startedAt: Date.now() };
         steps.push(step);
         render();
         return step;
@@ -7447,12 +7452,24 @@ if (isCMSHost()) {
     function endStep(step, state, detail = '') {
         step.state = state;
         step.detail = detail;
+        step.endedAt = Date.now();
         render();
         return state !== 'failed';
     }
 
+    // One line of what is happening right now, under the running step - the
+    // progress view shows these as they arrive (Sebastian, 2026-09-30: "que
+    // se vea como progresa, en más líneas").
+    function stepLog(step, text) {
+        if (!step) return;
+        step.log.push(text);
+        if (step.log.length > 12) step.log.shift();
+        render();
+    }
+
     async function cancelSubscriptions(ticketURL, dryRun) {
         const step = addStep('Cancel Now');
+        stepLog(step, 'Opening ACCOUNT \u203a Subscription Plans');
         if (!await openSubscriptionPlans()) {
             return { ok: endStep(step, 'failed', 'Could not open ACCOUNT > Subscription Plans'), lines: [] };
         }
@@ -7473,6 +7490,7 @@ if (isCMSHost()) {
         }
 
         for (const { info } of cancellable) {
+            stepLog(step, `${info.name} - status ${info.status || 'unknown'} - clicking CANCEL`);
             realClick(info.cancelButton);
             const dialog = await waitFor(getCancelDialog, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
             if (!dialog) return { ok: endStep(step, 'failed', `Cancel dialog did not open for ${info.name}`), lines };
@@ -7484,6 +7502,7 @@ if (isCMSHost()) {
                 return { ok: endStep(step, 'failed', 'Cancel dialog has no Comments field'), lines };
             }
             if (!cleanText(comments.value)) setControlledValue(comments, ticketURL);
+            stepLog(step, 'Comments: the ticket link');
             const filled = await waitFor(() => cleanText(comments.value) ? true : null, { timeout: 3000, pollMs: 100 });
             if (!filled) {
                 await closeCancelDialog();
@@ -7505,8 +7524,10 @@ if (isCMSHost()) {
                 continue;
             }
 
+            stepLog(step, 'CANCEL NOW');
             realClick(cancelNow);
             const closed = await waitFor(() => getCancelDialog() ? null : true, { timeout: SUBMIT_SETTLE_MS, pollMs: 150 });
+            if (closed) stepLog(step, 'CMS accepted the cancellation - reading the new status');
             if (!closed) {
                 return { ok: endStep(step, 'failed', `The cancel dialog stayed open after CANCEL NOW (${info.name})`), lines };
             }
@@ -7537,6 +7558,7 @@ if (isCMSHost()) {
         const bridge = getBridge();
         if (!bridge?.start) return endStep(step, 'failed', 'The refund workflow (Feature 3) is not loaded');
 
+        stepLog(step, 'Opening SUBSCRIPTION PLANS AND ENTITLEMENTS');
         if (!await openSubscriptionCharges()) return endStep(step, 'failed', 'Could not open SUBSCRIPTION PLANS AND ENTITLEMENTS');
         await closeRefundModal();
         await closeDrawer();
@@ -7544,6 +7566,7 @@ if (isCMSHost()) {
         const row = findChargeRow(charge.order);
         const eye = row?.querySelector('svg[data-testid="VisibilityIcon"]')?.closest('button');
         if (!eye) return endStep(step, 'failed', 'Charge not found on this page of the table');
+        stepLog(step, `Found the charge row - opening its details`);
 
         // The flag keeps Feature 3's own eye listener from also starting an
         // unpinned run off this click; start() below pins it to the order.
@@ -7559,6 +7582,8 @@ if (isCMSHost()) {
             return open && cleanText(open.textContent).includes(charge.order) ? open : null;
         }, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
         if (!drawer) return endStep(step, 'failed', 'The charge details drawer did not open');
+        stepLog(step, `Drawer confirms order ${charge.order}`);
+        stepLog(step, 'Refund \u203a Issue percentage refund - 100%, reason ROTH, ticket link');
 
         const result = await Promise.race([
             new Promise(resolve => bridge.start({ order: charge.order, onFinish: resolve })),
@@ -7576,11 +7601,13 @@ if (isCMSHost()) {
             return endStep(step, 'failed', result.detail || 'refund workflow failed');
         }
 
+        stepLog(step, 'Confirm Refund - waiting for CMS');
         const alerts = new Set();
         const closed = await waitFor(() => {
             collectAlerts(alerts);
             return getRefundModal() ? null : true;
         }, { timeout: SUBMIT_SETTLE_MS, pollMs: 150 });
+        if (closed) stepLog(step, 'CMS closed the refund dialog');
         await sleep(700);
         collectAlerts(alerts);
         const alertText = Array.from(alerts).join(' | ');
@@ -7634,11 +7661,10 @@ if (isCMSHost()) {
             rows.push(chargeCells(charge));
         }
 
+        // A refund whose REFUND row CMS never listed keeps just its CHARGE row
+        // here - no warning line in the ticket (asked for, 2026-09-30); the
+        // run's panel says so instead.
         const after = [];
-        const missingRefundId = !dryRun && done.filter(charge => !charge.refundRow);
-        if (missingRefundId && missingRefundId.length) {
-            after.push({ text: `Refund row not shown in CMS yet for: ${missingRefundId.map(charge => charge.order).join(', ')}` });
-        }
         const notDone = [
             ...failed.map(({ charge, reason }) => `${charge.date} - ${charge.amount} - ${charge.order} - failed: ${reason}`),
             ...skipped.map(charge => `${charge.date} - ${charge.amount} - ${charge.order} - not done`)
@@ -7897,6 +7923,12 @@ if (isCMSHost()) {
         view = 'run';
         steps = [];
         lastNoteText = '';
+        // How many steps this run should take, for the progress bar: cancel,
+        // one per refund, refund ids, contact/plan read, note, scenario,
+        // refund-log row, back to the ticket. A real run can only grow it.
+        plannedSteps = (cancelFirst ? 1 : 0) + picked.length + 1 +
+            (dryRun ? 0 : 4);
+        runStartedAt = Date.now();
         render();
 
         let cancelOk = true;
@@ -7945,7 +7977,7 @@ if (isCMSHost()) {
         if (!dryRun && done.length) {
             const refundStep = addStep('Read the refund ids back from CMS');
             try {
-                await attachRefundRows(done);
+                await attachRefundRows(done, refundStep);
                 const missing = done.filter(charge => !charge.refundRow).length;
                 endStep(refundStep, 'done', missing
                     ? `${done.length - missing} of ${done.length} found - CMS has not listed the rest yet`
@@ -7979,6 +8011,7 @@ if (isCMSHost()) {
         let noteSaved = false;
         let apiProblem = '';
         if (!dryRun && getFreshdeskApiKey()) {
+            stepLog(noteStep, 'Posting the private note through the Freshdesk API');
             try {
                 await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
                     body: noteToHtml(note),
@@ -8021,6 +8054,7 @@ if (isCMSHost()) {
             } else if (!noteSaved) {
                 endStep(scenarioStep, 'failed', 'not applied - the note could not be saved or queued');
             } else {
+                stepLog(scenarioStep, 'Reading the scenario and setting its fields through the API');
                 try {
                     const result = await applyScenarioViaApi(ticketId, scenarioName);
                     // The customer reply cannot go through the API and must
@@ -8058,6 +8092,7 @@ if (isCMSHost()) {
             if (!sheetBridge?.fillAndSend) {
                 endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
             } else {
+                stepLog(sheetStep, 'Filling the Refund Capture panel and finding the first free row');
                 try {
                     const handlers = Array.from(new Set(done.map(charge => cleanText(charge.handler)).filter(Boolean)));
                     const sent = await sheetBridge.fillAndSend({
@@ -8093,10 +8128,20 @@ if (isCMSHost()) {
     // Stripe / Google Play charge has its REFUND row, or the time runs out.
     // Toggling the sub-tab is the same fix Sebastian uses by hand. Other
     // handlers' ids have no known pairing, so they are not waited on.
-    async function attachRefundRows(done) {
-        const waitable = done.filter(charge => /^(ch_|GPA\.)/i.test(charge.order));
-        const deadline = Date.now() + 15000;
+    // Every handler is waited on now, not only Stripe / Google Play: an
+    // order like 6f9ef99fa6a511f1895bae7967899e38.. (2026-09-30, Erick) got
+    // one look and then "Refund row not shown in CMS yet". Each pass is the
+    // same small refresh Sebastian does by hand - One-Time Purchases and back.
+    // Pairing: the id rules first (markRefundedCharges); for a handler with no
+    // known rule, a REFUND row that was NOT in the table when the panel
+    // opened, with the same title and amount, is this refund's.
+    async function attachRefundRows(done, step) {
+        const deadline = Date.now() + 45000;
+        const claimed = new Set();
+        let pass = 0;
         while (Date.now() < deadline) {
+            pass += 1;
+            stepLog(step, `Refreshing the CMS table - pass ${pass}`);
             const oneTime = findButtonByText('one-time purchases');
             if (oneTime) {
                 realClick(oneTime);
@@ -8105,13 +8150,30 @@ if (isCMSHost()) {
             const table = await openSubscriptionCharges();
             const rows = markRefundedCharges(scrapeCharges(table));
             for (const charge of done) {
+                if (charge.refundRow) continue;
                 const row = rows.find(candidate => candidate.order === charge.order &&
                     candidate.type.toUpperCase() === 'CHARGE');
-                if (row?.refundedRow) charge.refundRow = row.refundedRow;
+                let refund = row?.refundedRow && !claimed.has(refundRowKey(row.refundedRow)) ? row.refundedRow : null;
+                if (!refund) {
+                    refund = rows.find(candidate => candidate.type.toUpperCase() === 'REFUND' &&
+                        !initialRefundKeys.has(refundRowKey(candidate)) &&
+                        !claimed.has(refundRowKey(candidate)) &&
+                        cleanText(candidate.amount) === cleanText(charge.amount) &&
+                        (!candidate.title || !charge.title || candidate.title === charge.title)) || null;
+                }
+                if (refund) {
+                    charge.refundRow = refund;
+                    claimed.add(refundRowKey(refund));
+                    stepLog(step, `REFUND ${refund.order} found for ${charge.date} ${charge.amount}`);
+                }
             }
-            if (waitable.every(charge => charge.refundRow)) return;
-            await sleep(2000);
+            if (done.every(charge => charge.refundRow)) return;
+            await sleep(2500);
         }
+    }
+
+    function refundRowKey(row) {
+        return [row.type, row.order, row.date, row.amount].map(cleanText).join('|');
     }
 
     // The status is read from a freshly mounted card: right after CANCEL NOW
@@ -8137,6 +8199,7 @@ if (isCMSHost()) {
     // no answer (tab not open) the ticket is opened fresh instead.
     async function handOffToTicket(ticketId) {
         const step = addStep('Back to the ticket');
+        stepLog(step, `Calling the #${ticketId} tab to the front`);
         const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         try {
             GM_setValue(BV_FOCUS_TICKET_KEY, { ticketId: String(ticketId), nonce, at: Date.now() });
@@ -8232,6 +8295,39 @@ if (isCMSHost()) {
 #${PANEL_ID} .is-dry-run .bv-ra-state{color:#fbbf24}
 #${PANEL_ID} .is-failed .bv-ra-state{color:#f87171}
 #${PANEL_ID} .is-running .bv-ra-state{color:#5eead4}
+#${PANEL_ID} .bv-ra-hud{margin:0 0 12px;padding:12px;border:1px solid #27344a;border-radius:10px;background:linear-gradient(180deg,#121c30,#0f1728)}
+#${PANEL_ID} .bv-ra-hud.is-won{border-color:rgba(134,239,172,.45)}
+#${PANEL_ID} .bv-ra-hud.is-lost{border-color:rgba(248,113,113,.5)}
+#${PANEL_ID} .bv-ra-hud-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+#${PANEL_ID} .bv-ra-level{font:800 12px/1 Consolas,monospace;letter-spacing:.12em;color:#5eead4}
+#${PANEL_ID} .bv-ra-xp{font:700 11px/1 Consolas,monospace;color:#94a3b8}
+#${PANEL_ID} .bv-ra-bar{height:12px;border-radius:999px;background:#0b1220;border:1px solid #27344a;overflow:hidden}
+#${PANEL_ID} .bv-ra-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#0d9488,#22d3ee);transition:width 450ms ease;background-size:200% 100%}
+#${PANEL_ID} .bv-ra-hud.is-live .bv-ra-fill{animation:bv-ra-shine 1.4s linear infinite;background-image:linear-gradient(90deg,#0d9488 0%,#22d3ee 50%,#0d9488 100%)}
+#${PANEL_ID} .bv-ra-hud.is-won .bv-ra-fill{background:linear-gradient(90deg,#16a34a,#86efac)}
+#${PANEL_ID} .bv-ra-hud.is-lost .bv-ra-fill{background:linear-gradient(90deg,#b91c1c,#f87171)}
+#${PANEL_ID} .bv-ra-now{margin-top:9px;font-size:13px;font-weight:700;color:#f0fdfa;min-height:18px}
+#${PANEL_ID} .bv-ra-quest{display:flex;flex-direction:column;gap:6px}
+#${PANEL_ID} .bv-ra-quest-step{padding:8px 10px;border:1px solid #27344a;border-radius:8px;background:#111b2e}
+#${PANEL_ID} .bv-ra-quest-step.is-running{border-color:rgba(45,212,191,.55);box-shadow:0 0 0 1px rgba(45,212,191,.15),0 0 18px rgba(13,148,136,.18)}
+#${PANEL_ID} .bv-ra-quest-step.is-done{border-color:rgba(134,239,172,.3)}
+#${PANEL_ID} .bv-ra-quest-step.is-failed{border-color:rgba(248,113,113,.55);background:rgba(127,29,29,.18)}
+#${PANEL_ID} .bv-ra-quest-step.is-dry-run{border-color:rgba(251,191,36,.45)}
+#${PANEL_ID} .bv-ra-quest-head{display:flex;align-items:center;gap:8px;font-weight:700;color:#f1f5f9}
+#${PANEL_ID} .bv-ra-quest-icon{width:18px;text-align:center;flex:0 0 auto}
+#${PANEL_ID} .bv-ra-quest-icon.is-spinning{display:inline-block;animation:bv-ra-spin 1.1s linear infinite}
+#${PANEL_ID} .bv-ra-quest-num{font:700 10px/1 Consolas,monospace;color:#64748b}
+#${PANEL_ID} .bv-ra-quest-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} .bv-ra-quest-log{margin:6px 0 0 26px;font:11px/1.5 Consolas,monospace;color:#94a3b8}
+#${PANEL_ID} .bv-ra-quest-log div:last-child{color:#cbd5e1}
+#${PANEL_ID} .bv-ra-quest-step.is-running .bv-ra-quest-log div:last-child{color:#5eead4}
+#${PANEL_ID} .bv-ra-quest-detail{margin:5px 0 0 26px;color:#94a3b8;font-size:11.5px}
+#${PANEL_ID} .bv-ra-quest-step.is-failed .bv-ra-quest-detail{color:#fca5a5}
+#${PANEL_ID} .bv-ra-result{margin:12px 0 8px;padding:12px;border-radius:10px;border:1px solid rgba(134,239,172,.45);background:rgba(20,83,45,.25);text-align:center}
+#${PANEL_ID} .bv-ra-result.is-lost{border-color:rgba(248,113,113,.5);background:rgba(127,29,29,.22)}
+#${PANEL_ID} .bv-ra-result-title{font-size:15px;font-weight:800;color:#f0fdfa;margin-bottom:3px}
+@keyframes bv-ra-spin{to{transform:rotate(360deg)}}
+@keyframes bv-ra-shine{from{background-position:200% 0}to{background-position:0 0}}
 #${PANEL_ID} pre{white-space:pre-wrap;background:#111b2e;color:#e2e8f0;border:1px solid #34425a;border-radius:7px;padding:9px;font:12px/1.4 Consolas,monospace;overflow:auto}
 `;
         (document.head || document.documentElement).appendChild(style);
@@ -8280,6 +8376,9 @@ if (isCMSHost()) {
         render(true);
         const table = await openSubscriptionCharges();
         charges = markRefundedCharges(scrapeCharges(table));
+        initialRefundKeys = new Set(charges
+            .filter(charge => charge.type.toUpperCase() === 'REFUND')
+            .map(refundRowKey));
         // Nothing preselected: every refund is an explicit choice.
         selected = new Set(Array.from(selected).filter(order => charges.some(c => c.order === order && isRefundable(c))));
         render();
@@ -8369,21 +8468,56 @@ if (isCMSHost()) {
         }));
     }
 
+    // The run as a little game (Sebastian, 2026-09-30: "un progreso un poco
+    // más tipo un juego, que se vea como progresa"): a level counter and a
+    // filling bar on top, the action happening right now in large type, and
+    // every step with its own icon and its live log lines underneath.
     function renderRun(body, actions) {
-        const list = el('ol');
-        for (const step of steps) {
-            const label = { running: '...', done: 'OK', 'dry-run': 'DRY', failed: 'FAIL' }[step.state] || step.state;
-            list.appendChild(el('li', { class: `bv-ra-step is-${step.state}` }, [
-                el('span', { class: 'bv-ra-state', text: label }),
-                step.label,
-                step.detail ? el('div', { class: 'bv-ra-muted', text: step.detail }) : null
+        const finished = steps.filter(step => step.state !== 'running').length;
+        const failedSteps = steps.filter(step => step.state === 'failed').length;
+        const total = Math.max(plannedSteps, steps.length, 1);
+        const percent = running ? Math.min(99, Math.round((finished / total) * 100)) : 100;
+        const current = steps.slice().reverse().find(step => step.state === 'running');
+        const nowText = running
+            ? (current ? (current.log[current.log.length - 1] || current.label) : 'Warming up...')
+            : (failedSteps ? 'Stopped - see the red step' : 'All done');
+        const seconds = Math.max(0, Math.round((Date.now() - runStartedAt) / 1000));
+
+        body.appendChild(el('div', { class: `bv-ra-hud${running ? ' is-live' : (failedSteps ? ' is-lost' : ' is-won')}` }, [
+            el('div', { class: 'bv-ra-hud-top' }, [
+                el('span', { class: 'bv-ra-level', text: `LEVEL ${Math.min(finished + (running ? 1 : 0), total)} / ${total}` }),
+                el('span', { class: 'bv-ra-xp', text: `${percent}%  \u00b7  ${seconds}s` })
+            ]),
+            el('div', { class: 'bv-ra-bar' }, [el('div', { class: 'bv-ra-fill', style: `width:${percent}%` })]),
+            el('div', { class: 'bv-ra-now', text: nowText })
+        ]));
+
+        const list = el('div', { class: 'bv-ra-quest' });
+        steps.forEach((step, index) => {
+            const icon = { running: '\u23f3', done: '\u2705', 'dry-run': '\ud83e\uddea', failed: '\u274c' }[step.state] || '\u2022';
+            const lines = step.state === 'running' ? step.log.slice(-5) : step.log.slice(-2);
+            list.appendChild(el('div', { class: `bv-ra-quest-step is-${step.state}` }, [
+                el('div', { class: 'bv-ra-quest-head' }, [
+                    el('span', { class: `bv-ra-quest-icon${step.state === 'running' ? ' is-spinning' : ''}`, text: icon }),
+                    el('span', { class: 'bv-ra-quest-num', text: String(index + 1).padStart(2, '0') }),
+                    el('span', { class: 'bv-ra-quest-label', text: step.label })
+                ]),
+                lines.length ? el('div', { class: 'bv-ra-quest-log' }, lines.map(line => el('div', { text: `\u203a ${line}` }))) : null,
+                step.detail ? el('div', { class: 'bv-ra-quest-detail', text: step.detail }) : null
             ]));
-        }
+        });
         body.appendChild(list);
+
         if (running) {
-            body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Running - do not click around in CMS until it finishes.' }));
+            body.appendChild(el('p', { class: 'bv-ra-muted', text: "Running - don't click around in CMS until the bar is full." }));
             return;
         }
+        body.appendChild(el('div', { class: `bv-ra-result${failedSteps ? ' is-lost' : ''}` }, [
+            el('div', { class: 'bv-ra-result-title', text: failedSteps ? '\u26a0\ufe0f Run stopped' : '\ud83c\udfc6 Run complete' }),
+            el('div', { class: 'bv-ra-muted', text: failedSteps
+                ? `${failedSteps} step${failedSteps === 1 ? '' : 's'} failed - the red one says why.`
+                : `${steps.length} steps in ${seconds}s.` })
+        ]));
         if (lastNoteText) body.appendChild(el('pre', { text: lastNoteText }));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Copy again', disabled: !lastNoteText, onclick: () => copyText(lastNoteText) }));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Close', onclick: closePanel }));

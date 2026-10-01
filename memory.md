@@ -31,6 +31,25 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.74.0 - refund rows for any handler; the run as a game-style progress view (same day)
+
+Erick's run noted "Refund row not shown in CMS yet for: 6f9ef99fa6a511f1895bae7967899e38.." -
+a handler that is neither Stripe (`ch_`) nor Google Play (`GPA.`), and `attachRefundRows` only
+WAITED for those two, so it looked once and gave up. Sebastian: never show that line; keep doing
+the small refresh. Now every refunded charge is waited on (up to 45s, One-Time Purchases and back
+every ~2.5s), and for handlers with no id rule the pairing falls back to a REFUND row that was
+**not** in the table when the panel opened (`initialRefundKeys`, keyed type|order|date|amount)
+with the same title and amount, each claimed once. `buildNote` no longer writes the warning; a
+miss only shows in the run panel. The real REFUND-row id shape for that handler is still unseen.
+
+Progress view ("más tipo un juego... en más líneas"): `addStep` steps now carry a `log`, filled by
+`stepLog()` at each real action (opening tabs, the drawer's order, Confirm, CMS accepting, each
+refresh pass, each REFUND id found, API calls, the hand-off), and `renderRun` draws a HUD - `LEVEL
+n / total` (`plannedSteps` from cancel + refunds + the fixed end steps), a filling teal bar with a
+shimmer while live (green when won, red when stopped), the current action in large type, elapsed
+seconds - then each step as a card with ⏳(spinning)/✅/❌/🧪, its number and its last log lines,
+and a 🏆 / ⚠️ result card at the end. Not yet seen live.
+
 ### 3.73.0 - next free row by A-or-B, cleanup of test/dry-run/🧠 (same day)
 
 Sebastian: some agents (Adrian) leave column A empty and the row then pastes wrong; "¿comprobación

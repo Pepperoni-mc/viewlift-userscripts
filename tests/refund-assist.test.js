@@ -240,8 +240,10 @@ check('only a CMS host ever becomes a link', !offHost.includes('<a '), offHost);
 
 const noRefundYet = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL,
   done: [charge2], failed: [], skipped: [] });
-check('a refund CMS has not listed yet keeps its charge row and says so', noRefundYet.rows.length === 1 &&
-  noRefundYet.after.some(line => line.text.includes('ch_BBB')), noRefundYet);
+// 2026-09-30: no "Refund row not shown in CMS yet" line in the ticket any
+// more - the run keeps refreshing instead, and the panel reports a miss.
+check('a refund CMS never listed keeps its charge row, with no warning in the note', noRefundYet.rows.length === 1 &&
+  noRefundYet.after.length === 0, noRefundYet);
 
 const partial = buildNote({
   dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL,
