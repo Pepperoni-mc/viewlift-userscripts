@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.70.0
+// @version      3.71.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -3343,14 +3343,15 @@
       </div>
     `;
 
-    // Freshdesk only, on screen (Sebastian, 2026-09-30: "el refund capture
-    // tool no debería salir en el CMS"). On CMS the panel is still built,
-    // just never shown: it keeps capturing in the background, and Refund
-    // Assist fills it to build the refund-log row with the same columns.
-    if (isCMSHost()) {
-      panel.setAttribute('data-bv-hidden-on-cms', 'true');
+    // CMS only, on screen, beside Refund Assist (Sebastian, 2026-09-30 -
+    // reversing the same day's "Freshdesk only": on Freshdesk it did not
+    // read everything). On Freshdesk the panel is still built, just never
+    // shown: it keeps capturing the ticket in the background and syncs it to
+    // the CMS tab like before.
+    if (location.hostname === 'viewlift.freshdesk.com') {
+      panel.setAttribute('data-bv-hidden-here', 'true');
       panel.setAttribute('aria-hidden', 'true');
-      GM_addStyle('#refund-capture-panel[data-bv-hidden-on-cms]{display:none !important}');
+      GM_addStyle('#refund-capture-panel[data-bv-hidden-here]{display:none !important}');
     }
 
     document.body.appendChild(panel);
@@ -8098,44 +8099,49 @@ if (isCMSHost()) {
         if (document.getElementById(STYLE_ID)) return;
         const style = el('style', { id: STYLE_ID });
         style.textContent = `
-/* Same look as the Refund Capture panel (#refund-capture-panel) - Sebastian,
-   2026-09-30: "que el refund assist tenga la misma apariencia". */
-#${BUTTON_ID}{position:fixed;right:20px;bottom:20px;z-index:999999;width:52px;height:52px;padding:0;border:none;border-radius:999px;background:linear-gradient(180deg,#2f7fe0 0%,#0b5cab 100%);color:#fff;font:800 16px/1 Arial,sans-serif;cursor:pointer;box-shadow:0 12px 28px rgba(11,92,171,.34),inset 0 1px 0 rgba(255,255,255,.22);transition:transform 180ms ease,box-shadow 180ms ease}
-#${BUTTON_ID}:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(11,92,171,.42)}
-#${BUTTON_ID}:active{transform:translateY(0) scale(.97);box-shadow:0 6px 16px rgba(11,92,171,.3),inset 0 2px 5px rgba(0,0,0,.16)}
-#${PANEL_ID}{position:fixed;z-index:1000002;transform-origin:bottom right;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#fff;color:#17324d;border:1px solid rgba(15,23,42,.14);border-radius:18px;box-shadow:0 22px 55px rgba(15,23,42,.28);font:12px/1.45 Arial,sans-serif}
-#${PANEL_ID} header{flex:0 0 auto;min-height:46px;display:flex;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#f8fbff 0%,#edf6ff 100%);border-bottom:1px solid rgba(15,23,42,.08);font-weight:700;box-sizing:border-box}
-#${PANEL_ID} .bv-ra-icon{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;background:linear-gradient(180deg,#2f7fe0 0%,#0b5cab 100%);box-shadow:0 2px 6px rgba(11,92,171,.32),inset 0 1px 0 rgba(255,255,255,.22);color:#fff;font-weight:800;font-size:14px}
-#${PANEL_ID} header .bv-ra-x{margin-left:auto;width:28px;height:28px;border:1px solid rgba(15,23,42,.16);border-radius:10px;background:#fff;color:#17324d;font-size:14px;line-height:1;cursor:pointer;transition:background 140ms ease,transform 140ms ease}
-#${PANEL_ID} header .bv-ra-x:hover{background:#f4f8fc;transform:translateY(-1px)}
-#${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed;transform:none}
-#${PANEL_ID} .bv-ra-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px;scrollbar-width:thin}
+/* Dark, on the Refund Capture panel's own CMS theme (.cms-theme: #0f1728
+   card, #121c30 header, #111b2e fields, #34425a borders) so the two read as
+   one set - but TEAL with a return-arrow icon where Refund Capture is
+   PURPLE with "$", so they are never mistaken for each other (Sebastian,
+   2026-09-30: "los dos en dark mode... debidamente diferenciados"). */
+#${BUTTON_ID}{position:fixed;right:84px;bottom:20px;z-index:999999;width:52px;height:52px;padding:0;border:1px solid rgba(45,212,191,.6);border-radius:999px;background:linear-gradient(135deg,#0d9488,#0891b2);color:#fff;font:800 20px/1 Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 12px 30px rgba(13,148,136,.4);transition:transform 180ms ease,box-shadow 180ms ease}
+#${BUTTON_ID}:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 36px rgba(13,148,136,.5)}
+#${BUTTON_ID}:active{transform:translateY(0) scale(.97);box-shadow:0 6px 16px rgba(13,148,136,.3),inset 0 2px 5px rgba(0,0,0,.2)}
+#${PANEL_ID}{position:fixed;z-index:1000002;transform-origin:bottom right;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#0f1728;color:#e7edf7;border:1px solid #27344a;border-radius:12px;box-shadow:0 22px 60px rgba(0,0,0,.48);font:12px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark}
+#${PANEL_ID} header{flex:0 0 auto;min-height:44px;display:flex;align-items:center;gap:8px;padding:8px 10px;background:#121c30;border-bottom:1px solid #27344a;font-weight:700;color:#f0fdfa;box-sizing:border-box}
+#${PANEL_ID} .bv-ra-icon{width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;background:linear-gradient(135deg,#0d9488,#0891b2);box-shadow:0 5px 14px rgba(13,148,136,.35);color:#fff;font-weight:800;font-size:16px}
+#${PANEL_ID} header .bv-ra-x{margin-left:auto;width:28px;height:28px;border:1px solid #34425a;border-radius:7px;background:#172238;color:#cdd6e5;font-size:14px;line-height:1;cursor:pointer;transition:background 140ms ease,color 140ms ease}
+#${PANEL_ID} header .bv-ra-x:hover{background:#202d45;color:#fff}
+#${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed}
+#${PANEL_ID} .bv-ra-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px;background:#0f1728;scrollbar-width:thin;scrollbar-color:#34425a transparent}
 #${PANEL_ID} .bv-ra-body::-webkit-scrollbar{width:8px}
-#${PANEL_ID} .bv-ra-body::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px}
-#${PANEL_ID} .bv-ra-badge{padding:2px 8px;border-radius:999px;font-size:11px;background:#fffbeb;color:#92400e;border:1px solid #fde68a}
-#${PANEL_ID} .bv-ra-warn{margin-bottom:10px;padding:8px 10px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;color:#92400e;font-weight:600;line-height:1.4}
-#${PANEL_ID} .bv-ra-muted{color:#64748b;font-size:12px}
-#${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:8px;align-items:center;margin:0 0 6px;padding:7px 9px;border:1px solid #b9c5d4;border-radius:9px;background:#fff;cursor:pointer;transition:border-color 140ms ease,background 140ms ease}
-#${PANEL_ID} label.bv-ra-row:hover{border-color:#0b5cab;background:#f8fbff}
-#${PANEL_ID} label.bv-ra-row:has(input:checked){border-color:rgba(6,122,24,.45);background:#fbfffc}
-#${PANEL_ID} label.bv-ra-row.is-off{opacity:.5;cursor:default;background:#f8fafc}
-#${PANEL_ID} label.bv-ra-row.is-off:hover{border-color:#b9c5d4}
-#${PANEL_ID} input[type="checkbox"]{accent-color:#0b5cab;margin:0}
-#${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#${PANEL_ID} .bv-ra-actions{flex:0 0 auto;display:flex;gap:10px;justify-content:flex-end;padding:10px 12px;border-top:1px solid rgba(15,23,42,.08);background:#fff}
-#${PANEL_ID} button.bv-ra-btn{box-sizing:border-box;min-width:96px;padding:8px 12px;border:1px solid #b9c5d4;border-radius:10px;background:#fff;color:#17324d;cursor:pointer;font:600 12px Arial,sans-serif;transition:background 140ms ease,transform 140ms ease,box-shadow 140ms ease}
-#${PANEL_ID} button.bv-ra-btn:hover{background:#f7fafc;transform:translateY(-1px)}
-#${PANEL_ID} button.bv-ra-primary{background:#0b5cab;border-color:#0b5cab;color:#fff;font-weight:700;box-shadow:0 8px 18px rgba(11,92,171,.22)}
-#${PANEL_ID} button.bv-ra-primary:hover{background:#084f95;box-shadow:0 10px 22px rgba(11,92,171,.28)}
-#${PANEL_ID} button.bv-ra-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+#${PANEL_ID} .bv-ra-body::-webkit-scrollbar-thumb{background:#34425a;border-radius:999px}
+#${PANEL_ID} .bv-ra-badge{padding:2px 8px;border-radius:999px;font-size:11px;background:rgba(120,53,15,.35);color:#fbbf24;border:1px solid rgba(245,158,11,.5)}
+#${PANEL_ID} .bv-ra-warn{margin-bottom:10px;padding:8px 10px;border:1px solid rgba(245,158,11,.5);border-radius:7px;background:rgba(120,53,15,.25);color:#fcd34d;font-weight:600;line-height:1.4}
+#${PANEL_ID} .bv-ra-muted{color:#94a3b8;font-size:12px}
+#${PANEL_ID} label{color:#cbd5e1}
+#${PANEL_ID} label.bv-ra-row{display:grid;grid-template-columns:18px 72px 1fr auto;gap:8px;align-items:center;margin:0 0 6px;padding:7px 9px;border:1px solid #34425a;border-radius:7px;background:#111b2e;color:#f1f5f9;cursor:pointer;transition:border-color 140ms ease,background 140ms ease}
+#${PANEL_ID} label.bv-ra-row:hover{border-color:#14b8a6;background:#13213a}
+#${PANEL_ID} label.bv-ra-row:has(input:checked){border-color:rgba(45,212,191,.6);background:rgba(13,148,136,.16)}
+#${PANEL_ID} label.bv-ra-row.is-off{opacity:.45;cursor:default;background:#0f1728}
+#${PANEL_ID} label.bv-ra-row.is-off:hover{border-color:#34425a}
+#${PANEL_ID} input[type="checkbox"]{accent-color:#14b8a6;margin:0}
+#${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} strong{color:#f1f5f9}
+#${PANEL_ID} .bv-ra-actions{flex:0 0 auto;display:flex;gap:10px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #27344a;background:#121c30}
+#${PANEL_ID} button.bv-ra-btn{box-sizing:border-box;min-width:96px;padding:8px 12px;border:1px solid #34425a;border-radius:7px;background:#172238;color:#dbe4f1;cursor:pointer;font:600 12px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;transition:background 140ms ease,box-shadow 140ms ease}
+#${PANEL_ID} button.bv-ra-btn:hover{background:#202d45}
+#${PANEL_ID} button.bv-ra-primary{background:linear-gradient(90deg,#0d9488,#0891b2);border-color:#14b8a6;color:#fff;font-weight:700;box-shadow:0 8px 20px rgba(13,148,136,.28)}
+#${PANEL_ID} button.bv-ra-primary:hover{background:linear-gradient(90deg,#0f766e,#0e7490);box-shadow:0 10px 24px rgba(13,148,136,.38)}
+#${PANEL_ID} button.bv-ra-btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 #${PANEL_ID} ol{margin:6px 0 0 18px;padding:0}
 #${PANEL_ID} .bv-ra-step{margin-bottom:8px}
 #${PANEL_ID} .bv-ra-state{font-weight:700;margin-right:4px}
-#${PANEL_ID} .is-done .bv-ra-state{color:#067a18}
-#${PANEL_ID} .is-dry-run .bv-ra-state{color:#9a5b00}
-#${PANEL_ID} .is-failed .bv-ra-state{color:#b42318}
-#${PANEL_ID} .is-running .bv-ra-state{color:#0b5cab}
-#${PANEL_ID} pre{white-space:pre-wrap;background:#f8fbff;border:1px solid #b9c5d4;border-radius:9px;padding:9px;font:12px/1.4 Consolas,monospace;overflow:auto}
+#${PANEL_ID} .is-done .bv-ra-state{color:#86efac}
+#${PANEL_ID} .is-dry-run .bv-ra-state{color:#fbbf24}
+#${PANEL_ID} .is-failed .bv-ra-state{color:#f87171}
+#${PANEL_ID} .is-running .bv-ra-state{color:#5eead4}
+#${PANEL_ID} pre{white-space:pre-wrap;background:#111b2e;color:#e2e8f0;border:1px solid #34425a;border-radius:7px;padding:9px;font:12px/1.4 Consolas,monospace;overflow:auto}
 `;
         (document.head || document.documentElement).appendChild(style);
     }
@@ -8308,7 +8314,7 @@ if (isCMSHost()) {
         panel.textContent = '';
 
         const header = el('header', {}, [
-            el('span', { class: 'bv-ra-icon', text: '$' }),
+            el('span', { class: 'bv-ra-icon', text: '↩' }),
             'Refund Assist',
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
             el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Minimize', disabled: running, text: '–', onclick: closePanel })
@@ -8350,7 +8356,8 @@ if (isCMSHost()) {
                 title: 'Refund Assist',
                 'aria-label': 'Refund Assist',
                 'data-html2canvas-ignore': 'true',
-                text: '$',
+                // Return arrow, not "$": the $ float beside it is Refund Capture.
+                text: '↩',
                 onclick: event => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -8367,7 +8374,9 @@ if (isCMSHost()) {
     // Refund Capture panel - but placed by left/top so the resize handle
     // (bottom-right) still pulls the way it looks like it should.
     function anchorPanelBottomRight(panel) {
-        const left = Math.max(8, window.innerWidth - 20 - panel.offsetWidth);
+        // 84px, not 20: the corner itself belongs to the Refund Capture $
+        // float, which stays reachable while this panel is open.
+        const left = Math.max(8, window.innerWidth - 84 - panel.offsetWidth);
         const top = Math.max(8, window.innerHeight - 20 - panel.offsetHeight);
         panel.style.left = `${left}px`;
         panel.style.top = `${top}px`;

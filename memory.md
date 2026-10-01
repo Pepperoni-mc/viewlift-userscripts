@@ -31,6 +31,19 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.71.0 - reversed: Refund Capture on CMS only, beside Refund Assist, both dark (same day)
+
+Sebastian after 3.70.0: on Freshdesk the Refund Capture "no me lee toda la información" -
+"mejor dejémoslo solo en CMS... al lado del refund tool. los dos en dark mode... debidamente
+diferenciados". So the 3.70.0 hide is inverted: the panel is hidden on **Freshdesk**
+(`data-bv-hidden-here`; still built there, still capturing the ticket and syncing it to CMS)
+and shown on CMS, where it already had a dark `.cms-theme` (purple, `$`, right/bottom 20px).
+Refund Assist got the same dark system (`#0f1728` card, `#121c30` header, `#111b2e` fields,
+`#34425a` borders, Inter stack) in **teal** (`#0d9488→#0891b2`) with a `↩` icon, float at
+right 84px - one slot left of the Refund Capture float - and its panel anchors 84px from the
+right so the `$` float stays reachable. (3.70.0's toolbar change stays: the toolbar no longer
+absorbs the panel.)
+
 ### 3.70.0 - the $ float stays; Refund Capture is Freshdesk-only; Refund Assist is a float too (same day)
 
 Sebastian, with a screenshot of the bottom-right floats (🧠, 📋, no `$`): "en el ticket sí
