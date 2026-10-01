@@ -31,6 +31,31 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.72.0 - surviving Freshdesk's account-wide API rate limit (same day)
+
+Sebastian's run on #361929: "Private note: API http-429" → note pasted unsaved, scenario not
+applied. Measured live right after: **every** `/api/v2` call - even a session GET - answered
+`429` with `Retry-After: 609`, while the UI's internal `/api/_/...` calls kept answering 200.
+Not us: on a ticket page this script made 0 API calls in 15s and 3 `/api/v2/tickets/<id>` since
+load. The public API limit is shared by the whole Freshdesk account (all agents + integrations).
+(Internal-API writes with the session are refused - `401`, and there is no `csrf-token` meta -
+so they are not an option.)
+
+- `freshdeskApiRequest` / `freshdeskApiMultipart`: on 429, wait out `Retry-After` when it is
+  <= 25s (twice at most), else fail with `rate-limited` + `retryAfter`, which
+  `describeApiError` turns into "rate limit reached for the whole account (free again in ~N min)".
+- **UI fallback** when the note cannot be saved by API (no key or 429): one queue entry with
+  `submitNote` + `applyScenario` + `updateProperties`, and the ticket tab does it all through the
+  Freshdesk UI, in order: paste → `submitNoteEditor()` (Froala sync, then the note editor's
+  `button[data-test-id="submit"]` "Add note") → Apply → `checkAndSendReply` (send + Waiting on End
+  User) → `clickPropertiesUpdate()` (`button[data-test-id="ticket-properties-btn"]`, skipped when
+  disabled = nothing unsaved). Counts as success for the CMS hand-off. If the API saved the note
+  but the scenario PUT fails, the scenario goes the same UI way.
+- The brand resolver now reads `/api/_/tickets/<id>` (same `cf_b2b_client_name` /
+  `email_config_id`, under `ticket`) and only falls back to `/api/v2` - it no longer spends the
+  shared public budget at all on Freshdesk.
+- Not yet run live: the UI-path Add note / Update clicks (needs a real run while limited or keyless).
+
 ### 3.71.0 - reversed: Refund Capture on CMS only, beside Refund Assist, both dark (same day)
 
 Sebastian after 3.70.0: on Freshdesk the Refund Capture "no me lee toda la información" -

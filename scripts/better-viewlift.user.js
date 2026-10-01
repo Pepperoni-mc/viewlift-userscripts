@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.71.0
+// @version      3.72.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -479,10 +479,15 @@
     // Reads work on the Freshdesk session alone (measured); anywhere else the
     // agent's own API key is the only way in.
     if (location.hostname === 'viewlift.freshdesk.com') {
-      return fetch(`/api/v2/tickets/${ticketId}`, { credentials: 'same-origin' }).then(response => {
+      // The UI's own internal endpoint first: same fields (under "ticket"),
+      // and it is NOT part of the account-wide /api/v2 limit - measured
+      // 2026-09-30, it answered 200 while /api/v2 was returning 429.
+      const read = (url, unwrap) => fetch(url, { credentials: 'same-origin' }).then(response => {
         if (!response.ok) throw new Error('http-' + response.status);
         return response.json();
-      });
+      }).then(unwrap);
+      return read(`/api/_/tickets/${ticketId}`, data => (data && data.ticket) || data)
+        .catch(() => read(`/api/v2/tickets/${ticketId}`, data => data));
     }
     return new Promise((resolve, reject) => {
       freshdeskApiRequest({
@@ -1021,7 +1026,25 @@
     });
   }
 
-  function freshdeskApiRequest({ method = 'GET', path, body, onDone }) {
+  // Freshdesk's public API limit is shared by the WHOLE account (every agent
+  // and integration). Measured 2026-09-30: /api/v2 answered 429 with
+  // Retry-After: 609 while the UI's own /api/_/ calls kept working. A short
+  // wait is waited out (twice at most); a long one is reported as such, so
+  // callers can fall back to doing the job through the Freshdesk UI.
+  const BV_RATE_LIMIT_MAX_WAIT_S = 25;
+
+  function bvRetryAfterSeconds(response) {
+    const match = String(response && response.responseHeaders || '').match(/^retry-after:\s*(\d+)/im);
+    return match ? Number(match[1]) : 0;
+  }
+
+  function bvRateLimitError(seconds) {
+    const error = new Error('rate-limited');
+    error.retryAfter = seconds;
+    return error;
+  }
+
+  function freshdeskApiRequest({ method = 'GET', path, body, onDone, attempt = 0 }) {
     const apiKey = getFreshdeskApiKey();
     if (!apiKey) {
       onDone(new Error('no-api-key'), null);
@@ -1040,6 +1063,15 @@
       data: body ? JSON.stringify(body) : undefined,
       timeout: 15000,
       onload: function (response) {
+        if (response.status === 429) {
+          const wait = bvRetryAfterSeconds(response);
+          if (wait && wait <= BV_RATE_LIMIT_MAX_WAIT_S && attempt < 2) {
+            setTimeout(() => freshdeskApiRequest({ method, path, body, onDone, attempt: attempt + 1 }), wait * 1000 + 250);
+            return;
+          }
+          onDone(bvRateLimitError(wait), null);
+          return;
+        }
         if (response.status === 401 || response.status === 403) {
           onDone(new Error('unauthorized'), null);
           return;
@@ -1068,7 +1100,7 @@
   // Same as freshdeskApiRequest, for multipart bodies (a note with an image
   // attachment). No Content-Type header: GM_xmlhttpRequest sets the
   // multipart boundary itself from the FormData.
-  function freshdeskApiMultipart({ path, formData, onDone }) {
+  function freshdeskApiMultipart({ path, formData, onDone, attempt = 0 }) {
     const apiKey = getFreshdeskApiKey();
     if (!apiKey) {
       onDone(new Error('no-api-key'), null);
@@ -1082,6 +1114,15 @@
       data: formData,
       timeout: 30000,
       onload: function (response) {
+        if (response.status === 429) {
+          const wait = bvRetryAfterSeconds(response);
+          if (wait && wait <= BV_RATE_LIMIT_MAX_WAIT_S && attempt < 2) {
+            setTimeout(() => freshdeskApiMultipart({ path, formData, onDone, attempt: attempt + 1 }), wait * 1000 + 250);
+            return;
+          }
+          onDone(bvRateLimitError(wait), null);
+          return;
+        }
         if (response.status === 401 || response.status === 403) {
           onDone(new Error('unauthorized'), null);
           return;
@@ -7608,7 +7649,7 @@ if (isCMSHost()) {
     // clicks Apply on that scenario so its customer reply lands in the reply
     // editor for review - only queued once the note is already saved,
     // because the reply editor replaces an open note draft.
-    function queueNote(ticketURL, note, { pasteNote = true, applyScenario = '', replyEmail = '', replyFirstName = '' } = {}) {
+    function queueNote(ticketURL, note, { pasteNote = true, submitNote = false, applyScenario = '', replyEmail = '', replyFirstName = '', updateProperties = false } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
@@ -7621,9 +7662,14 @@ if (isCMSHost()) {
                 rows: pasteNote ? (note?.rows || []) : [],
                 after: pasteNote ? (note?.after || []) : [],
                 pasteNote,
+                // Click Add note after pasting (the API could not save it).
+                submitNote: pasteNote && submitNote,
                 applyScenario,
                 replyEmail,
-                replyFirstName
+                replyFirstName,
+                // Click the properties Update after the send (the API could
+                // not set the scenario fields).
+                updateProperties
             });
             GM_setValue(BV_REFUND_ASSIST_NOTE_KEY, queue);
             return true;
@@ -7689,6 +7735,9 @@ if (isCMSHost()) {
         const message = String(error?.message || error);
         if (message === 'no-api-key') return 'no Freshdesk API key set';
         if (message === 'unauthorized') return 'API key rejected';
+        if (message === 'rate-limited') {
+            return `Freshdesk API rate limit reached for the whole account${error.retryAfter ? ` (free again in ~${Math.ceil(error.retryAfter / 60)} min)` : ''}`;
+        }
         const detail = cleanText(error?.responseBody || '').slice(0, 160);
         return detail ? `${message}: ${detail}` : message;
     }
@@ -7901,10 +7950,18 @@ if (isCMSHost()) {
         const copied = copyText(lastNoteText);
         const ticketId = getTicketNumber(ticketURL);
 
-        // 1. The private note: saved through the API when the agent has a
-        // key; otherwise (and on a dry run) pasted unsaved into the ticket tab.
+        // 1. The private note. With a key it is saved through the API. When
+        // the API is unavailable - no key, or the account-wide rate limit
+        // (429, live 2026-09-30) - the ticket tab does the WHOLE rest through
+        // the Freshdesk UI itself, in order: paste + Add note, Apply the
+        // scenario, check and send the reply, Update the properties. The UI
+        // runs on Freshdesk's own internal API, which kept working while
+        // /api/v2 was blocked. A dry run only pastes the note, unsaved.
         const noteStep = addStep(`Private note on #${ticketId}`);
+        const scenarioName = getRefundedScenarioName();
+        const wantsScenario = !dryRun && done.length > 0;
         let noteSaved = false;
+        let apiProblem = '';
         if (!dryRun && getFreshdeskApiKey()) {
             try {
                 await freshdeskApi('POST', `/api/v2/tickets/${ticketId}/notes`, {
@@ -7914,47 +7971,65 @@ if (isCMSHost()) {
                 noteSaved = true;
                 endStep(noteStep, 'done', `saved via the API${copied ? ', also copied' : ''}`);
             } catch (error) {
-                endStep(noteStep, 'failed', `API: ${describeApiError(error)} - pasting it into the ticket tab instead`);
+                apiProblem = describeApiError(error);
             }
+        } else if (!dryRun) {
+            apiProblem = 'no Freshdesk API key set (Tampermonkey > Freshdesk: Set API Key)';
         }
+
+        let handedToTicketTab = false;
         if (!noteSaved) {
-            const queued = queueNote(ticketURL, note);
-            if (noteStep.state === 'running') {
-                endStep(noteStep, queued ? (dryRun ? 'dry-run' : 'done') : 'failed', [
-                    queued ? 'pasted into the ticket tab, NOT saved - click Add note' : 'could not queue the note',
-                    !dryRun && !getFreshdeskApiKey() ? 'set your key: Tampermonkey > Freshdesk: Set API Key' : '',
-                    copied ? 'copied' : ''
-                ].filter(Boolean).join(' - '));
-            }
+            const queued = queueNote(ticketURL, note, dryRun ? {} : {
+                submitNote: true,
+                applyScenario: wantsScenario ? scenarioName : '',
+                replyEmail: contact.email,
+                replyFirstName: contact.firstName,
+                updateProperties: wantsScenario
+            });
+            handedToTicketTab = queued && !dryRun;
+            endStep(noteStep, queued ? (dryRun ? 'dry-run' : 'done') : 'failed', dryRun
+                ? `pasted into the ticket tab, NOT saved (dry run)${copied ? ' - copied' : ''}`
+                : (queued
+                    ? `${apiProblem} - the ticket tab adds it through Freshdesk itself`
+                    : `${apiProblem} - and it could not be queued for the ticket tab`));
         }
 
         // 2. The scenario - only when money was actually refunded.
-        if (!dryRun && done.length) {
-            const scenarioName = getRefundedScenarioName();
+        if (wantsScenario) {
             const scenarioStep = addStep(`Scenario: ${scenarioName}`);
-            if (!noteSaved) {
-                // The reply editor would replace the unsaved note draft.
-                endStep(scenarioStep, 'failed', 'not applied - the note is not saved yet; save it, then apply the scenario by hand');
+            const replyPlan = contact.email
+                ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / greets ${contact.firstName}` : ''} and sends it (Waiting on End User)`
+                : 'no account email read - the reply is left in the editor for you to send';
+            if (handedToTicketTab) {
+                endStep(scenarioStep, 'done', `Apply + Update done by the ticket tab after the note - ${replyPlan}`);
+            } else if (!noteSaved) {
+                endStep(scenarioStep, 'failed', 'not applied - the note could not be saved or queued');
             } else {
                 try {
                     const result = await applyScenarioViaApi(ticketId, scenarioName);
                     // The customer reply cannot go through the API and must
-                    // be reviewed anyway: the ticket tab clicks Apply so it
-                    // lands in the reply editor, unsent.
+                    // be checked anyway: the ticket tab clicks Apply so it
+                    // lands in the reply editor, then checks and sends it.
                     queueNote(ticketURL, null, {
                         pasteNote: false,
                         applyScenario: scenarioName,
                         replyEmail: contact.email,
                         replyFirstName: contact.firstName
                     });
-                    endStep(scenarioStep, 'done', [
-                        `set ${result.changed.join(', ') || 'nothing new'} (${result.source})`,
-                        contact.email
-                            ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / "Hello ${contact.firstName}"` : ''} and sends it (Waiting on End User)`
-                            : 'no account email read - the reply is left in the editor for you to send'
-                    ].join(' - '));
+                    endStep(scenarioStep, 'done', `set ${result.changed.join(', ') || 'nothing new'} (${result.source}) - ${replyPlan}`);
                 } catch (error) {
-                    endStep(scenarioStep, 'failed', `API: ${describeApiError(error)}`);
+                    // The note is saved; let the ticket tab do the scenario in
+                    // the UI instead of giving up on it.
+                    const queued = queueNote(ticketURL, null, {
+                        pasteNote: false,
+                        applyScenario: scenarioName,
+                        replyEmail: contact.email,
+                        replyFirstName: contact.firstName,
+                        updateProperties: true
+                    });
+                    endStep(scenarioStep, queued ? 'done' : 'failed', queued
+                        ? `API: ${describeApiError(error)} - the ticket tab applies it and clicks Update instead - ${replyPlan}`
+                        : `API: ${describeApiError(error)}`);
                 }
             }
         }
@@ -7992,7 +8067,9 @@ if (isCMSHost()) {
 
         // Only a run where everything worked closes CMS: anything that failed
         // stays on screen in this panel, which is where it is explained.
-        const allGood = !dryRun && cancelOk && noteSaved && !failed.length && !skipped.length &&
+        // Handed to the ticket tab counts as done: bringing that tab forward is
+        // exactly what lets it finish the job.
+        const allGood = !dryRun && cancelOk && (noteSaved || handedToTicketTab) && !failed.length && !skipped.length &&
             steps.every(step => step.state !== 'failed');
         if (allGood) await handOffToTicket(ticketId);
     }
@@ -11232,6 +11309,56 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       : { problem: 'clicked Send, but the reply is still open - check the ticket', changed };
   }
 
+  // Add note, the way the agent does it: Froala's model synced first (the
+  // button stays disabled until Freshdesk sees content), then the note
+  // editor's own submit, then wait for the editor to close.
+  async function submitNoteEditor(editor) {
+    syncFroala(editor);
+    const button = await waitFor(() => {
+      const candidate = Array.from(document.querySelectorAll('button[data-test-id="submit"]'))
+        .find(item => isShown(item) && /add note/i.test(item.textContent || ''));
+      return candidate && !candidate.disabled ? candidate : null;
+    }, { timeout: 6000, pollMs: 150 });
+    if (!button) return 'the Add note button never became clickable';
+    fireClick(button);
+    const closed = await waitFor(() => (editor.isConnected && isShown(editor) ? null : true), { timeout: 15000, pollMs: 300 });
+    return closed ? '' : 'clicked Add note, but the note editor is still open';
+  }
+
+  // The properties pane's Update, for the scenario fields (type, tag, agent)
+  // when the API could not set them. Disabled = nothing left unsaved.
+  async function clickPropertiesUpdate() {
+    const button = await waitFor(() => {
+      const candidate = document.querySelector('button[data-test-id="ticket-properties-btn"]');
+      return candidate && isShown(candidate) && !candidate.disabled ? candidate : null;
+    }, { timeout: 5000, pollMs: 200 });
+    if (!button) return 'nothing to update';
+    fireClick(button);
+    const saved = await waitFor(() => (button.disabled || !button.isConnected ? true : null), { timeout: 15000, pollMs: 300 });
+    return saved ? 'updated' : 'clicked Update, but it did not finish';
+  }
+
+  // Apply the scenario, check and send its reply, then (UI path) Update.
+  async function runScenarioAndSend(entry) {
+    const problem = await applyScenarioInUi(entry.applyScenario);
+    if (problem) {
+      showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
+      return;
+    }
+    const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName));
+    const fixes = result.changed && result.changed.length ? ` (fixed ${result.changed.join('; ')})` : '';
+    if (!result.sent) {
+      showStatus(`Refund Assist: "${entry.applyScenario}" applied but the reply was NOT sent - ${result.problem}${fixes}. Review it and send by hand.`, true);
+      return;
+    }
+    let update = '';
+    if (entry.updateProperties) {
+      const outcome = await clickPropertiesUpdate();
+      update = outcome === 'updated' ? ', properties updated' : (outcome === 'nothing to update' ? '' : ` - ${outcome}`);
+    }
+    showStatus(`Refund Assist: reply sent to the customer, ticket set to Waiting on End User${update}${fixes}.`);
+  }
+
   async function consume(attempt = 0) {
     if (pasting) return;
     const ticketId = getTicketId();
@@ -11253,18 +11380,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       // reply twice. A failure is reported and left to the agent instead.
       removeEntry(entry);
       try {
-        const problem = await applyScenarioInUi(entry.applyScenario);
-        if (problem) {
-          showStatus(`Refund Assist: could not apply "${entry.applyScenario}" (${problem}). Apply it by hand.`, true);
-        } else {
-          const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName));
-          const fixes = result.changed && result.changed.length ? ` (fixed ${result.changed.join('; ')})` : '';
-          if (result.sent) {
-            showStatus(`Refund Assist: reply sent to the customer, ticket set to Waiting on End User${fixes}.`);
-          } else {
-            showStatus(`Refund Assist: "${entry.applyScenario}" applied but the reply was NOT sent - ${result.problem}${fixes}. Review it and send by hand.`, true);
-          }
-        }
+        await runScenarioAndSend(entry);
       } catch (error) {
         console.error('[BV Refund Assist] Applying the scenario failed.', error);
         showStatus(`Refund Assist: applying "${entry.applyScenario}" failed. Apply it by hand.`, true);
@@ -11284,12 +11400,29 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     pasting = true;
     try {
       editor.focus();
-      if (writeNote(editor, entry)) {
-        removeEntry(entry);
+      if (!writeNote(editor, entry)) return;
+      removeEntry(entry);
+      if (!entry.submitNote) {
         showStatus('Refund Assist: summary pasted into a private note - click Add note to save it.');
+        return;
       }
+      // The API could not save it (no key / account rate limit): the UI does
+      // the whole rest, in the order the agent would.
+      const notProblem = await submitNoteEditor(editor);
+      if (notProblem) {
+        showStatus(`Refund Assist: the note is pasted but NOT saved - ${notProblem}. Click Add note${entry.applyScenario ? `, then apply "${entry.applyScenario}"` : ''} by hand.`, true);
+        return;
+      }
+      if (!entry.applyScenario) {
+        showStatus('Refund Assist: private note saved.');
+        return;
+      }
+      showStatus(`Refund Assist: private note saved - applying "${entry.applyScenario}"...`);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      await runScenarioAndSend(entry);
     } catch (error) {
-      console.error('[BV Refund Assist] Could not paste the summary.', error);
+      console.error('[BV Refund Assist] Could not finish the ticket steps.', error);
+      showStatus('Refund Assist: something failed on the ticket - check the note, the reply and the properties.', true);
     } finally {
       pasting = false;
     }
