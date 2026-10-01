@@ -31,6 +31,30 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.73.0 - next free row by A-or-B, cleanup of test/dry-run/🧠 (same day)
+
+Sebastian: some agents (Adrian) leave column A empty and the row then pastes wrong; "¿comprobación
+de las primeras 2 columnas?". Measured on the real log (read-only): `count(B)+2` aimed at a USED
+row on four tabs - Altitude+ 1405 (real end 1407), MSN 577 (579), RootSport 265 (266), CHSN 163
+(163) - because rows with **B** empty pull the count down (the writer then refused "row not
+empty"). Rows with A empty exist too (FoxOne). And **gviz drops empty rows from its CSV** - leading
+and internal, proven on the test sheet - so positions cannot be read off a CSV. Now both
+`fetchNextRefundRow` (GM_xhr) and the sheet writer's `findLastUsedRow` binary-search "anything in
+A:B from row X down?" asked as `range=A<x>:B20000&tq=select count(A), count(B)` - **counts only,
+no cell contents** - ~15 queries; `invalid_range` (start past the tab's grid) = nothing. Writer
+then steps over up to 5 rows whose A:Z is not empty, and confirms by that row reading non-empty.
+Verified live: new targets 1408 / 580 / 267 / 164 / TBL 141, all empty. (While testing, a stray
+paste hit the test sheet's B8; restored with the toolbar Undo - Ctrl+Z keypresses did nothing
+there.)
+
+Removed on request: the sheet **test mode** (menu, `@match` of the test sheet, its GM flag is
+deleted at startup), the **Refund: debug logging** and **Refund: toggle dry run** menu commands
+and the panel's dry-run checkbox. The dry-run/debug flags are now read from the page attribute
+only (`<html data-bv-refund-dry-run="true">`, used for money-free live tests) and their stored GM
+values are deleted at startup - with the menu gone a stored dry run would have silently stopped
+every refund from confirming. The 🧠 Case-helper float is gone ("ya ese no lo voy a usar"); 📋
+takes the corner (right 20px). The claude.ai consumer (Feature 11) is still in the file, unused.
+
 ### 3.72.0 - surviving Freshdesk's account-wide API rate limit (same day)
 
 Sebastian's run on #361929: "Private note: API http-429" → note pasted unsaved, scenario not

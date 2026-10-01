@@ -572,7 +572,9 @@ async function asyncChecks() {
 
     const css = dom.styles[0].textContent;
     check('it floats rather than sitting in a container', /position: fixed/.test(css), true);
-    check('one 12px gap left of the refund float (20 + 52 + 12)', /right: 84px/.test(css), true);
+    // 2026-09-30: the corner itself - the refund float lives on CMS now and
+    // the Case helper float is gone.
+    check('it takes the corner itself (20px)', /right: 20px/.test(css), true);
     check('sharing its baseline', /bottom: 20px/.test(css), true);
     check('and its round 52px shape', /border-radius: 999px/.test(css) && /width: 52px/.test(css), true);
     check('it sits one layer under the refund panel rather than fighting it', /z-index: 999998/.test(css), true);
@@ -751,37 +753,17 @@ async function asyncChecks() {
   }
 
   {
-    // Both floats, in a readable row: [Case helper] [copy] [refund].
+    // 2026-09-30: the 🧠 Case helper float was removed on request - only the
+    // copy float is installed, and a leftover 🧠 from an older version goes.
     const dom = fakeDom();
     const api = load({ document: dom.doc, location: { pathname: '/a/tickets/352003', origin: 'x' } });
 
     api.installLauncher();
     api.installLauncher();
 
-    const copy = dom.byId.get('better-freshdesk-copy-case');
-    const claude = dom.byId.get('better-freshdesk-case-to-claude');
-    check('the copy float is there', Boolean(copy), true);
-    check('the Case helper float is there too', Boolean(claude), true);
-    check('and neither is duplicated by a second pass', dom.appended.filter(n => n.tagName === 'BUTTON').length, 2);
-    check('the Case helper one shows the brain', claude && claude.textContent, '\u{1F9E0}');
-    check('right-click is wired, so the chat can be changed', typeof (claude && claude.listeners.contextmenu), 'function');
-    check('its tooltip says how to change the link', /right-click/i.test((claude && claude.title) || ''), true);
-
-    const css = dom.styles[0].textContent;
-    check('it sits one slot further left, clear of the copy float', /right: 148px/.test(css), true);
-    // The gap this closes: the base rule named only the copy button, so the
-    // Case helper one rendered as a bare inline <button> at the bottom of the
-    // page. Both ids have to be in the rule that makes them floats.
-    check(
-      'both floats are in the rule that positions them',
-      css.indexOf('#better-freshdesk-copy-case, #better-freshdesk-case-to-claude {') !== -1 &&
-        /position: fixed/.test(css),
-      true
-    );
-    check('and is coloured differently', /#a8492c/.test(css), true);
-
-    api.installLauncher();
-    check('still just the two', dom.appended.filter(n => n.tagName === 'BUTTON').length, 2);
+    check('the copy float is there', Boolean(dom.byId.get('better-freshdesk-copy-case')), true);
+    check('the Case helper float is not installed any more', dom.byId.has('better-freshdesk-case-to-claude'), false);
+    check('and a second pass adds nothing', dom.appended.filter(n => n.tagName === 'BUTTON').length, 1);
   }
 
   {

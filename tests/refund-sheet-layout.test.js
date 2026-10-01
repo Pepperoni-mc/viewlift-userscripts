@@ -60,9 +60,6 @@ const sandbox = `
   ${extractConst(/const REFUND_LAYOUT_DATE_COMMENTS = [^\n]+/, 'REFUND_LAYOUT_DATE_COMMENTS')}
   ${extractConst(/const REFUND_LAYOUT_DATE_ONLY = [^\n]+/, 'REFUND_LAYOUT_DATE_ONLY')}
   ${extractConst(/const REFUND_SHEETS = \{[\s\S]*?\n  \};/, 'REFUND_SHEETS')}
-  ${extractConst(/const REFUND_SHEET_TEST_ID = [^\n]+/, 'REFUND_SHEET_TEST_ID')}
-  ${extractConst(/const REFUND_SHEET_TEST_KEY = [^\n]+/, 'REFUND_SHEET_TEST_KEY')}
-  ${extractFunction(/function isRefundSheetTestMode/, 'isRefundSheetTestMode')}
   ${extractFunction(/function getRefundSheetTarget/, 'getRefundSheetTarget')}
   ${extractFunction(/function refundSheetUrl/, 'refundSheetUrl')}
   ${extractFunction(/function readRefundFields/, 'readRefundFields')}
@@ -239,73 +236,102 @@ Object.keys(HEADERS).forEach(client => {
 }
 
 // ---------------------------------------------------------------------------
-// Where to land in the sheet. Row 1 is the header, so the first free row is
-// count + 2 - checked against the tbl tab, whose count was 101 with data
-// ending on row 102.
+// Where to land in the sheet (2026-09-30). The first free row is the one
+// after the LAST row with anything in column A or B - not count(B) + 2,
+// which aimed at an already-used row whenever a row had B empty (Altitude+:
+// 1405 for a real end of 1407). Found by binary search on "anything in A:B
+// from row X down?", asked as counts only. The fake sheet below answers
+// those queries from a list of used rows, the way gviz does.
 // ---------------------------------------------------------------------------
-{
+function fakeSheet(usedRowsA, usedRowsB, { gridRows = 5000 } = {}) {
   const requests = [];
-  const api2 = load({
-    GM_xmlhttpRequest: options => {
-      requests.push(options);
-      options.onload({ responseText: '"count Freshdesk ID"\n"101"\n' });
+  const stub = options => {
+    requests.push(options);
+    const range = (decodeURIComponent(options.url).match(/range=A(\d+):B(\d+)/) || []);
+    const from = Number(range[1]);
+    if (!range.length) { options.onload({ status: 200, responseText: 'not a count at all' }); return; }
+    if (from > gridRows) {
+      options.onload({ status: 400, responseText: '{"status":"error","errors":[{"reason":"invalid_range"}]}' });
+      return;
     }
+    const a = usedRowsA.filter(row => row >= from).length;
+    const b = usedRowsB.filter(row => row >= from).length;
+    options.onload({
+      status: 200,
+      responseText: a || b ? `"count ","count "\n"${a}","${b}"\n` : '"count ","count "\n'
+    });
+  };
+  return { requests, stub };
+}
+
+function landOn(spec) {
+  return new Promise(resolve => {
+    const sheet = fakeSheet(spec.a, spec.b, spec);
+    const api2 = load({ GM_xmlhttpRequest: sheet.stub });
+    api2.fetchNextRefundRow(spec.key || 'tbl', row => resolve({ row, requests: sheet.requests }));
   });
-
-  let landed = null;
-  api2.fetchNextRefundRow('tbl', row => { landed = row; });
-  check('101 records means the next free row is 103', landed, 103);
-  check('it asks only for a count, never for the rows', /select%20count\(B\)/.test(requests[0].url), true);
-  check('and asks the right tab', /gid=469886271/.test(requests[0].url), true);
-  check('over https to the sheet', requests[0].url.indexOf('https://docs.google.com/spreadsheets/') , 0);
 }
 
-{
-  const api2 = load({ GM_xmlhttpRequest: options => options.onload({ responseText: 'not a count at all' }) });
-  let landed = null;
-  api2.fetchNextRefundRow('tbl', row => { landed = row; });
-  check('an unparsable answer reports 0 so the caller can fall back', landed, 0);
+const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+async function rowChecks() {
+  {
+    const { row, requests } = await landOn({ a: range(1, 102), b: range(1, 102) });
+    check('a full tab ending on row 102 lands on 103', row, 103);
+    check('it asks only for counts, never for the cells', requests.every(r => /select%20count\(A\)%2C%20count\(B\)/.test(r.url)), true);
+    check('and asks the right tab', requests.every(r => /gid=469886271/.test(r.url)), true);
+    check('over https to the sheet', requests[0].url.indexOf('https://docs.google.com/spreadsheets/'), 0);
+    check('in a bounded number of queries', requests.length <= 20, true);
+  }
+  {
+    // The Altitude+ shape: some rows with B left empty, the data ends at 1407.
+    const b = range(1, 1407).filter(r => r % 117 !== 0);
+    const { row } = await landOn({ a: range(1, 1407), b });
+    check('rows with column B empty no longer pull the target up into used rows', row, 1408);
+  }
+  {
+    // A row with only column A filled at the very end (B empty there).
+    const { row } = await landOn({ a: range(1, 50), b: range(1, 49) });
+    check('a last row with only column A counts as used', row, 51);
+  }
+  {
+    // The FoxOne shape: A left empty, B filled.
+    const { row } = await landOn({ a: range(1, 60).filter(r => r !== 60), b: range(1, 60) });
+    check('a last row with only column B counts as used', row, 61);
+  }
+  {
+    // A completely empty row in the middle must not stop the search there.
+    const used = range(1, 30).concat(range(33, 40));
+    const { row } = await landOn({ a: used, b: used });
+    check('an empty row in the middle is jumped over', row, 41);
+  }
+  {
+    const { row } = await landOn({ a: [1], b: [1] });
+    check('a tab with only its header lands on row 2', row, 2);
+  }
+  {
+    const { row } = await landOn({ a: range(1, 99), b: range(1, 99), gridRows: 120 });
+    check('a small grid (invalid_range past its end) still works', row, 100);
+  }
+  {
+    const row = await new Promise(resolve => load({ GM_xmlhttpRequest: o => o.onerror() }).fetchNextRefundRow('tbl', resolve));
+    check('a network error reports 0 so the caller can fall back', row, 0);
+  }
+  {
+    const row = await new Promise(resolve => load({ GM_xmlhttpRequest: o => o.ontimeout() }).fetchNextRefundRow('tbl', resolve));
+    check('a timeout reports 0 too', row, 0);
+  }
+  {
+    const row = await new Promise(resolve => load({ GM_xmlhttpRequest: () => { throw new Error('blocked'); } }).fetchNextRefundRow('tbl', resolve));
+    check('a blocked request still calls back with 0', row, 0);
+  }
 }
 
-{
-  const api2 = load({ GM_xmlhttpRequest: options => options.onerror() });
-  let landed = null;
-  api2.fetchNextRefundRow('tbl', row => { landed = row; });
-  check('a network error reports 0 rather than throwing', landed, 0);
-}
-
-{
-  const api2 = load({ GM_xmlhttpRequest: options => options.ontimeout() });
-  let landed = null;
-  api2.fetchNextRefundRow('tbl', row => { landed = row; });
-  check('a timeout reports 0 too', landed, 0);
-}
-
-{
-  const api2 = load({ GM_xmlhttpRequest: () => { throw new Error('blocked'); } });
-  let landed = null;
-  api2.fetchNextRefundRow('tbl', row => { landed = row; });
-  check('a blocked request still calls back', landed, 0);
-}
-
-{
-  const api2 = load({ GM_xmlhttpRequest: options => options.onload({ responseText: '"count Freshdesk ID"\n"0"\n' }) });
-  let landed = null;
-  api2.fetchNextRefundRow('lnp', row => { landed = row; });
-  check('an empty tab lands on row 2, under the header', landed, 2);
-}
-
-// Test mode (2026-09-30): every row goes to the test spreadsheet's first tab.
-{
-  const testApi = load({ gm: { bvRefundSheetTestMode: true } });
-  check('test mode opens the test spreadsheet', /1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4/.test(testApi.refundSheetUrl('msn')), true);
-  check('test mode always uses its first tab', /gid=0#gid=0$/.test(testApi.refundSheetUrl('msn')), true);
-  check('outside test mode the real refund log is used', /1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/.test(load({}).refundSheetUrl('msn')), true);
-}
-
-console.log(
-  failures
-    ? '\n' + failures + ' check(s) FAILED'
-    : '\nAll checks passed against the shipped source.'
-);
-process.exit(failures ? 1 : 0);
+rowChecks().then(() => {
+  console.log(
+    failures
+      ? '\n' + failures + ' check(s) FAILED'
+      : '\nAll checks passed against the shipped source.'
+  );
+  process.exit(failures ? 1 : 0);
+});

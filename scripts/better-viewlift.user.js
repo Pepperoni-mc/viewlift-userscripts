@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.72.0
+// @version      3.73.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -12,7 +12,6 @@
 // @match        https://cms.monumentalsportsnetwork.com/*
 // @match        https://claude.ai/*
 // @match        https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/*
-// @match        https://docs.google.com/spreadsheets/d/1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @run-at       document-idle
@@ -144,16 +143,54 @@
       return response.text();
     }
 
-    async function countColumnB(gid) {
-      const text = await gviz(gid, 'tq=' + encodeURIComponent('select count(B)'));
-      const match = text.match(/"(\d+)"\s*$/);
-      if (!match) throw new Error('could not read the row count');
-      return Number(match[1]);
-    }
-
     async function rowIsEmpty(gid, row) {
       const text = await gviz(gid, `headers=0&range=A${row}:Z${row}`);
       return !text.replace(/[",\s]/g, '');
+    }
+
+    // The last row with anything in column A OR B (2026-09-30). "count(B) + 2"
+    // was wrong whenever someone left B empty on a row - 12 such rows in
+    // Altitude+, 9 in MSN B2C, 6 in RootSport - so it aimed at a row that was
+    // already used and every write was refused. Rows can also be left with A
+    // empty (FoxOne). gviz cannot report row numbers and drops empty rows from
+    // its CSV (measured on the test sheet), so the one question it answers
+    // reliably - "is there anything in A:B from row X down?" - is binary
+    // searched instead (~15 small queries).
+    async function findLastUsedRow(gid) {
+      const END = 20000;
+      // Counts only - numbers, never the cells themselves. A start past the
+      // tab's grid answers invalid_range, which also means "nothing below".
+      const hasDataFrom = async from => {
+        let text;
+        try {
+          text = await gviz(gid, `headers=0&range=A${from}:B${END}&tq=` + encodeURIComponent('select count(A), count(B)'));
+        } catch (error) {
+          if (/http-400/.test(String(error && error.message))) return false;
+          throw error;
+        }
+        if (/invalid_range/i.test(text)) return false;
+        const line = text.trim().split('\n')[1] || '';
+        return (line.match(/\d+/g) || []).map(Number).some(count => count > 0);
+      };
+      if (!await hasDataFrom(1)) return 1;
+      let low = 1;          // invariant: something at or below `low`
+      let high = END + 1;   // invariant: nothing at or below `high`
+      while (high - low > 1) {
+        const mid = Math.floor((low + high) / 2);
+        if (await hasDataFrom(mid)) low = mid;
+        else high = mid;
+      }
+      return low;
+    }
+
+    // First row after the last used one whose A:Z is really empty - a row
+    // with only later columns filled is stepped over, never written into.
+    async function findTargetRow(gid) {
+      let row = (await findLastUsedRow(gid)) + 1;
+      for (let step = 0; step < 5; step += 1, row += 1) {
+        if (await rowIsEmpty(gid, row)) return row;
+      }
+      throw new Error(`no empty row found after row ${row - 5}`);
     }
 
     async function write(entry) {
@@ -162,14 +199,12 @@
       const input = await waitUntil(() => document.getElementById('waffle-rich-text-editor'), 30000);
       if (!nameBox || !input) throw new Error('the sheet did not finish loading');
 
-      const before = await countColumnB(gid);
-      const row = before + 2;
+      const row = await findTargetRow(gid);
       if (entry.expectedRow && entry.expectedRow !== row) {
-        // Someone added a row since the tab was opened - still fine, as long
-        // as the new target is empty; it is re-checked right below.
-        console.info(`[BV Refund Sheet] Expected row ${entry.expectedRow}, the sheet now ends at ${row - 1}.`);
+        // Someone added a row since the tab was opened - fine: the target is
+        // re-found from the sheet itself and was just checked empty.
+        console.info(`[BV Refund Sheet] Expected row ${entry.expectedRow}, writing row ${row}.`);
       }
-      if (!await rowIsEmpty(gid, row)) throw new Error(`row ${row} is not empty`);
 
       nameBox.focus();
       nameBox.value = `A${row}`;
@@ -183,9 +218,10 @@
       input.focus();
       input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
 
+      // Saved = that exact row now reads non-empty on the server.
       for (let attempt = 0; attempt < 20; attempt += 1) {
         await sleep(750);
-        if (await countColumnB(gid) === before + 1) return row;
+        if (!await rowIsEmpty(gid, row)) return row;
       }
       throw new Error(`pasted on row ${row}, but Google never saved it`);
     }
@@ -1403,25 +1439,17 @@
     lnp:       { gid: '0',          columns: REFUND_LAYOUT_COMMENTS_DATE }
   };
 
-  // Test mode (Tampermonkey menu "Refund sheet: test mode"): every row goes
-  // to the test spreadsheet's first tab instead of the real refund log. Only
-  // a sheet the script is @match-ed on can be written to.
-  const REFUND_SHEET_TEST_ID = '1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4';
-  const REFUND_SHEET_TEST_KEY = 'bvRefundSheetTestMode';
-
-  function isRefundSheetTestMode() {
-    try {
-      return GM_getValue(REFUND_SHEET_TEST_KEY, false) === true;
-    } catch (error) {
-      return false;
-    }
+  // The test-sheet mode used while building the sheet writer was removed on
+  // request (2026-09-30); its stored flag is cleared so it can never linger.
+  try {
+    GM_deleteValue('bvRefundSheetTestMode');
+  } catch (error) {
+    // Nothing stored - fine.
   }
 
   function getRefundSheetTarget(sheetKey) {
     const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
-    return isRefundSheetTestMode()
-      ? { sheetId: REFUND_SHEET_TEST_ID, gid: '0', test: true }
-      : { sheetId: REFUND_SHEET_ID, gid: sheet.gid, test: false };
+    return { sheetId: REFUND_SHEET_ID, gid: sheet.gid, test: false };
   }
 
   function refundSheetUrl(sheetKey) {
@@ -2460,35 +2488,52 @@
     return REFUND_SHEETS[stored] ? stored : 'tbl';
   }
 
-  // How many records the client tab already holds, so the sheet can be
-  // opened ON the next empty row instead of at the bottom of the column
-  // with a Ctrl+Up to follow.
+  // The first free row of the client tab, so the sheet opens ON it.
   //
-  // `select count(B)` rather than the sheet contents on purpose: the answer
-  // is a single number, so no customer data leaves the sheet to work out
-  // where to put the cursor. Row 1 is the header, so the first free row is
-  // count + 2 (verified against the tbl tab: count 101, data ends at 102).
+  // It used to be `count(B) + 2`, which is only right when no row has B
+  // empty - measured 2026-09-30: Altitude+ aimed at 1405 (used) for a real
+  // end of 1407, MSN 577 for 579, RootSport 265 for 266, CHSN 163 for 163.
+  // Now: the last row with anything in column A or B, found by binary search
+  // on "is there anything in A:B from row X down?" (gviz drops empty rows, so
+  // it cannot report positions). Still counts only - no customer data leaves
+  // the sheet for this. The sheet-side writer re-finds the row before pasting.
   function fetchNextRefundRow(sheetKey, onDone) {
     const target = getRefundSheetTarget(sheetKey);
-    const url = 'https://docs.google.com/spreadsheets/d/' + target.sheetId +
-      '/gviz/tq?tqx=out:csv&gid=' + target.gid + '&tq=' + encodeURIComponent('select count(B)');
+    const END = 20000;
+    const base = 'https://docs.google.com/spreadsheets/d/' + target.sheetId +
+      '/gviz/tq?tqx=out:csv&gid=' + target.gid + '&headers=0';
 
-    try {
+    const hasDataFrom = from => new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET',
-        url,
+        url: base + '&range=A' + from + ':B' + END + '&tq=' + encodeURIComponent('select count(A), count(B)'),
         timeout: 8000,
         onload: function (response) {
-          const match = String(response.responseText || '').match(/"(\d+)"\s*$/);
-          onDone(match ? Number(match[1]) + 2 : 0);
+          const text = String(response.responseText || '');
+          if (/invalid_range/i.test(text)) { resolve(false); return; }
+          if (response.status < 200 || response.status >= 300) { reject(new Error('http-' + response.status)); return; }
+          const line = text.trim().split('\n')[1] || '';
+          resolve((line.match(/\d+/g) || []).map(Number).some(count => count > 0));
         },
-        onerror: function () { onDone(0); },
-        ontimeout: function () { onDone(0); }
+        onerror: function () { reject(new Error('network-error')); },
+        ontimeout: function () { reject(new Error('timeout')); }
       });
-    } catch (error) {
-      console.warn('[Refund] Could not ask the sheet how long it is.', error);
+    });
+
+    (async function () {
+      if (!await hasDataFrom(1)) return 2;
+      let low = 1;
+      let high = END + 1;
+      while (high - low > 1) {
+        const mid = Math.floor((low + high) / 2);
+        if (await hasDataFrom(mid)) low = mid;
+        else high = mid;
+      }
+      return low + 1;
+    })().then(onDone, function (error) {
+      console.warn('[Refund] Could not find the first free row.', error);
       onDone(0);
-    }
+    });
   }
 
   function getRefundSheetRow() {
@@ -2535,7 +2580,7 @@
   function copyForRefundSheet({ background = false } = {}) {
     const result = getRefundSheetRow();
     const sheetUrl = refundSheetUrl(result.sheetKey);
-    const client = result.sheetKey.toUpperCase() + (isRefundSheetTestMode() ? ' (TEST SHEET)' : '');
+    const client = result.sheetKey.toUpperCase();
 
     GM_setClipboard(result.row.join('\t'));
     markAllFieldStates();
@@ -2551,7 +2596,7 @@
         setStatus(queued
           ? 'Opened ' + client + ' row ' + nextRow + ' - the row is pasted there automatically (also on your clipboard).'
           : 'Copied for ' + client + '. Opened row ' + nextRow + ' - just press Ctrl+V.');
-        resolve({ sheetKey: result.sheetKey, row: nextRow, queued, test: isRefundSheetTestMode() });
+        resolve({ sheetKey: result.sheetKey, row: nextRow, queued });
         return;
       }
 
@@ -2561,7 +2606,7 @@
       // the target row is empty.
       GM_openInTab(sheetUrl + '&range=B1048576', { active: true, insert: true });
       setStatus('Copied for ' + client + '. Row count unavailable - in column B press Ctrl+Up, ArrowDown, then Ctrl+V.');
-      resolve({ sheetKey: result.sheetKey, row: 0, queued: false, test: isRefundSheetTestMode() });
+      resolve({ sheetKey: result.sheetKey, row: 0, queued: false });
     }));
   }
 
@@ -2587,26 +2632,8 @@
         return Promise.resolve({ queued: false, row: 0, reason: 'the refund panel is not on this page' });
       }
       return copyForRefundSheet({ background: true });
-    },
-    isTestMode: () => isRefundSheetTestMode()
-  };
-
-  try {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('Refund sheet: toggle test mode (rows go to the test sheet)', function () {
-        const next = !isRefundSheetTestMode();
-        GM_setValue(REFUND_SHEET_TEST_KEY, next);
-        bvNotify(next ? 'Refund sheet TEST MODE on - rows go to the test spreadsheet.' : 'Refund sheet test mode off - rows go to the real refund log.', { level: 'info' });
-        try {
-          setStatus(next ? 'TEST MODE: rows go to the test sheet.' : 'Rows go to the real refund log again.');
-        } catch (error) {
-          // Panel not open.
-        }
-      });
     }
-  } catch (error) {
-    console.warn('[Refund] Could not register the test-mode menu command.', error);
-  }
+  };
 
   function markFieldState(field) {
     const importantFields = [
@@ -6144,20 +6171,10 @@ if (isCMSHost()) {
         } catch (error) {
             // No documentElement yet - fall through to the other sources.
         }
-        if (window[`__${key}`] === true) return true;
-        try {
-            return GM_getValue(key, false) === true;
-        } catch (error) {
-            return false;
-        }
+        return window[`__${key}`] === true;
     }
 
     function writeFlag(key, value) {
-        try {
-            GM_setValue(key, value === true);
-        } catch (error) {
-            // Storage is optional here - the other two channels still work.
-        }
         window[`__${key}`] = value === true;
         // Mirrored so the state is visible (and clearable) from DevTools.
         try {
@@ -6794,7 +6811,6 @@ if (isCMSHost()) {
         start: options => startWorkflow(options || {}),
         isActive: () => workflowActive,
         isDryRun: () => readFlag(DRY_RUN_KEY),
-        setDryRun: value => writeFlag(DRY_RUN_KEY, value === true),
         getTicketURL: () => getFreshdeskTicketURL()
     };
 
@@ -6822,26 +6838,18 @@ if (isCMSHost()) {
         if (workflowActive) scheduleRun(60);
     });
 
-    function registerMenuCommands() {
-        if (typeof GM_registerMenuCommand !== 'function') return;
+    // The debug / dry-run menu commands were removed on request
+    // (2026-09-30). Their flags are now read from the page attribute only
+    // (<html data-bv-refund-dry-run="true">, for testing without money), and
+    // anything an older version STORED is cleared - with the menu gone, a
+    // stored dry run would otherwise stay on invisibly and no refund would
+    // ever be confirmed.
+    function clearStoredFlags() {
         try {
-            GM_registerMenuCommand('Refund: toggle debug logging', function () {
-                const next = !readFlag(DEBUG_KEY);
-                writeFlag(DEBUG_KEY, next);
-                bvNotify(`Refund debug logging ${next ? 'ON' : 'OFF'} - see the console, prefix [BV Refund].`, { level: 'info', ttl: 6000 });
-            });
-            GM_registerMenuCommand('Refund: toggle dry run (fill, do not submit)', function () {
-                const next = !readFlag(DRY_RUN_KEY);
-                writeFlag(DRY_RUN_KEY, next);
-                bvNotify(
-                    next
-                        ? 'Refund DRY RUN on - fields get filled, nothing is submitted.'
-                        : 'Refund dry run off - refunds submit automatically again.',
-                    { level: next ? 'warn' : 'info', ttl: 8000 }
-                );
-            });
+            GM_deleteValue(DEBUG_KEY);
+            GM_deleteValue(DRY_RUN_KEY);
         } catch (error) {
-            console.warn('[Better CMS Refund] Could not register the debug menu commands.', error);
+            // Nothing stored - fine.
         }
     }
 
@@ -6852,7 +6860,7 @@ if (isCMSHost()) {
         }
 
         observer.observe(document.body, { childList: true, subtree: true });
-        registerMenuCommands();
+        clearStoredFlags();
     }
 
     init();
@@ -8034,13 +8042,11 @@ if (isCMSHost()) {
             }
         }
 
-        // 3. The refund log row, through the Refund Capture panel. A dry run
-        // only sends it when the sheet is in test mode (it then goes to the
-        // test spreadsheet), so the whole chain can be tried without money.
+        // 3. The refund log row, through the Refund Capture panel - only
+        // for refunds that really happened.
         const sheetBridge = window.__bvRefundSheet;
-        const sheetTest = Boolean(sheetBridge?.isTestMode?.());
-        if (done.length && (!dryRun || sheetTest)) {
-            const sheetStep = addStep(`Refund log row${sheetTest ? ' (TEST SHEET)' : ''}`);
+        if (done.length && !dryRun) {
+            const sheetStep = addStep('Refund log row');
             if (!sheetBridge?.fillAndSend) {
                 endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
             } else {
@@ -8317,10 +8323,6 @@ if (isCMSHost()) {
         body.appendChild(el('label', { style: 'display:block;margin-top:6px;cursor:pointer' }, [
             el('input', { type: 'checkbox', checked: cancelFirst, onchange: event => { cancelFirst = event.target.checked; render(); } }),
             ' Cancel the subscription first (CANCEL NOW)'
-        ]));
-        body.appendChild(el('label', { style: 'display:block;margin-top:4px;cursor:pointer' }, [
-            el('input', { type: 'checkbox', checked: isDryRun(), onchange: event => { getBridge()?.setDryRun?.(event.target.checked); render(); } }),
-            ' Dry run (fill every dialog, submit nothing)'
         ]));
 
         const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
@@ -12196,11 +12198,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     style.textContent = `
       #${LAUNCHER_ID}, #${CLAUDE_LAUNCHER_ID} {
         position: fixed !important;
-        /* 20px from the corner, then one 52px + 12px step per button. The
-           refund panel used to float here too, which is where these
-           measurements come from; it now mounts inline under the toolbar,
-           so the corner is theirs. */
-        right: 84px !important;
+        /* The corner itself: the Refund Capture float lives on CMS now and
+           the 🧠 float is gone, so on Freshdesk this is the only one. */
+        right: 20px !important;
         bottom: 20px !important;
         width: 52px !important;
         height: 52px !important;
@@ -12372,15 +12372,10 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 
   // The handlers are reached through arrows on purpose: this table is built
   // while the module is still being defined.
+  // The 🧠 "send the case to a Case helper chat" float was removed on
+  // request (2026-09-30: "ya ese no lo voy a usar"); a copy left on screen by
+  // an older version is taken down by installLauncher().
   const LAUNCHERS = [
-    {
-      id: CLAUDE_LAUNCHER_ID,
-      glyph: '🧠',
-      title: 'Send the whole case to the Case helper chat (right-click to change the link)',
-      ariaLabel: 'Send the whole case to a Case helper chat',
-      click: event => onClaudeLauncherClick(event),
-      contextMenu: event => onClaudeLauncherContextMenu(event)
-    },
     {
       id: LAUNCHER_ID,
       glyph: '📋',
@@ -12391,6 +12386,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   ];
 
   function installLauncher() {
+    document.getElementById(CLAUDE_LAUNCHER_ID)?.remove();
     if (!isTicketPage()) {
       LAUNCHERS.forEach(spec => {
         const stale = document.getElementById(spec.id);
