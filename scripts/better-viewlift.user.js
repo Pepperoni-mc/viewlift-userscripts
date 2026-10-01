@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.73.0
+// @version      3.73.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -3391,7 +3391,7 @@
         <label for="refund-refunder">Refunder</label>
         <select id="refund-refunder">
           <option selected>Sebastian</option>
-          <option>Eric</option>
+          <option>Erick</option>
           <option>Esteban</option>
           <option>Julio</option>
         </select>
@@ -3584,7 +3584,7 @@
 /*
  * Better CMS preference patch:
  * Remembers the selected Refunder value in the Refund Capture panel.
- * This keeps Sebastian/Eric/Esteban/Julio persistent across page refreshes and new CMS users.
+ * This keeps Sebastian/Erick/Esteban/Julio persistent across page refreshes and new CMS users.
  */
 (function () {
   'use strict';
@@ -3595,11 +3595,19 @@
   if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   const REFUNDER_PREF_KEY = 'Better CMS Preferred Refunder';
   const REFUNDER_SELECT_ID = 'refund-refunder';
-  const VALID_REFUNDERS = ['Sebastian', 'Eric', 'Esteban', 'Julio'];
+  // "Erick", not "Eric" (corrected 2026-09-30).
+  const VALID_REFUNDERS = ['Sebastian', 'Erick', 'Esteban', 'Julio'];
 
   function safeGetPreferredRefunder() {
     try {
-      return GM_getValue(REFUNDER_PREF_KEY, '');
+      const stored = GM_getValue(REFUNDER_PREF_KEY, '');
+      // A preference saved under the old misspelling would otherwise be
+      // rejected by VALID_REFUNDERS and silently fall back to Sebastian.
+      if (stored === 'Eric') {
+        GM_setValue(REFUNDER_PREF_KEY, 'Erick');
+        return 'Erick';
+      }
+      return stored;
     } catch (error) {
       return '';
     }
