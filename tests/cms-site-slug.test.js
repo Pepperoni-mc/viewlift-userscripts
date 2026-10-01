@@ -50,6 +50,14 @@ function extractConst(pattern, name) {
   return m[0];
 }
 
+// The organization list lives in the shared prelude, above Feature 3.
+const orgsSrc = (() => {
+  const a = fullSrc.indexOf('  const BV_CMS_ORGANIZATIONS = [');
+  const b = fullSrc.indexOf('\n  }\n', fullSrc.indexOf('function bvCmsOrganizationsForHost', a));
+  if (a < 0 || b < 0) throw new Error('could not find BV_CMS_ORGANIZATIONS');
+  return fullSrc.slice(a, b + 4);
+})();
+
 // bvGetCmsCreds / bvGetSiteForCmsHost / bvNotify live in the shared helper
 // scope above every feature, so they come in as injected stubs - which is also
 // what lets a test say "the session was last on Altitude" without a browser.
@@ -63,11 +71,12 @@ const sandbox = `
   ${extractFunction(/function getMultiBrandSiteRule/, 'getMultiBrandSiteRule')}
   ${extractFunction(/function findCapturedSite/, 'findCapturedSite')}
   ${extractFunction(/function resolveCmsSite/, 'resolveCmsSite')}
-  ${extractFunction(/function warnAboutSiblingBrandSession/, 'warnAboutSiblingBrandSession')}
+  ${orgsSrc}
+  ${extractFunction(/function buildCMSDestination/, 'buildCMSDestination')}
   module.exports = {
     resolveCmsSite,
     getMultiBrandSiteRule,
-    warnAboutSiblingBrandSession,
+    buildCMSDestination,
     getCMSAccountForClient
   };
 `;
@@ -76,6 +85,7 @@ const sandbox = `
 // hostSites: which slug each CMS host was last seen on.
 function load({ capturedSites = [], hostSites = {} } = {}) {
   const notices = [];
+  const stored = {};
   const mod = { exports: {} };
   const creds = {
     authorization: null,
@@ -84,17 +94,19 @@ function load({ capturedSites = [], hostSites = {} } = {}) {
   };
 
   new Function(
-    'module', 'console', 'bvGetCmsCreds', 'bvGetSiteForCmsHost', 'bvNotify',
+    'module', 'console', 'bvGetCmsCreds', 'bvGetSiteForCmsHost', 'bvNotify', 'bvTimingMark', 'GM_setValue',
     sandbox
   )(
     mod,
     { warn: () => {}, log: () => {} },
     () => creds,
     host => creds.hostSites[host] || '',
-    message => notices.push(message)
+    message => notices.push(message),
+    () => {},
+    (key, value) => { stored[key] = value; }
   );
 
-  return { api: mod.exports, notices };
+  return { api: mod.exports, notices, stored };
 }
 
 let failures = 0;
@@ -202,49 +214,38 @@ const schnTicket = {
 }
 
 // ---------------------------------------------------------------------------
-// The part a script cannot fix on the standard host - which tenant the CMS
-// session itself is looking at - is at least said out loud.
+// cms.viewlift.com switches organization like cms-gcp does (3.80.0): it used
+// to get only a warning, so an Altitude session opened KnightTime accounts as
+// an empty shell.
 // ---------------------------------------------------------------------------
-{
-  const { api, notices } = load({
-    capturedSites: ['altitude', 'dirtvision'],
-    hostSites: { 'cms.viewlift.com': 'altitude' }
-  });
+const pendingOf = stored => JSON.parse(stored.betterCmsPendingAccountSwitch || 'null');
 
-  api.warnAboutSiblingBrandSession(dirtTicket);
-  check('a DIRT ticket on an Altitude session warns', notices.length, 1);
-  check(
-    'and the warning names both the brand and what the session is on',
-    /DIRTVision/.test(notices[0]) && /altitude/.test(notices[0]),
-    true
-  );
+{
+  const { api, stored } = load({ hostSites: { 'cms.viewlift.com': 'altitude' } });
+  const href = api.buildCMSDestination(vgkTicket, { email: 'a@b.co', userId: 'abc' });
+  check('a VGK ticket on an Altitude session goes through the v5 picker', href, 'https://cms.viewlift.com/v5/overview?betterSwitch=vegas-golden-knights');
+  check('and returns to the account afterwards', pendingOf(stored).returnUrl, 'https://cms.viewlift.com/users/search/abc');
+  check('as a v5 switch', pendingOf(stored).viaV5, true);
 }
 
 {
-  const { api, notices } = load({
-    capturedSites: ['dirtvision'],
-    hostSites: { 'cms.viewlift.com': 'dirtvision' }
-  });
-
-  api.warnAboutSiblingBrandSession(dirtTicket);
-  check('a DIRT ticket on a DIRT session says nothing', notices.length, 0);
+  const { api, stored } = load({ hostSites: { 'cms.viewlift.com': 'vegas-golden-knights' } });
+  const href = api.buildCMSDestination(vgkTicket, { email: 'a@b.co', userId: 'abc' });
+  check('a VGK ticket on a VGK session goes straight to the account', href, 'https://cms.viewlift.com/users/search/abc');
+  check('still leaving a brand check for the CMS page', pendingOf(stored).key, 'vegas-golden-knights');
+  check('not marked as already switched', pendingOf(stored).viaV5, undefined);
 }
 
 {
-  const { api, notices } = load({ hostSites: {} });
-
-  api.warnAboutSiblingBrandSession(dirtTicket);
-  check('an unknown session says nothing rather than crying wolf', notices.length, 0);
+  const { api } = load({ hostSites: { 'cms.viewlift.com': 'vegas-golden-knights' } });
+  check('Altitude and DIRT get their own picker keys',
+    [api.buildCMSDestination(altitudeTicket, { email: 'a@b.co' }).includes('betterSwitch=altitude'),
+     api.buildCMSDestination(dirtTicket, { email: 'a@b.co' }).includes('betterSwitch=dirtvision')].join(), 'true,true');
 }
 
 {
-  const { api, notices } = load({
-    capturedSites: ['schn'],
-    hostSites: { 'cms-gcp.viewlift.com': 'schn', 'cms.viewlift.com': 'altitude' }
-  });
-
-  api.warnAboutSiblingBrandSession(schnTicket);
-  check('a GCP brand never gets the shared-host warning', notices.length, 0);
+  const { api } = load({ hostSites: { 'cms-gcp.viewlift.com': 'lightning' } });
+  check('a GCP brand still switches on cms-gcp', api.buildCMSDestination(schnTicket, { email: 'a@b.co', userId: 'x' }), 'https://cms-gcp.viewlift.com/v5/overview?betterSwitch=schn');
 }
 
 if (failures) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.79.0
+// @version      3.80.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -424,6 +424,22 @@
   const BV_CANNED_RESPONSE_GLOBAL_KEY = '__betterFreshdeskCannedResponseProtectionUntil';
   const BV_CANNED_RESPONSE_LOCK_ATTR = 'data-better-freshdesk-canned-response-lock';
   const BV_CMS_KEEP_ALIVE_STATUS_KEY = 'betterViewliftCmsSessionStatus';
+  // The organizations each shared CMS host serves, by the slug its v5
+  // organization picker uses (data-value of the option, and the "site"
+  // cookie once switched). Read off both pickers live on 2026-10-01.
+  const BV_CMS_ORGANIZATIONS = [
+    { key: 'lightning', label: 'Lightning', host: 'cms-gcp.viewlift.com' },
+    { key: 'liv-golf', label: 'LIV Golf', host: 'cms-gcp.viewlift.com' },
+    { key: 'schn', label: 'SCHN', host: 'cms-gcp.viewlift.com' },
+    { key: 'altitude', label: 'Altitude', host: 'cms.viewlift.com' },
+    { key: 'dirtvision', label: 'DIRTVision', host: 'cms.viewlift.com' },
+    { key: 'vegas-golden-knights', label: 'KnightTime+ (VGK)', host: 'cms.viewlift.com' }
+  ];
+
+  function bvCmsOrganizationsForHost(host) {
+    const name = String(host || '').toLowerCase();
+    return BV_CMS_ORGANIZATIONS.filter(item => item.host === name);
+  }
   // Freshdesk queues a case here, the claude.ai side takes it. Two tabs, two
   // different hosts, one script - same shape as the CMS snapshot queue.
   const BV_CASE_TO_CLAUDE_KEY = 'betterFreshdeskCaseToClaude';
@@ -3935,11 +3951,9 @@
     const MENU_ID = 'better-cms-account-switcher-menu';
     const STYLE_ID = 'better-cms-account-switcher-style';
     const PENDING_KEY = 'betterCmsPendingAccountSwitch';
-    const ORGANIZATIONS = [
-        { key: 'lightning', label: 'Lightning' },
-        { key: 'liv-golf', label: 'LIV Golf' },
-        { key: 'schn', label: 'SCHN' }
-    ];
+    // Only this host's organizations: cms-gcp and cms.viewlift.com each have
+    // their own picker with their own brands.
+    const ORGANIZATIONS = bvCmsOrganizationsForHost(location.hostname);
     let switchRunning = false;
 
     if (!isCMSHost()) return;
@@ -4012,7 +4026,23 @@
             return false;
         }
 
-        if (currentSessionSite() !== String(pending.key).toLowerCase()) return false;
+        // A switch queued for the other CMS host is not this page's to finish.
+        let pendingHost = '';
+        try { pendingHost = new URL(pending.returnUrl).hostname; } catch (error) { pendingHost = ''; }
+        if (pendingHost && pendingHost !== location.hostname) return false;
+
+        if (currentSessionSite() !== String(pending.key).toLowerCase()) {
+            // Landed straight on the classic page (the Freshdesk side thought
+            // the session was already on this brand - its record of that can
+            // lag) but the session is on another one: an account page would
+            // show an empty shell, so do the switch now, once.
+            if (isClassicCMSPage() && !pending.viaV5 && ORGANIZATIONS.some(item => item.key === pending.key)) {
+                safeSetPending(Object.assign({}, pending, { viaV5: true, startedAt: Date.now() }));
+                location.replace(`${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(pending.key)}`);
+                return true;
+            }
+            return false;
+        }
 
         clearPending();
 
@@ -15119,17 +15149,20 @@ if (location.hostname === 'viewlift.freshdesk.com') {
         {
             label: 'DIRTVision',
             brand: /\bdirt\s*vision\b|\bdirtvision\b|dirtvision\.com/,
-            slug: /dirt/
+            slug: /dirt/,
+            switchKey: 'dirtvision'
         },
         {
             label: 'Altitude',
             brand: /\baltitude\b|altitudeplus\.com/,
-            slug: /altitude/
+            slug: /altitude/,
+            switchKey: 'altitude'
         },
         {
             label: 'Vegas Golden Knights',
             brand: /\bvgk\b|vegas\s+golden\s+knights|knight\s*time/,
-            slug: /vgk|knight|golden/
+            slug: /vgk|knight|golden/,
+            switchKey: 'vegas-golden-knights'
         }
     ];
 
@@ -15503,32 +15536,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     }
 
 
-    // The sibling-brand trap on a shared host: the URL can be perfectly
-    // right and the page still show the wrong brand, because which tenant a
-    // CMS session is looking at is session state, not part of the link. Only
-    // the GCP host gets an automated switch (ORGANIZATIONS in Feature 1c
-    // covers lightning / liv-golf / schn); on cms.viewlift.com there is
-    // nothing to drive, so the least this can do is say so out loud instead
-    // of letting an agent read an Altitude account as if it were a DIRT one.
-    function warnAboutSiblingBrandSession(clientContext) {
-        const rule = getMultiBrandSiteRule(clientContext);
-        if (!rule) return;
-
-        let host = '';
-        try {
-            host = new URL(getCMSUsersURLForClient(clientContext)).hostname;
-        } catch (error) {
-            return;
-        }
-
-        const sessionSite = bvGetSiteForCmsHost(host);
-        if (!sessionSite || rule.slug.test(sessionSite)) return;
-
-        bvNotify(
-            `CMS: this is a ${rule.label} ticket, but the CMS session on ${host} was last on "${sessionSite}" - switch the CMS account to ${rule.label} first, or the search runs against the wrong brand.`,
-            { level: 'warn', ttl: 12000 }
-        );
-    }
+    // The sibling-brand trap on a shared host (a link that is right while the
+    // session sits on another brand) used to get only a warning here on
+    // cms.viewlift.com. Since 3.80.0 buildCMSDestination switches there too.
 
     function warnAboutUnroutedBrand(clientContext) {
         const unroutedBrand = getUnroutedKnownBrandLabel(clientContext);
@@ -15547,16 +15557,30 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     // the right organisation instead of an empty page.
     function buildCMSDestination(clientContext, { email, userId }) {
         const cmsUsersURL = getCMSUsersURLForClient(clientContext);
-        const account = getCMSAccountForClient(clientContext);
         const url = new URL(cmsUsersURL);
+        // The organization the ticket needs on its host's v5 picker: the GCP
+        // brands, or Altitude / DIRTVision / KnightTime on cms.viewlift.com
+        // (which used to get only a warning, never a switch).
+        const account = getCMSAccountForClient(clientContext) || getMultiBrandSiteRule(clientContext)?.switchKey || '';
 
         const finalPath = userId
             ? `${url.origin}/users/search/${encodeURIComponent(userId)}`
             : `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`;
 
-        // GCP's classic CMS has no account selector. Route through the
-        // existing v5 selector when the ticket identifies the account.
-        if (account && /cms-gcp\.viewlift\.com$/i.test(url.hostname)) {
+        // The classic CMS has no account selector. Route through the v5
+        // selector when the ticket identifies the account.
+        if (account && bvCmsOrganizationsForHost(url.hostname).some(item => item.key === account)) {
+            // A pending entry goes along either way: if "already on this
+            // brand" below is stale (it is only the last brand seen here),
+            // the CMS page finds the session elsewhere and switches itself.
+            const pending = { key: account, returnUrl: finalPath, startedAt: Date.now() };
+            const savePending = () => {
+                try {
+                    GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify(pending));
+                } catch (error) {
+                    console.warn('[CMS Search] Could not save the pending account switch.', error);
+                }
+            };
             // ...but only when the session isn't already on that brand.
             // Measured 2026-08-13: opening an account id while the session
             // sits on a different org renders an empty shell (no account
@@ -15567,6 +15591,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
             // used, so that check costs nothing.
             if (bvGetSiteForCmsHost(url.hostname) === account) {
                 bvTimingMark('destination-direct', `${account} - session already on this brand`);
+                savePending();
                 return finalPath;
             }
 
@@ -15577,15 +15602,8 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 
             url.pathname = '/v5/overview';
             url.searchParams.set('betterSwitch', account);
-            try {
-                GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({
-                    key: account,
-                    returnUrl: finalPath,
-                    startedAt: Date.now()
-                }));
-            } catch (error) {
-                console.warn('[CMS Search] Could not save the pending account switch.', error);
-            }
+            pending.viaV5 = true;
+            savePending();
             return url.href;
         }
 
@@ -15620,7 +15638,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 
     function openCMSForEmail(email, clientContext, existingTab) {
         warnAboutUnroutedBrand(clientContext);
-        warnAboutSiblingBrandSession(clientContext);
 
         const href = buildCMSDestination(clientContext, { email });
         bvTimingMark('navigate-search-page', existingTab ? 'reusing the holding tab' : 'new tab');
@@ -15632,7 +15649,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 
     function openCMSAccount(userId, email, clientContext, existingTab) {
         warnAboutUnroutedBrand(clientContext);
-        warnAboutSiblingBrandSession(clientContext);
 
         const href = buildCMSDestination(clientContext, { email, userId });
         bvTimingMark('navigate-account-page', existingTab ? 'reusing the holding tab' : 'new tab');

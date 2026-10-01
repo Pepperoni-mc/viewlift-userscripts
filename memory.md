@@ -3466,3 +3466,11 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - Refund audit log no longer awaited (fire-and-forget, like Cancel Now's).
 - `readScenarioInputs` (scenario actions + ticket + agents/me) starts with the run, in parallel with CMS; `applyScenarioViaApi(ticketId, name, inputs)` then only does the PUT, and it is started alongside the note POST. If the note fails, the ticket tab redoes the same fields in the UI.
 - Not measured by "Last run": the ticket tab's Apply/check/send after the hand-off.
+
+## 3.80.0 - CMS button switches organization on cms.viewlift.com too (2026-10-01)
+- Reported: Altitude -> KnightTime+ not switching. Cause: only cms-gcp had an automated switch; cms.viewlift.com only got a warning (`warnAboutSiblingBrandSession`, now removed), so an Altitude session opened a VGK account as an empty shell.
+- Live-read (no selection made): cms.viewlift.com/v5/overview has the same org picker; options (data-value) `altitude`, `dirtvision`, `vegas-golden-knights` (current one aria-disabled). `site` cookie is per host (cms.viewlift.com = vegas-golden-knights while cms-gcp = lightning).
+- `BV_CMS_ORGANIZATIONS` (prelude) lists each org with its host; Feature 1c's ORGANIZATIONS = this host's only; `MULTI_BRAND_CMS_SITES` entries carry `switchKey`; `buildCMSDestination` switches on any host whose picker has the ticket's org.
+- The direct path ("session already on this brand", judged from the last slug seen on the host, which can lag) now also leaves a pending entry: `completePendingSwitchIfReady` on the classic page sees the `site` cookie on another brand and goes through v5 once (`viaV5` guard). A pending entry for the other host is ignored.
+- CMS internals read for the speed plan: v5 tenant switch = GraphQL `userTenantSwitch(targetSite, deviceId)`, then client sets vl-accessToken/vl-refreshToken + ~30 cookies from getUserInfo (js-cookie). Not reproduced - too many cookies to get right; v5 UI switch kept.
+- CMS idle logout (for the pending keep-alive plan): client-side, per tab, 60 min (production; dev 30, staging 90), warning modal at 55 min with its own 5-min countdown ("Stay Logged In" / "Logout Now"); activity = mousedown/mousemove/keypress/scroll/touchstart/click/keydown on document; on visibilitychange to visible, >=60 min idle logs out at once.
