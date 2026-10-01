@@ -31,6 +31,22 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.75.0 - Refund Capture retired behind Refund Assist; agent picker in its header (same day)
+
+Sebastian: choose the agent written into the refund log from Refund Assist ("como el de refund
+capture... a la par del título"), and "Refund capture ya queda obsoleto, quita el botón, pero deja
+como opción abrirlo desde el tool de refund assist".
+- Refund Assist header: `↩ Refund Assist [agent ▾] … [$] [–]`. The agent select reads and writes
+  the Refund Capture panel's own `#refund-refunder` (its options, Feature 1b's saved preference
+  `Better CMS Preferred Refunder`, and what `buildRefundRow()` uses) - one source of truth, so the
+  row needs no other change. The review step names the Refunder.
+- Refund Capture is hidden on **every** host now (`data-bv-hidden-here`), still built and still
+  capturing/syncing (the row is built from its inputs). The header `$` calls
+  `__bvRefundSheet.showPanel()`; it opens expanded above the Assist panel
+  (`data-bv-opened-from-assist`, z 1000003) and minimizing hides it again instead of leaving the
+  old float.
+- The Refund Assist float and its panel take the corner (right 20px).
+
 ### 3.74.0 - refund rows for any handler; the run as a game-style progress view (same day)
 
 Erick's run noted "Refund row not shown in CMS yet for: 6f9ef99fa6a511f1895bae7967899e38.." -

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.74.0
+// @version      3.75.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -2632,6 +2632,17 @@
         return Promise.resolve({ queued: false, row: 0, reason: 'the refund panel is not on this page' });
       }
       return copyForRefundSheet({ background: true });
+    },
+    // The old panel, on demand (Refund Assist header button).
+    showPanel() {
+      const panel = document.getElementById('refund-capture-panel');
+      if (!panel) return false;
+      panel.removeAttribute('data-bv-hidden-here');
+      panel.removeAttribute('aria-hidden');
+      panel.dataset.bvOpenedFromAssist = 'yes';
+      applyPanelState(panel, false);
+      runCapture(true, isCMSHost() ? 'Captured from this CMS tab.' : 'Refreshed from stored data.');
+      return true;
     }
   };
 
@@ -3411,16 +3422,16 @@
       </div>
     `;
 
-    // CMS only, on screen, beside Refund Assist (Sebastian, 2026-09-30 -
-    // reversing the same day's "Freshdesk only": on Freshdesk it did not
-    // read everything). On Freshdesk the panel is still built, just never
-    // shown: it keeps capturing the ticket in the background and syncs it to
-    // the CMS tab like before.
-    if (location.hostname === 'viewlift.freshdesk.com') {
-      panel.setAttribute('data-bv-hidden-here', 'true');
-      panel.setAttribute('aria-hidden', 'true');
-      GM_addStyle('#refund-capture-panel[data-bv-hidden-here]{display:none !important}');
-    }
+    // Obsolete as its own tool (Sebastian, 2026-09-30): Refund Assist does
+    // its job. It is still BUILT everywhere - it keeps capturing in the
+    // background, syncs the ticket to CMS, and Refund Assist fills it to
+    // build the refund-log row - but never shown unless opened on purpose
+    // from Refund Assist's header (window.__bvRefundSheet.showPanel()).
+    panel.setAttribute('data-bv-hidden-here', 'true');
+    panel.setAttribute('aria-hidden', 'true');
+    GM_addStyle('#refund-capture-panel[data-bv-hidden-here]{display:none !important}' +
+      // Opened from Refund Assist: above that panel, not hidden behind it.
+      '#refund-capture-panel[data-bv-opened-from-assist]{z-index:1000003 !important}');
 
     document.body.appendChild(panel);
 
@@ -3437,6 +3448,13 @@
     minimizeButton.addEventListener('click', function (event) {
       event.stopPropagation();
       applyPanelState(panel, true);
+      // Opened from Refund Assist: minimizing puts it away again rather than
+      // leaving its old $ float on screen.
+      if (panel.dataset.bvOpenedFromAssist === 'yes') {
+        delete panel.dataset.bvOpenedFromAssist;
+        panel.setAttribute('data-bv-hidden-here', 'true');
+        panel.setAttribute('aria-hidden', 'true');
+      }
     });
 
     document.getElementById('refund-clear').addEventListener('click', clearStoredData);
@@ -8258,7 +8276,7 @@ if (isCMSHost()) {
    one set - but TEAL with a return-arrow icon where Refund Capture is
    PURPLE with "$", so they are never mistaken for each other (Sebastian,
    2026-09-30: "los dos en dark mode... debidamente diferenciados"). */
-#${BUTTON_ID}{position:fixed;right:84px;bottom:20px;z-index:999999;width:52px;height:52px;padding:0;border:1px solid rgba(45,212,191,.6);border-radius:999px;background:linear-gradient(135deg,#0d9488,#0891b2);color:#fff;font:800 20px/1 Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 12px 30px rgba(13,148,136,.4);transition:transform 180ms ease,box-shadow 180ms ease}
+#${BUTTON_ID}{position:fixed;right:20px;bottom:20px;z-index:999999;width:52px;height:52px;padding:0;border:1px solid rgba(45,212,191,.6);border-radius:999px;background:linear-gradient(135deg,#0d9488,#0891b2);color:#fff;font:800 20px/1 Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 12px 30px rgba(13,148,136,.4);transition:transform 180ms ease,box-shadow 180ms ease}
 #${BUTTON_ID}:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 36px rgba(13,148,136,.5)}
 #${BUTTON_ID}:active{transform:translateY(0) scale(.97);box-shadow:0 6px 16px rgba(13,148,136,.3),inset 0 2px 5px rgba(0,0,0,.2)}
 #${PANEL_ID}{position:fixed;z-index:1000002;transform-origin:bottom right;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#0f1728;color:#e7edf7;border:1px solid #27344a;border-radius:12px;box-shadow:0 22px 60px rgba(0,0,0,.48);font:12px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark}
@@ -8267,6 +8285,12 @@ if (isCMSHost()) {
 #${PANEL_ID} header .bv-ra-x{margin-left:auto;width:28px;height:28px;border:1px solid #34425a;border-radius:7px;background:#172238;color:#cdd6e5;font-size:14px;line-height:1;cursor:pointer;transition:background 140ms ease,color 140ms ease}
 #${PANEL_ID} header .bv-ra-x:hover{background:#202d45;color:#fff}
 #${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed}
+#${PANEL_ID} header .bv-ra-title{white-space:nowrap}
+#${PANEL_ID} header .bv-ra-agent{margin-left:6px;max-width:140px;height:28px;padding:0 8px;border:1px solid #34425a;border-radius:7px;background:#111b2e;color:#f1f5f9;font:600 12px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;color-scheme:dark}
+#${PANEL_ID} header .bv-ra-agent:focus{outline:none;border-color:#14b8a6;box-shadow:0 0 0 3px rgba(20,184,166,.18)}
+#${PANEL_ID} header .bv-ra-agent:disabled{opacity:.6;cursor:not-allowed}
+#${PANEL_ID} header .bv-ra-x.is-capture{color:#c4b5fd;border-color:rgba(139,92,246,.45)}
+#${PANEL_ID} header .bv-ra-x.is-capture ~ .bv-ra-x{margin-left:6px}
 #${PANEL_ID} .bv-ra-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px;background:#0f1728;scrollbar-width:thin;scrollbar-color:#34425a transparent}
 #${PANEL_ID} .bv-ra-body::-webkit-scrollbar{width:8px}
 #${PANEL_ID} .bv-ra-body::-webkit-scrollbar-thumb{background:#34425a;border-radius:999px}
@@ -8457,6 +8481,7 @@ if (isCMSHost()) {
             ]));
         }
         list.appendChild(el('li', { text: `Copy the summary and paste it into a private note on ticket #${getTicketNumber(ticketURL)}.` }));
+        if (picked.length) list.appendChild(el('li', { text: `Write the refund-log row with ${getRefunder() || 'the selected agent'} as the Refunder.` }));
         body.appendChild(list);
         body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
 
@@ -8523,6 +8548,59 @@ if (isCMSHost()) {
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Close', onclick: closePanel }));
     }
 
+    // The agent written into the refund log's Refunder column (Sebastian,
+    // 2026-09-30: "que se pueda elegir el agente... como el de refund
+    // capture"). The Refund Capture panel's own select stays the single
+    // source: its options, its saved preference (Feature 1b), and the value
+    // buildRefundRow() reads - this menu only reads and writes it.
+    const FALLBACK_REFUNDERS = ['Sebastian', 'Erick', 'Esteban', 'Julio'];
+    const REFUNDER_PREF_KEY = 'Better CMS Preferred Refunder';
+
+    function getRefunderSource() {
+        return document.getElementById('refund-refunder');
+    }
+
+    function buildRefunderSelect() {
+        const source = getRefunderSource();
+        const names = source
+            ? Array.from(source.options).map(option => cleanText(option.value || option.textContent)).filter(Boolean)
+            : FALLBACK_REFUNDERS;
+        let current = source ? source.value : '';
+        if (!current) {
+            try {
+                current = GM_getValue(REFUNDER_PREF_KEY, '') || names[0];
+            } catch (error) {
+                current = names[0];
+            }
+        }
+        return el('select', {
+            class: 'bv-ra-agent',
+            title: 'Refunder - the agent written into the refund log',
+            'aria-label': 'Refunder',
+            disabled: running,
+            onchange: event => setRefunder(event.target.value)
+        }, names.map(name => el('option', { value: name, selected: name === current, text: name })));
+    }
+
+    function setRefunder(name) {
+        const source = getRefunderSource();
+        if (source) {
+            source.value = name;
+            source.dispatchEvent(new Event('input', { bubbles: true }));
+            source.dispatchEvent(new Event('change', { bubbles: true }));
+            return;
+        }
+        try {
+            GM_setValue(REFUNDER_PREF_KEY, name);
+        } catch (error) {
+            // Not remembered this time - the select still shows the choice.
+        }
+    }
+
+    function getRefunder() {
+        return cleanText(getRefunderSource()?.value || '');
+    }
+
     function render(loading = false) {
         let panel = document.getElementById(PANEL_ID);
         if (!panel) {
@@ -8536,8 +8614,18 @@ if (isCMSHost()) {
 
         const header = el('header', {}, [
             el('span', { class: 'bv-ra-icon', text: '↩' }),
-            'Refund Assist',
+            el('span', { class: 'bv-ra-title', text: 'Refund Assist' }),
+            buildRefunderSelect(),
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
+            el('button', {
+                class: 'bv-ra-x is-capture',
+                title: 'Open the old Refund Capture panel',
+                disabled: running,
+                text: '$',
+                onclick: () => {
+                    if (!window.__bvRefundSheet?.showPanel?.()) console.warn('[BV Refund Assist] The Refund Capture panel is not on this page.');
+                }
+            }),
             el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Minimize', disabled: running, text: '–', onclick: closePanel })
         ]);
         const body = el('div', { class: 'bv-ra-body' });
@@ -8595,9 +8683,9 @@ if (isCMSHost()) {
     // Refund Capture panel - but placed by left/top so the resize handle
     // (bottom-right) still pulls the way it looks like it should.
     function anchorPanelBottomRight(panel) {
-        // 84px, not 20: the corner itself belongs to the Refund Capture $
-        // float, which stays reachable while this panel is open.
-        const left = Math.max(8, window.innerWidth - 84 - panel.offsetWidth);
+        // The corner is this tool's alone now that the Refund Capture float
+        // is retired (it opens from this panel's header instead).
+        const left = Math.max(8, window.innerWidth - 20 - panel.offsetWidth);
         const top = Math.max(8, window.innerHeight - 20 - panel.offsetHeight);
         panel.style.left = `${left}px`;
         panel.style.top = `${top}px`;
