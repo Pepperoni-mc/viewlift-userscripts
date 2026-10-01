@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.80.0
+// @version      3.80.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -1490,8 +1490,8 @@
     'processor'
   ];
 
-  const CMS_USER_ID_RE = /\/users\/(?:search\/)?([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|foxone\.cms\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
+  const CMS_USER_ID_RE = /\/users\/(?:search\/)?([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|apple-\d{6}\.[0-9a-f]{32}\.\d{4}(?:-[a-z0-9-]+)?)/i;
+  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|foxone\.cms\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|apple-\d{6}\.[0-9a-f]{32}\.\d{4}(?:-[a-z0-9-]+)?)(?:[^\s"'<>]*)?/ig;
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 
   const PAYMENT_PATTERNS = [
@@ -7770,7 +7770,7 @@ if (isCMSHost()) {
      * falls back to the UI path for that step. */
     function cmsApiContext() {
         const site = bvGetSiteForCmsHost(location.hostname);
-        const userId = (location.pathname.match(/\/users\/(?:search\/)?([0-9a-f][0-9a-f-]{19,})/i) || [])[1] || '';
+        const userId = cmsAccountIdFromPath();
         const cred = site ? bvGetCmsCredForSite(site) : null;
         return cred && userId ? { site, userId, cred } : null;
     }
@@ -9296,8 +9296,18 @@ if (isCMSHost()) {
         if (actions.children.length) panel.appendChild(actions);
     }
 
+    // The account id from /users/search/<id> - not only hex ids: Sign in
+    // with Apple accounts look like apple-001618.<hex>.0003-vegas-golden-knights
+    // (live, 2026-10-01), and a hex-only match hid the tool on all of them.
+    function cmsAccountIdFromPath() {
+        const match = location.pathname.match(/^\/users\/(?:search\/)?([A-Za-z0-9][A-Za-z0-9._-]{7,})\/?$/);
+        if (!match) return '';
+        const id = decodeURIComponent(match[1]);
+        return /^(search|list|new|create)$/i.test(id) ? '' : id;
+    }
+
     function isAccountPage() {
-        return /^\/users\/(?:search\/)?[0-9a-f][0-9a-f-]{19,}/i.test(location.pathname);
+        return Boolean(cmsAccountIdFromPath());
     }
 
     // The round $ float in the bottom-right corner - the same spot and look

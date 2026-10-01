@@ -3474,3 +3474,8 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - The direct path ("session already on this brand", judged from the last slug seen on the host, which can lag) now also leaves a pending entry: `completePendingSwitchIfReady` on the classic page sees the `site` cookie on another brand and goes through v5 once (`viaV5` guard). A pending entry for the other host is ignored.
 - CMS internals read for the speed plan: v5 tenant switch = GraphQL `userTenantSwitch(targetSite, deviceId)`, then client sets vl-accessToken/vl-refreshToken + ~30 cookies from getUserInfo (js-cookie). Not reproduced - too many cookies to get right; v5 UI switch kept.
 - CMS idle logout (for the pending keep-alive plan): client-side, per tab, 60 min (production; dev 30, staging 90), warning modal at 55 min with its own 5-min countdown ("Stay Logged In" / "Logout Now"); activity = mousedown/mousemove/keypress/scroll/touchstart/click/keydown on document; on visibilitychange to visible, >=60 min idle logs out at once.
+
+## 3.80.1 - Refund Assist on Sign in with Apple accounts (2026-10-01)
+- Reported on cms.viewlift.com: no ↩ on `/users/search/apple-001618.<32 hex>.0003-vegas-golden-knights` (and `...0227-altitude`). Account ids are NOT always hex: Apple ones are `apple-<6 digits>.<32 hex>.<4 digits>-<site>`.
+- Refund Assist: `cmsAccountIdFromPath()` (any `[A-Za-z0-9._-]{8,}` segment after /users/search/) now drives both `isAccountPage()` and `cmsApiContext().userId`.
+- Refund Capture's `CMS_USER_ID_RE` / `CMS_USER_URL_RE` also accept the Apple form.
