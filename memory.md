@@ -3460,3 +3460,9 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 ## 3.78.1
 - Fix: 3.78.0 crashed at the first redraw of a run ("seconds is not a function"): a local `const seconds` in renderRun shadowed the `seconds(ms)` helper. Renamed to `elapsedSeconds`. Live test #361636: run aborted before any CMS write (plan still COMPLETED, no REFUND row).
 - The panel render is now wrapped in try/catch: a display bug shows an error line but can no longer abort a run mid-cancel/refund.
+
+## 3.79.0 - faster API run (3.78.1 live: 7.0s = cancel 0.9, refund 3.0, note 1.0, scenario 1.8)
+- `runBillingRecords`: the billing history read last in this run (Cancel Now's read, each refund's verify read) is reused by the next refund instead of a fresh read. Reset at runAssist/recheckRun start.
+- Refund audit log no longer awaited (fire-and-forget, like Cancel Now's).
+- `readScenarioInputs` (scenario actions + ticket + agents/me) starts with the run, in parallel with CMS; `applyScenarioViaApi(ticketId, name, inputs)` then only does the PUT, and it is started alongside the note POST. If the note fails, the ticket tab redoes the same fields in the UI.
+- Not measured by "Last run": the ticket tab's Apply/check/send after the hand-off.

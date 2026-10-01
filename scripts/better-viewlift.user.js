@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.78.1
+// @version      3.79.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7079,6 +7079,7 @@ if (isCMSHost()) {
     // Set when Cancel Now went through the API: CMS does not refresh the plan
     // card after it, so the card's status is stale - this is the real one.
     let lastCancelStatus = '';
+    let runBillingRecords = null;
     // What the last run did and left undone - Recheck picks it up from here.
     let lastRun = null;
     let runStartedAt = 0;
@@ -7820,7 +7821,16 @@ if (isCMSHost()) {
             query: { site: ctx.site, limit: 50, offset: 0, purchaseType: 'SUBSCRIPTION' },
             body: {}
         });
-        return Array.isArray(parsed.records) ? parsed.records : [];
+        const records = Array.isArray(parsed.records) ? parsed.records : [];
+        runBillingRecords = records;
+        return records;
+    }
+
+    // The latest billing history read in THIS run. Only this run's own
+    // refunds change it, and each refund re-reads it to verify - so the next
+    // charge (or the first, after Cancel Now's read) needs no fresh read.
+    async function billingRecordsForRun(ctx) {
+        return runBillingRecords || cmsBillingRecords(ctx);
     }
 
     function isRefundRecord(record) {
@@ -7874,8 +7884,8 @@ if (isCMSHost()) {
     async function refundChargeViaApi(charge, dryRun, step, ctx) {
         let records;
         try {
-            stepLog(step, '\u26a1 API: reading the billing history');
-            records = await cmsBillingRecords(ctx);
+            stepLog(step, runBillingRecords ? '\u26a1 API: billing history already read this run' : '\u26a1 API: reading the billing history');
+            records = await billingRecordsForRun(ctx);
         } catch (error) {
             stepLog(step, `API unavailable (${error.message}) - using the screen instead`);
             return null;
@@ -7931,9 +7941,10 @@ if (isCMSHost()) {
         }
         if (callError) stepLog(step, `CMS answered: ${callError.message} - checking whether it went through anyway`);
         else {
-            stepLog(step, 'CMS accepted the refund - writing its audit log');
-            const logged = await cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' });
-            if (!logged) stepLog(step, 'Audit log could not be written (the refund itself is done)');
+            stepLog(step, 'CMS accepted the refund - audit log written in the background');
+            // Not awaited (like Cancel Now's): the log must not hold the run up.
+            cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' })
+                .then(logged => { if (!logged) console.warn('[BV Refund Assist] Refund audit log could not be written (the refund itself is done).'); });
         }
 
         // Never retried blindly: the billing history says whether it happened.
@@ -8294,12 +8305,18 @@ if (isCMSHost()) {
         return { actions: SCENARIO_FALLBACKS[name] || [], source: 'built-in copy' };
     }
 
-    async function applyScenarioViaApi(ticketId, name) {
-        const [{ actions, source }, ticket, me] = await Promise.all([
+    // The scenario's reads (its actions, the ticket, me) - read-only, so
+    // runAssist starts them while CMS is still cancelling/refunding.
+    function readScenarioInputs(ticketId, name) {
+        return Promise.all([
             getScenarioActions(name),
             freshdeskApi('GET', `/api/v2/tickets/${ticketId}`),
             freshdeskApi('GET', '/api/v2/agents/me')
         ]);
+    }
+
+    async function applyScenarioViaApi(ticketId, name, inputs) {
+        const [{ actions, source }, ticket, me] = await (inputs || readScenarioInputs(ticketId, name));
         const { update, skipped } = scenarioActionsToUpdate(actions, ticket, me?.id);
         // The status is deliberately NOT set here. The ticket tab's "Send and
         // set as Waiting on End User" sets it - and the SCHN+ Case Tracker
@@ -8339,6 +8356,7 @@ if (isCMSHost()) {
         lastNoteText = '';
         runClaimedRefundKeys = new Set();
         lastCancelStatus = '';
+        runBillingRecords = null;
         // How many steps this run should take, for the progress bar: cancel,
         // one per refund, refund ids, contact/plan read, note, scenario,
         // refund-log row, back to the ticket. A real run can only grow it.
@@ -8376,6 +8394,11 @@ if (isCMSHost()) {
             })
             : Promise.resolve(null);
         run.apiCtx = apiCtx;
+        // Same for the scenario's reads on Freshdesk.
+        if (!dryRun && getFreshdeskApiKey() && run.ticketId) {
+            run.scenarioInputs = readScenarioInputs(run.ticketId, getRefundedScenarioName());
+            run.scenarioInputs.catch(() => {});
+        }
 
         try {
             if (cancelFirst) {
@@ -8435,8 +8458,9 @@ if (isCMSHost()) {
         running = true;
         view = 'run';
         steps = [];
+        runBillingRecords = null;
         runStartedAt = Date.now();
-        const pending = [...run.failed.map(entry => entry.charge), ...run.skipped];
+        const pending =[...run.failed.map(entry => entry.charge), ...run.skipped];
         plannedSteps = 1 + (run.cancelWanted && !run.cancelOk ? 1 : 0) + pending.length + 4;
         render();
 
@@ -8560,6 +8584,15 @@ if (isCMSHost()) {
         const noteChanged = !recheck || done.length > 0;
         let noteSavedNow = false;
         let handedNow = false;
+        // With a key, the scenario's field update goes out ALONGSIDE the note
+        // rather than after it (its reads were started with the run). If the
+        // note then fails, the ticket tab redoes the same fields in the UI -
+        // same values, nothing lost.
+        let scenarioPromise = null;
+        if (wantsScenario && getFreshdeskApiKey()) {
+            scenarioPromise = applyScenarioViaApi(ticketId, scenarioName, recheck ? null : run.scenarioInputs);
+            scenarioPromise.catch(() => {});
+        }
         if (noteChanged) {
             const noteStep = addStep(`Private note on #${ticketId}${recheck ? ' (corrected)' : ''}`);
             let apiProblem = '';
@@ -8616,7 +8649,7 @@ if (isCMSHost()) {
             } else {
                 stepLog(scenarioStep, 'Reading the scenario and setting its fields through the API');
                 try {
-                    const result = await applyScenarioViaApi(ticketId, scenarioName);
+                    const result = await (scenarioPromise || applyScenarioViaApi(ticketId, scenarioName));
                     // The customer reply cannot go through the API and must
                     // be checked anyway: the ticket tab clicks Apply so it
                     // lands in the reply editor, then checks and sends it.
