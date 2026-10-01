@@ -31,6 +31,29 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.77.0 - Refund Assist API mode: refunds and Cancel Now through the CMS API (2026-10-01)
+
+Built on the findings below. `cmsApiContext()` = site (`bvGetSiteForCmsHost(location.hostname)`,
+kept current by the CMS app's own calls), userId (from `/users/search/<id>` - the billing records'
+`userId` equals it, verified), and `bvGetCmsCredForSite(site)`; no context → the UI path as before.
+- **Refund** (`refundChargeViaApi`): billing history → the CHARGE record whose `gatewayChargeId` is
+  the row's order (+ must be this userId/site, else UI) → if a REFUND record already exists for it,
+  done without refunding twice → `subscription-misc/refund` with `refundPercentage: 100`,
+  `transactionId: gatewayChargeId`, the record's `paymentHandler`, comment "Customer wanted a
+  refund: <ticket>" → audit log `refund` → **verified by re-reading the billing history** for the
+  REFUND record (up to 20s; 12s when CMS answered with an error - never retried blindly).
+  `charge.refundRow` comes from the REFUND record (`gatewayRefundId`, else the shared number), so
+  no table refresh is needed for the note.
+- **Pairing verified on real data**: Stripe (Terry, MSN) REFUND record has the charge's
+  `gatewayChargeId` (`ch_…`) and `gatewayRefundId` `re_…` (what the table shows); Google Play (MSN
+  `fcbe5d0e`) REFUND has the same `gatewayChargeId` and `gatewayRefundId` equal to it.
+- **Cancel Now**: plan card's Payment Handler (now read by `readPlanCard`) → `subscription-misc/
+  refund` with `cancellation.option "CANCEL"` → audit log `cancelSubscription`; failure falls back
+  to the dialog.
+- Header badge `⚡ API` when the context is there; each API step logs its calls. Dry run builds the
+  requests and logs them without sending.
+- **Not yet run for real.** Sebastian does the first live run; Claude only watches.
+
 ### CMS refund / cancel / billing API - read from the CMS bundle, not yet used (2026-10-01)
 
 Sebastian asked whether refunds could be faster through CMS's own network calls. Read-only

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.76.0
+// @version      3.77.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7370,6 +7370,7 @@ if (isCMSHost()) {
             name: valueAfter('plan name') || lines[0] || 'Subscription',
             cycle,
             price: valueAfter('price'),
+            paymentHandler: valueAfter('payment handler'),
             status: valueAfter('status'),
             endDate: valueAfter('end date'),
             cancelButton
@@ -7533,7 +7534,42 @@ if (isCMSHost()) {
             return { ok: endStep(step, 'done', `Already cancelled (${statuses})`), lines };
         }
 
+        const apiCtx = cmsApiContext();
         for (const { info } of cancellable) {
+            // CANCEL NOW through the same call its button makes
+            // (cancellation.option "CANCEL"); the dialog is the fallback.
+            if (apiCtx && info.paymentHandler) {
+                if (dryRun) {
+                    stepLog(step, `would POST subscription-misc/refund - cancellation CANCEL, ${info.paymentHandler}`);
+                    lines.push(`Would cancel now: ${info.name} (status ${info.status || 'unknown'})`);
+                    continue;
+                }
+                stepLog(step, `\u26a1 API: CANCEL NOW - ${info.name} (${info.paymentHandler})`);
+                try {
+                    const response = await cmsInvoke(apiCtx, {
+                        url: 'subscription-misc/refund',
+                        method: 'POST',
+                        role: 'Customer Support',
+                        auth: { site: apiCtx.site, userId: apiCtx.userId },
+                        query: { site: apiCtx.site },
+                        body: {
+                            userId: apiCtx.userId,
+                            site: apiCtx.site,
+                            comment: ticketURL,
+                            paymentHandler: info.paymentHandler,
+                            cancellation: { option: 'CANCEL' },
+                            deactivate: false
+                        }
+                    });
+                    if (response && 'error' in response) throw new Error(String(response.error).slice(0, 200));
+                    stepLog(step, 'CMS accepted the cancellation - writing its audit log');
+                    await cmsAuditLog(apiCtx, { actionType: 'cancelSubscription', comments: ticketURL, reason: ticketURL });
+                    lines.push(`Account cancelled now (${info.name})`);
+                    continue;
+                } catch (error) {
+                    stepLog(step, `API cancel failed (${error.message}) - using the dialog instead`);
+                }
+            }
             stepLog(step, `${info.name} - status ${info.status || 'unknown'} - clicking CANCEL`);
             realClick(info.cancelButton);
             const dialog = await waitFor(getCancelDialog, { timeout: STEP_TIMEOUT_MS, pollMs: 100 });
@@ -7597,8 +7633,233 @@ if (isCMSHost()) {
         return { ok: endStep(step, dryRun ? 'dry-run' : 'done', lines.join('; ')), lines };
     }
 
+    /* ---------------- CMS API mode (2026-10-01) ----------------
+     * The calls CMS's own UI makes, read from its bundle (memory.md, "CMS
+     * refund / cancel / billing API"): one POST per refund or cancel instead
+     * of drawer > menu > dialog > Confirm, the same audit log CMS writes after
+     * each, and the billing list as data - so "is it refunded?" is a lookup,
+     * not a table refresh. Same envelope and credentials as the user search
+     * (POST <api>/v3.0/invoke, Authorization + xApiKey, captured from the CMS
+     * app's own requests by bvRecordCmsCreds). Anything missing or refused
+     * falls back to the UI path for that step. */
+    function cmsApiContext() {
+        const site = bvGetSiteForCmsHost(location.hostname);
+        const userId = (location.pathname.match(/\/users\/(?:search\/)?([0-9a-f][0-9a-f-]{19,})/i) || [])[1] || '';
+        const cred = site ? bvGetCmsCredForSite(site) : null;
+        return cred && userId ? { site, userId, cred } : null;
+    }
+
+    function cmsInvoke(ctx, data) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: ctx.cred.apiOrigin + BV_CMS_API_PATH,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: ctx.cred.authorization,
+                    xApiKey: ctx.cred.xApiKey
+                },
+                data: JSON.stringify(data),
+                timeout: 30000,
+                onload: response => {
+                    if (response.status === 401 || response.status === 403) {
+                        reject(new Error('cms-unauthorized'));
+                        return;
+                    }
+                    let parsed = null;
+                    try {
+                        parsed = response.responseText ? JSON.parse(response.responseText) : {};
+                    } catch (error) {
+                        parsed = null;
+                    }
+                    if (response.status < 200 || response.status >= 300) {
+                        const message = parsed && (parsed.error || parsed.message);
+                        reject(new Error(`cms-http-${response.status}${message ? `: ${String(message).slice(0, 160)}` : ''}`));
+                        return;
+                    }
+                    if (!parsed) {
+                        reject(new Error('cms-bad-json'));
+                        return;
+                    }
+                    resolve(parsed);
+                },
+                onerror: () => reject(new Error('cms-network-error')),
+                ontimeout: () => reject(new Error('cms-timeout'))
+            });
+        });
+    }
+
+    // The audit record CMS itself writes after a refund / cancel, so a run
+    // through the API leaves exactly the trail a hand-made one does.
+    function cmsAuditLog(ctx, logs) {
+        return new Promise(resolve => {
+            let sessionId = null;
+            try {
+                sessionId = window.sessionStorage.getItem('user_session');
+            } catch (error) {
+                sessionId = null;
+            }
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${ctx.cred.apiOrigin}/v3.0/user/admin/logs/${encodeURIComponent(ctx.userId)}`,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: ctx.cred.authorization,
+                    Xapikey: ctx.cred.xApiKey
+                },
+                data: JSON.stringify(Object.assign({ sessionId }, logs)),
+                timeout: 15000,
+                onload: response => resolve(response.status >= 200 && response.status < 300),
+                onerror: () => resolve(false),
+                ontimeout: () => resolve(false)
+            });
+        });
+    }
+
+    async function cmsBillingRecords(ctx) {
+        const parsed = await cmsInvoke(ctx, {
+            url: '/v3/billing/history',
+            method: 'GET',
+            role: 'Customer Support',
+            auth: { site: ctx.site, userId: ctx.userId },
+            query: { site: ctx.site, limit: 50, offset: 0, purchaseType: 'SUBSCRIPTION' },
+            body: {}
+        });
+        return Array.isArray(parsed.records) ? parsed.records : [];
+    }
+
+    function isRefundRecord(record) {
+        return /refund/i.test(String(record && record.transactiontype || ''));
+    }
+
+    // The REFUND record of a charge: same gatewayChargeId (CMS's refund call
+    // takes the charge's gatewayChargeId as transactionId), or - for
+    // handlers that reuse the number - the refund id itself.
+    function refundRecordFor(records, order) {
+        return records.find(record => isRefundRecord(record) &&
+            (cleanText(record.gatewayChargeId) === order || cleanText(record.gatewayRefundId) === order)) || null;
+    }
+
+    // A REFUND record shaped like a table row, for the note.
+    function recordToRow(record, charge) {
+        const amount = Number(record.totalAmount);
+        return {
+            date: record.completedAt || record.initiatedAt
+                ? new Date(record.completedAt || record.initiatedAt).toLocaleDateString('en-US')
+                : '',
+            title: cleanText(record.planTitle) || charge.title,
+            type: 'REFUND',
+            order: cleanText(record.gatewayRefundId) || cleanText(record.gatewayChargeId) || charge.order,
+            amount: Number.isFinite(amount) ? `${cleanText(record.currencyCode)} ${amount.toFixed(2)}`.trim() : charge.amount,
+            handler: cleanText(record.paymentHandler) || charge.handler,
+            offer: charge.offer || 'N/A'
+        };
+    }
+
+    async function waitForRefundRecord(ctx, order, step, timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        let pass = 0;
+        while (Date.now() < deadline) {
+            pass += 1;
+            try {
+                const records = await cmsBillingRecords(ctx);
+                const refund = refundRecordFor(records, order);
+                if (refund) return refund;
+                stepLog(step, `Billing history: no REFUND yet (check ${pass})`);
+            } catch (error) {
+                stepLog(step, `Billing history read failed: ${error.message}`);
+            }
+            await sleep(1500);
+        }
+        return null;
+    }
+
+    // One charge, refunded with the same call the dialog's Confirm makes.
+    // Returns true / false like refundCharge, or null = use the UI path.
+    async function refundChargeViaApi(charge, dryRun, step, ctx) {
+        let records;
+        try {
+            stepLog(step, '\u26a1 API: reading the billing history');
+            records = await cmsBillingRecords(ctx);
+        } catch (error) {
+            stepLog(step, `API unavailable (${error.message}) - using the screen instead`);
+            return null;
+        }
+        const record = records.find(item => !isRefundRecord(item) && cleanText(item.gatewayChargeId) === charge.order);
+        if (!record) {
+            stepLog(step, 'This charge is not in the billing history - using the screen instead');
+            return null;
+        }
+        // The record must be THIS account on THIS site - otherwise the
+        // credentials/site resolved for the API are not the page's, and the
+        // screen (which is) does it instead.
+        if ((record.userId && cleanText(record.userId) !== ctx.userId) || (record.site && cleanText(record.site) !== ctx.site)) {
+            stepLog(step, 'The billing record is for another account or site - using the screen instead');
+            return null;
+        }
+        const existing = refundRecordFor(records, charge.order);
+        if (existing) {
+            charge.refundRow = recordToRow(existing, charge);
+            return endStep(step, 'done', `already refunded in CMS (${charge.refundRow.order}) - not refunded twice`);
+        }
+
+        const ticketURL = getTicketURL();
+        const request = {
+            method: 'POST',
+            role: 'Customer Support',
+            url: '/subscription-misc/refund',
+            query: { site: ctx.site, userId: ctx.userId },
+            auth: { site: ctx.site, userId: ctx.userId },
+            body: {
+                refundPercentage: 100,
+                comment: `Customer wanted a refund: ${ticketURL}`,
+                deactivate: false,
+                paymentHandler: record.paymentHandler,
+                revokeAccess: false,
+                site: ctx.site,
+                transactionId: record.gatewayChargeId,
+                userId: ctx.userId
+            }
+        };
+        if (dryRun) {
+            stepLog(step, `would POST subscription-misc/refund - 100%, ${record.paymentHandler}, transactionId ${record.gatewayChargeId}`);
+            return endStep(step, 'dry-run', 'API request built, not sent (dry run)');
+        }
+
+        stepLog(step, `\u26a1 API: refund 100% of ${record.gatewayChargeId} (${record.paymentHandler})`);
+        let callError = null;
+        try {
+            const response = await cmsInvoke(ctx, request);
+            if (response && 'error' in response) callError = new Error(String(response.error).slice(0, 200));
+        } catch (error) {
+            callError = error;
+        }
+        if (callError) stepLog(step, `CMS answered: ${callError.message} - checking whether it went through anyway`);
+        else {
+            stepLog(step, 'CMS accepted the refund - writing its audit log');
+            const logged = await cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' });
+            if (!logged) stepLog(step, 'Audit log could not be written (the refund itself is done)');
+        }
+
+        // Never retried blindly: the billing history says whether it happened.
+        const refund = await waitForRefundRecord(ctx, charge.order, step, callError ? 12000 : 20000);
+        if (refund) {
+            charge.refundRow = recordToRow(refund, charge);
+            if (callError) cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' });
+            return endStep(step, 'done', `\u26a1 refunded via the API - REFUND ${charge.refundRow.order}`);
+        }
+        return endStep(step, 'failed', callError
+            ? `API refund failed: ${callError.message} - and no REFUND in the billing history (use Recheck)`
+            : 'CMS accepted the refund but it has not shown in the billing history yet (use Recheck)');
+    }
+
     async function refundCharge(charge, dryRun) {
         const step = addStep(`Refund ${charge.date} ${charge.amount} (${charge.order})`);
+        const apiCtx = cmsApiContext();
+        if (apiCtx) {
+            const viaApi = await refundChargeViaApi(charge, dryRun, step, apiCtx);
+            if (viaApi !== null) return viaApi;
+        }
         const bridge = getBridge();
         if (!bridge?.start) return endStep(step, 'failed', 'The refund workflow (Feature 3) is not loaded');
 
@@ -8424,6 +8685,7 @@ if (isCMSHost()) {
 #${PANEL_ID} header .bv-ra-x:hover{background:#202d45;color:#fff}
 #${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed}
 #${PANEL_ID} header .bv-ra-title{white-space:nowrap}
+#${PANEL_ID} .bv-ra-badge.is-api{background:rgba(13,148,136,.22);color:#5eead4;border-color:rgba(45,212,191,.55)}
 #${PANEL_ID} header .bv-ra-agent{margin-left:6px;max-width:140px;height:28px;padding:0 8px;border:1px solid #34425a;border-radius:7px;background:#111b2e;color:#f1f5f9;font:600 12px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;color-scheme:dark}
 #${PANEL_ID} header .bv-ra-agent:focus{outline:none;border-color:#14b8a6;box-shadow:0 0 0 3px rgba(20,184,166,.18)}
 #${PANEL_ID} header .bv-ra-agent:disabled{opacity:.6;cursor:not-allowed}
@@ -8765,6 +9027,7 @@ if (isCMSHost()) {
             el('span', { class: 'bv-ra-title', text: 'Refund Assist' }),
             buildRefunderSelect(),
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
+            cmsApiContext() ? el('span', { class: 'bv-ra-badge is-api', title: 'Refunds and Cancel Now go straight through the CMS API', text: '\u26a1 API' }) : null,
             el('button', {
                 class: 'bv-ra-x is-capture',
                 title: 'Open the old Refund Capture panel',

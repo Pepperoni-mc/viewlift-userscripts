@@ -106,6 +106,9 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'parseAmount')}
   ${extractFunction(assistSrc, 'formatTotal')}
   ${extractFunction(assistSrc, 'formatRefundAmount')}
+  ${extractFunction(assistSrc, 'isRefundRecord')}
+  ${extractFunction(assistSrc, 'refundRecordFor')}
+  ${extractFunction(assistSrc, 'recordToRow')}
   ${extractFunction(assistSrc, 'readPlanCard')}
   ${extractFunction(assistSrc, 'buildNote')}
   ${extractFunction(assistSrc, 'escapeHtml')}
@@ -117,7 +120,7 @@ const loader = new Function('ctx', 'bvEventView', `
   function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -132,7 +135,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -323,6 +326,27 @@ check('accented names survive', firstNameOf('José Pérez') === 'José', firstNa
 check('no name -> no greeting change', firstNameOf('') === '' && firstNameOf('   ') === '');
 check('an email in the name field is not a name', firstNameOf('john@x.com') === '', firstNameOf('john@x.com'));
 check('an initial is not a name', firstNameOf('J.') === '' && firstNameOf('J') === '', firstNameOf('J.'));
+
+// ------------------------------------------------------------------ CMS API mode
+
+// Billing-history records, shaped as /v3/billing/history returns them (2026-10-01).
+const records = [
+  { transactiontype: 'REFUND', gatewayChargeId: 'ch_3ULBgIJtJXFjDDk50HJk2L25', gatewayRefundId: 're_3ULBgIJtJXFjDDk50gHhfbdI', totalAmount: 19.99, currencyCode: 'USD', planTitle: 'Monthly Plan', paymentHandler: 'STRIPE', completedAt: '2026-10-01T15:00:00Z' },
+  { transactiontype: 'CHARGE', gatewayChargeId: 'ch_3ULBgIJtJXFjDDk50HJk2L25', totalAmount: 19.99, currencyCode: 'USD', planTitle: 'Monthly Plan', paymentHandler: 'STRIPE' },
+  { transactiontype: 'REFUND', gatewayChargeId: 'GPA.3358-3903-1484-26377', gatewayRefundId: '', totalAmount: 21.34, currencyCode: 'USD', planTitle: 'Monthly Plan (Monumental+)', paymentHandler: 'ANDROID', completedAt: '2026-10-01T15:00:00Z' },
+  { transactiontype: 'CHARGE', gatewayChargeId: 'GPA.3303-1537-6618-70405..0', totalAmount: 19.99, currencyCode: 'USD', planTitle: 'Monthly Plan', paymentHandler: 'ANDROID' }
+];
+check('a REFUND record is recognised by its transaction type', isRefundRecord(records[0]) && !isRefundRecord(records[1]));
+check('a Stripe charge finds its REFUND by gatewayChargeId', refundRecordFor(records, 'ch_3ULBgIJtJXFjDDk50HJk2L25') === records[0]);
+check('a Google Play charge finds its REFUND (same number)', refundRecordFor(records, 'GPA.3358-3903-1484-26377') === records[2]);
+check('an unrefunded charge finds none - so it is refunded once', refundRecordFor(records, 'GPA.3303-1537-6618-70405..0') === null);
+check('a prefix of a refunded order is not taken for it', refundRecordFor(records, 'GPA.3358-3903-1484') === null);
+const row = recordToRow(records[0], { title: 'Monthly Plan', order: 'ch_x', amount: 'USD 19.99', handler: 'STRIPE', offer: 'N/A' });
+check('the note row carries the refund id, not the charge id', row.order === 're_3ULBgIJtJXFjDDk50gHhfbdI', row);
+check('and the table-style amount', row.amount === 'USD 19.99', row.amount);
+check('and type REFUND', row.type === 'REFUND');
+const gpaRow = recordToRow(records[2], { title: 'N/A', order: 'GPA.3358-3903-1484-26377', amount: 'USD 21.34', handler: 'ANDROID' });
+check('a refund with no separate refund id keeps the shared order number', gpaRow.order === 'GPA.3358-3903-1484-26377', gpaRow);
 
 // ------------------------------------------------------------------ Freshdesk API
 
