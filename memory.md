@@ -31,6 +31,43 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### CMS refund / cancel / billing API - read from the CMS bundle, not yet used (2026-10-01)
+
+Sebastian asked whether refunds could be faster through CMS's own network calls. Read-only
+investigation on MSN (`cms.monumentalsportsnetwork.com`), nothing issued: page `fetch`/XHR logged
+while opening a charge's drawer and the refund dialog (dry run, no Confirm) - **neither makes any
+request** (the data is already loaded) - and the lazy chunk that holds the dialog
+(`2866.<hash>.js`, ~9 KB) plus `4558.<hash>.js` (account actions) read for their calls. Every
+call is the same envelope already used for user search: `POST <brand api host>/v3.0/invoke`,
+headers `Authorization: <vl-accessToken>` + `xApiKey: <managementXApiKey>` (what
+`bvRecordCmsCreds` already captures), `data: { url, method, role: "Customer Support", auth, query,
+body }`:
+- **Billing list**: `url "/v3/billing/history"`, `method GET`, `auth {site,userId}`, `query {site,
+  limit, offset, purchaseType: "SUBSCRIPTION" | "BUY"}` → `{ limit, offset, records: [{ id,
+  gatewayChargeId, gatewayRefundId, transactiontype, paymentHandler, totalAmount, preTaxAmount,
+  taxAmount, currencyCode, planTitle, planId, completedAt, initiatedAt, subscriptionStatus,
+  subscriptionStartDate, subscriptionEndDate, platform, site, userId, ... }] }`. The table's "Order
+  Number" is `gatewayChargeId`; **`gatewayRefundId` would pair refunds exactly** (no id-prefix
+  guessing).
+- **Refund** (the dialog's Confirm): `url "/subscription-misc/refund"`, `method POST`, `query =
+  auth = {site, userId}`, `body { refundPercentage: 100 (or amount), comment, deactivate: false,
+  paymentHandler, revokeAccess: false, site, transactionId: <gatewayChargeId>, userId }`. Response
+  with an `error` key = failure. On success CMS shows "Refund initiated successfully", publishes
+  `refresh-billing-data` and closes the dialog **2s later** (so a dialog that stays open usually
+  means its call errored or is still waiting - while the refund can still have happened).
+- **Cancel** uses the SAME `subscription-misc/refund` url: `body { userId, site, comment,
+  paymentHandler, cancellation: { option }, deactivate: false }` (`query {site}`, `auth {site,
+  userId}`). The `option` value for CANCEL NOW vs CANCEL AFTER BILLING PERIOD is **not known
+  yet** - that dialog's chunk only loads when it opens, and this account was already cancelled.
+- **Audit log** CMS writes after each action: `POST <api host>/v3.0/user/admin/logs/<userId>`,
+  headers `Authorization` + `Xapikey`, body `{ actionType: "refund" | "cancelSubscription" | ...,
+  comments: "Issued refund of percentage: 100%, Reason: ROTH", sessionId:
+  sessionStorage.user_session, reason }`. A direct-API path must send it too, to keep CMS's own
+  record identical to a hand-made refund.
+- Next step, if he agrees: an API mode for Refund Assist (billing list + refund + audit log by
+  API, verified by re-reading the billing list), keeping today's UI path as the fallback; first
+  read the cancel `option` from a live account with an active plan (open the dialog, don't confirm).
+
 ### 3.76.0 - a refund that worked was reported failed; Recheck (2nd run); refund count in the reply (2026-10-01)
 
 Sebastian's run on MSN `fcbe5d0e-…` (Google Play, `GPA.3358-3903-1484-26377`, USD 21.34): step
