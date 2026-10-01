@@ -31,6 +31,27 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.70.0 - the $ float stays; Refund Capture is Freshdesk-only; Refund Assist is a float too (same day)
+
+Sebastian, with a screenshot of the bottom-right floats (🧠, 📋, no `$`): "en el ticket sí
+aparece, pero desaparece al segundo". It was by design since 3.55.0: Feature 8's toolbar pulled
+`#refund-capture-panel` in as a hidden inline panel behind a `$` toolbar toggle. Live tests of
+3.69.0 (5 reloads, list→ticket, dashboard→ticket, next-ticket) showed the toolbar fine every
+time - the "missing $" was the float being absorbed. Now:
+- the toolbar no longer creates a `$` toggle or mounts the panel (`unmountRefundPanel()` sends
+  an already-absorbed one back to `<body>`), so the round `$` float stays beside 📋 / 🧠;
+- **Refund Capture is not shown on CMS** ("no debería salir en el CMS"): the panel is still
+  built there but `data-bv-hidden-on-cms` + `display:none!important` - it keeps capturing, and
+  `__bvRefundSheet.fillAndSend()` needs its inputs to build the row;
+- **Refund Assist is the round float now** ("a la par del refund capture... la misma
+  apariencia"): `#bv-refund-assist-button` is the Refund Capture minimized circle (52px,
+  `#2f7fe0→#0b5cab`, right/bottom 20px), on CMS account pages only (`/users/(search/)?<id>`);
+  it opens the panel anchored to that corner (placed by left/top so the resize handle still
+  works), `–` minimizes back to the float. The ADD PLAN launcher is gone.
+- Refund-log **Amount Refunded** for several refunds is the team's manual form,
+  `formatRefundAmount()`: `USD 19.99 x2`, mixed amounts `USD 19.99 x2 + USD 9.99` (never a sum).
+  The note's/review's `Total` still sums.
+
 ### 3.69.0 - the $ / toolbar vanished after entering a ticket from a list; panel restyle (same day)
 
 Sebastian: "el botón de $ aparece pero desaparece en Freshdesk". He confirmed the 3.68.0 sheet

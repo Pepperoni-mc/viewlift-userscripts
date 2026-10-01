@@ -105,6 +105,7 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'firstNameOf')}
   ${extractFunction(assistSrc, 'parseAmount')}
   ${extractFunction(assistSrc, 'formatTotal')}
+  ${extractFunction(assistSrc, 'formatRefundAmount')}
   ${extractFunction(assistSrc, 'readPlanCard')}
   ${extractFunction(assistSrc, 'buildNote')}
   ${extractFunction(assistSrc, 'escapeHtml')}
@@ -116,7 +117,7 @@ const loader = new Function('ctx', 'bvEventView', `
   function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -130,7 +131,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -171,6 +172,13 @@ check('sums one currency', formatTotal([{ amount: 'USD 19.99' }, { amount: 'USD 
 check('never adds two currencies together',
   formatTotal([{ amount: 'USD 10.00' }, { amount: 'CAD 5.00' }]) === 'USD 10.00 + CAD 5.00',
   formatTotal([{ amount: 'USD 10.00' }, { amount: 'CAD 5.00' }]));
+
+// The refund log's Amount Refunded, as the team types repeat charges by hand.
+check('one refund is just its amount', formatRefundAmount([{ amount: 'USD 19.99' }]) === 'USD 19.99', formatRefundAmount([{ amount: 'USD 19.99' }]));
+check('two of the same amount -> "x2"', formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 19.99' }]) === 'USD 19.99 x2',
+  formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 19.99' }]));
+check('different amounts are listed, never summed', formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 9.99' }, { amount: 'USD 19.99' }]) === 'USD 19.99 x2 + USD 9.99',
+  formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 9.99' }, { amount: 'USD 19.99' }]));
 
 // ------------------------------------------------------------------ plan card
 

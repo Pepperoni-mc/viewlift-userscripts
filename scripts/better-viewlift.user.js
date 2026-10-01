@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.69.0
+// @version      3.70.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -3342,6 +3342,16 @@
         <div id="refund-status"></div>
       </div>
     `;
+
+    // Freshdesk only, on screen (Sebastian, 2026-09-30: "el refund capture
+    // tool no debería salir en el CMS"). On CMS the panel is still built,
+    // just never shown: it keeps capturing in the background, and Refund
+    // Assist fills it to build the refund-log row with the same columns.
+    if (isCMSHost()) {
+      panel.setAttribute('data-bv-hidden-on-cms', 'true');
+      panel.setAttribute('aria-hidden', 'true');
+      GM_addStyle('#refund-capture-panel[data-bv-hidden-on-cms]{display:none !important}');
+    }
 
     document.body.appendChild(panel);
 
@@ -7162,6 +7172,22 @@ if (isCMSHost()) {
         return Number.isFinite(value) ? { currency: match[1] || '', value } : null;
     }
 
+    // The refund log's "Amount Refunded" the way the team has always typed it
+    // by hand for repeat charges (Sebastian, 2026-09-30): "USD 19.99 x2".
+    // Different amounts are listed side by side, never summed into a figure
+    // nobody actually charged: "USD 19.99 x2 + USD 9.99".
+    function formatRefundAmount(list) {
+        const counts = new Map();
+        for (const charge of list) {
+            const amount = cleanText(charge.amount);
+            if (!amount) continue;
+            counts.set(amount, (counts.get(amount) || 0) + 1);
+        }
+        return Array.from(counts.entries())
+            .map(([amount, times]) => (times > 1 ? `${amount} x${times}` : amount))
+            .join(' + ');
+    }
+
     function formatTotal(list) {
         const totals = new Map();
         for (const charge of list) {
@@ -7949,7 +7975,7 @@ if (isCMSHost()) {
                         freshdesk: ticketURL,
                         cms: location.href,
                         payment: handlers.join(' / '),
-                        amount: formatTotal(done)
+                        amount: formatRefundAmount(done)
                     });
                     endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
                         ? `${String(sent.sheetKey || '').toUpperCase()} row ${sent.row} - written by the sheet tab, which closes itself when saved`
@@ -8074,9 +8100,10 @@ if (isCMSHost()) {
         style.textContent = `
 /* Same look as the Refund Capture panel (#refund-capture-panel) - Sebastian,
    2026-09-30: "que el refund assist tenga la misma apariencia". */
-#${BUTTON_ID}{margin-right:8px;padding:6px 12px;border:1px solid #0b5cab;border-radius:10px;background:#0b5cab;color:#fff;font:700 12px/1.4 Arial,sans-serif;cursor:pointer;box-shadow:0 8px 18px rgba(11,92,171,.22);transition:background 140ms ease,transform 140ms ease}
-#${BUTTON_ID}:hover{background:#084f95;transform:translateY(-1px)}
-#${PANEL_ID}{position:fixed;left:16px;top:72px;z-index:1000002;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#fff;color:#17324d;border:1px solid rgba(15,23,42,.14);border-radius:18px;box-shadow:0 22px 55px rgba(15,23,42,.28);font:12px/1.45 Arial,sans-serif}
+#${BUTTON_ID}{position:fixed;right:20px;bottom:20px;z-index:999999;width:52px;height:52px;padding:0;border:none;border-radius:999px;background:linear-gradient(180deg,#2f7fe0 0%,#0b5cab 100%);color:#fff;font:800 16px/1 Arial,sans-serif;cursor:pointer;box-shadow:0 12px 28px rgba(11,92,171,.34),inset 0 1px 0 rgba(255,255,255,.22);transition:transform 180ms ease,box-shadow 180ms ease}
+#${BUTTON_ID}:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(11,92,171,.42)}
+#${BUTTON_ID}:active{transform:translateY(0) scale(.97);box-shadow:0 6px 16px rgba(11,92,171,.3),inset 0 2px 5px rgba(0,0,0,.16)}
+#${PANEL_ID}{position:fixed;z-index:1000002;transform-origin:bottom right;display:flex;flex-direction:column;box-sizing:border-box;width:520px;height:560px;min-width:340px;min-height:240px;max-width:calc(100vw - 32px);max-height:calc(100vh - 88px);overflow:hidden;resize:both;background:#fff;color:#17324d;border:1px solid rgba(15,23,42,.14);border-radius:18px;box-shadow:0 22px 55px rgba(15,23,42,.28);font:12px/1.45 Arial,sans-serif}
 #${PANEL_ID} header{flex:0 0 auto;min-height:46px;display:flex;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(180deg,#f8fbff 0%,#edf6ff 100%);border-bottom:1px solid rgba(15,23,42,.08);font-weight:700;box-sizing:border-box}
 #${PANEL_ID} .bv-ra-icon{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;background:linear-gradient(180deg,#2f7fe0 0%,#0b5cab 100%);box-shadow:0 2px 6px rgba(11,92,171,.32),inset 0 1px 0 rgba(255,255,255,.22);color:#fff;font-weight:800;font-size:14px}
 #${PANEL_ID} header .bv-ra-x{margin-left:auto;width:28px;height:28px;border:1px solid rgba(15,23,42,.16);border-radius:10px;background:#fff;color:#17324d;font-size:14px;line-height:1;cursor:pointer;transition:background 140ms ease,transform 140ms ease}
@@ -8146,6 +8173,7 @@ if (isCMSHost()) {
         view = 'select';
         // A choice made for one account must not still be ticked next time.
         selected = new Set();
+        mountFloat();
     }
 
     async function openPanel() {
@@ -8274,6 +8302,8 @@ if (isCMSHost()) {
             panel = el('div', { id: PANEL_ID, 'data-html2canvas-ignore': 'true' });
             document.body.appendChild(panel);
             restorePanelSize(panel);
+            anchorPanelBottomRight(panel);
+            mountFloat();
         }
         panel.textContent = '';
 
@@ -8281,7 +8311,7 @@ if (isCMSHost()) {
             el('span', { class: 'bv-ra-icon', text: '$' }),
             'Refund Assist',
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
-            el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Close', disabled: running, text: '×', onclick: closePanel })
+            el('button', { class: 'bv-ra-x', title: running ? 'Running...' : 'Minimize', disabled: running, text: '–', onclick: closePanel })
         ]);
         const body = el('div', { class: 'bv-ra-body' });
         const actions = el('div', { class: 'bv-ra-actions' });
@@ -8295,40 +8325,57 @@ if (isCMSHost()) {
         if (actions.children.length) panel.appendChild(actions);
     }
 
-    // The launcher sits next to ADD PLAN, which only renders on the
-    // SUBSCRIPTION PLANS AND ENTITLEMENTS tab.
-    function mountButton() {
-        const addPlan = findButtonByText('add plan');
-        const existing = document.getElementById(BUTTON_ID);
-        if (!addPlan || !getChargesTable()) {
-            if (existing && !running) existing.remove();
+    function isAccountPage() {
+        return /^\/users\/(?:search\/)?[0-9a-f][0-9a-f-]{19,}/i.test(location.pathname);
+    }
+
+    // The round $ float in the bottom-right corner - the same spot and look
+    // as the Refund Capture panel's own float, which CMS no longer shows
+    // (Sebastian, 2026-09-30: "a la par del refund capture... la misma
+    // apariencia"). Only on a customer account page; opening it takes CMS
+    // to SUBSCRIPTION PLANS AND ENTITLEMENTS by itself.
+    function mountFloat() {
+        let float = document.getElementById(BUTTON_ID);
+        const panelOpen = Boolean(document.getElementById(PANEL_ID));
+        if (!isAccountPage() && !running) {
+            float?.remove();
+            if (panelOpen) closePanel();
             return;
         }
-        if (existing && existing.nextElementSibling === addPlan) return;
-        existing?.remove();
-        addStyles();
-        const button = el('button', {
-            id: BUTTON_ID,
-            type: 'button',
-            'data-html2canvas-ignore': 'true',
-            text: 'Refund Assist ▾',
-            onclick: event => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (document.getElementById(PANEL_ID) && !running) closePanel();
-                else if (!running) openPanel();
-            }
-        });
-        try {
-            addPlan.parentElement.insertBefore(button, addPlan);
-        } catch (error) {
-            console.warn('[BV Refund Assist] Could not place the launcher.', error);
+        if (!float) {
+            addStyles();
+            float = el('button', {
+                id: BUTTON_ID,
+                type: 'button',
+                title: 'Refund Assist',
+                'aria-label': 'Refund Assist',
+                'data-html2canvas-ignore': 'true',
+                text: '$',
+                onclick: event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!running) openPanel();
+                }
+            });
+            document.body.appendChild(float);
         }
+        const hide = panelOpen ? 'none' : '';
+        if (float.style.display !== hide) float.style.display = hide;
+    }
+
+    // Opened in the float's corner and growing up and to the left, like the
+    // Refund Capture panel - but placed by left/top so the resize handle
+    // (bottom-right) still pulls the way it looks like it should.
+    function anchorPanelBottomRight(panel) {
+        const left = Math.max(8, window.innerWidth - 20 - panel.offsetWidth);
+        const top = Math.max(8, window.innerHeight - 20 - panel.offsetHeight);
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
     }
 
     onRouteChange(function () {
         window.clearTimeout(mountTimer);
-        mountTimer = window.setTimeout(mountButton, 250);
+        mountTimer = window.setTimeout(mountFloat, 250);
     });
 })();
 
@@ -10324,35 +10371,14 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     }
   }
 
-  function toggleRefundPanel() {
+  // Undo of the old inline mount: back to <body> as the corner float, with
+  // the inline class (and its display:none while "closed") gone.
+  function unmountRefundPanel() {
     const panel = document.getElementById('refund-capture-panel');
-    if (!panel) return;
-
-    const open = panel.dataset.betterOpen === 'yes';
-    panel.dataset.betterOpen = open ? 'no' : 'yes';
-    panel.classList.toggle('is-minimized', open);
-
-    if (!open) {
-      const refresh = document.getElementById('refund-refresh');
-      if (refresh) refresh.click();
-    }
-  }
-
-  function mountRefundPanel(toolbar) {
-    const panel = document.getElementById('refund-capture-panel');
-    if (!panel) return;
-
-    panel.classList.add('better-freshdesk-inline-panel');
-    if (!panel.dataset.betterOpen) panel.dataset.betterOpen = 'no';
-    if (panel.parentElement !== toolbar) toolbar.appendChild(panel);
-
-    const minimize = panel.querySelector('#refund-minimize');
-    if (minimize && minimize.dataset.betterBound !== 'yes') {
-      minimize.dataset.betterBound = 'yes';
-      minimize.addEventListener('click', () => {
-        panel.dataset.betterOpen = 'no';
-      }, true);
-    }
+    if (!panel || !panel.classList.contains('better-freshdesk-inline-panel')) return;
+    panel.classList.remove('better-freshdesk-inline-panel');
+    delete panel.dataset.betterOpen;
+    if (panel.parentElement !== document.body) document.body.appendChild(panel);
   }
 
   // querySelector finds the Reply button at ANY depth, but insertBefore()
@@ -10405,15 +10431,12 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
 
-    let refundToggle = document.getElementById(REFUND_TOGGLE_ID);
-    if (!refundToggle) {
-      refundToggle = makeButton(REFUND_TOGGLE_ID, '$', 'Open refund capture panel');
-      refundToggle.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleRefundPanel();
-      });
-    }
+    // The refund panel is the round $ float in the corner again, beside 📋
+    // and 🧠 (Sebastian, 2026-09-30: "aparece, pero desaparece al segundo" -
+    // that second was this toolbar pulling it in as a hidden inline panel).
+    // So no $ toggle here, and a panel an older pass pulled in goes back out.
+    document.getElementById(REFUND_TOGGLE_ID)?.remove();
+    unmountRefundPanel();
 
     let cmsSessionDot = document.getElementById(CMS_SESSION_DOT_ID);
     if (!cmsSessionDot) {
@@ -10441,7 +10464,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       document.getElementById('better-freshdesk-copy-case').remove();
     }
 
-    const orderedControls = [brand, cms, cmsSessionDot, agent, refundToggle].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, agent].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -10449,8 +10472,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     if (!orderIsCorrect) {
       orderedControls.forEach(element => toolbar.appendChild(element));
     }
-
-    mountRefundPanel(toolbar);
   }
 
   // Other features (CMS header button, Set Agent) live in separate IIFEs and
