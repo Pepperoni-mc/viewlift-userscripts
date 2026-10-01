@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.66.2
-// @author       Happy, Potato
+// @version      3.67.0
+// @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
 // @match        https://cms.viewlift.com/*
@@ -209,6 +209,142 @@
   // waits for it to answer before closing itself.
   const BV_FOCUS_TICKET_KEY = 'betterViewliftFocusTicket';
   const BV_FOCUS_TICKET_ACK_KEY = 'betterViewliftFocusTicketAck';
+
+  /* ----------------------------------------------------------
+   * The ticket's brand, read off the ticket RECORD (2026-09-30).
+   *
+   * The brand chip, the refund sheet and the CMS button all used to guess
+   * the brand from page text - and in a combined filter view that text is
+   * the view's, not the ticket's, so they guessed wrong. The ticket itself
+   * says it twice, unambiguously:
+   *   1. Client Name (cf_b2b_client_name) - Sebastian: "la más acertada";
+   *   2. the support inbox it came in on (email_config_id), e.g.
+   *      43000168570 = sc-appsupport@spacecityhn.com.
+   * Both lists read live from /api/v2/ticket_fields and /api/v2/email_configs.
+   * `context` is canonical text for the CMS button's existing routing (host,
+   * CMS account, multi-brand tenant), so it sees one clean brand instead of
+   * the whole page.
+   * ---------------------------------------------------------- */
+  const BV_TICKET_BRANDS = [
+    { key: 'tbl', label: 'TBL', client: /^TBL\b/i, inboxes: [43000168233], context: 'TBL Tampa Bay Lightning tampabaylightning.com' },
+    { key: 'livgolf', label: 'LIV', client: /^Liv\s*Golf/i, inboxes: [43000160250], context: 'LIV Golf livgolfplus.com' },
+    { key: 'schn', label: 'SCHN', client: /^SCHN/i, inboxes: [43000168570], context: 'SCHN spacecityhn.com' },
+    { key: 'msn', label: 'MSN', client: /^MSN\b|monumental/i, inboxes: [43000131225, 43000162164], context: 'MSN monumentalsports.com' },
+    { key: 'altitude', label: 'ALTITUDE', client: /^Altitude/i, inboxes: [43000167226], context: 'Altitude altitudeplus.com' },
+    { key: 'dirt', label: 'DIRT', client: /^DIRT\s*Vision/i, inboxes: [43000166896], context: 'DIRTVision dirtvision.com' },
+    { key: 'vgk', label: 'VGK', client: /^VGK\b|knight\s*time/i, inboxes: [43000162317], context: 'VGK KnightTime knighttimeplus.com' },
+    { key: 'chsn', label: 'CHSN', client: /^CHSN/i, inboxes: [43000167114], context: 'CHSN chsn.com' },
+    { key: 'rootsport', label: 'ROOT', client: /^Root\s*Sports?/i, inboxes: [43000167550], context: 'Root Sports rootsportsnw.com' },
+    { key: 'lnp', label: 'LNP', client: /^LNP\b/i, inboxes: [43000135748], context: 'LNP legapallacanestro.com' },
+    { key: 'fox', label: 'FOX', client: /^FOX\s*One/i, inboxes: [43000168571], context: 'FOX One fox.com' },
+    { key: 'motv', label: 'MOTV', client: /^MOTV/i, inboxes: [43000168408], context: 'MOTV myoutdoortv.com' }
+  ];
+  const BV_TICKET_BRAND_STORE_KEY = 'betterViewliftTicketBrands';
+  const BV_TICKET_BRAND_STORE_MAX = 60;
+  const bvTicketBrandMemory = new Map();
+  const bvTicketBrandPending = new Map();
+
+  // Client Name first; the inbox only when Client Name is empty or names
+  // nothing known (e.g. "ViewLift Core").
+  function bvBrandFromTicketRecord(ticket) {
+    const client = String(ticket && ticket.custom_fields && ticket.custom_fields.cf_b2b_client_name || '').trim();
+    if (client) {
+      const byClient = BV_TICKET_BRANDS.find(brand => brand.client.test(client));
+      if (byClient) return Object.assign({}, byClient, { source: `Client Name "${client}"` });
+    }
+    const inbox = Number(ticket && ticket.email_config_id);
+    const byInbox = BV_TICKET_BRANDS.find(brand => brand.inboxes.includes(inbox));
+    return byInbox ? Object.assign({}, byInbox, { source: 'support inbox' }) : null;
+  }
+
+  function bvCurrentFreshdeskTicketId() {
+    if (location.hostname !== 'viewlift.freshdesk.com') return '';
+    const match = location.pathname.match(/^\/a\/tickets\/(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  function bvReadStoredTicketBrands() {
+    try {
+      const value = GM_getValue(BV_TICKET_BRAND_STORE_KEY, {});
+      return value && typeof value === 'object' ? value : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function bvStoreTicketBrand(ticketId, brand) {
+    try {
+      const store = bvReadStoredTicketBrands();
+      store[ticketId] = { key: brand.key, source: brand.source, at: Date.now() };
+      const ids = Object.keys(store).sort((a, b) => Number(store[b].at || 0) - Number(store[a].at || 0));
+      ids.slice(BV_TICKET_BRAND_STORE_MAX).forEach(id => delete store[id]);
+      GM_setValue(BV_TICKET_BRAND_STORE_KEY, store);
+    } catch (error) {
+      // Memory still has it for this page.
+    }
+  }
+
+  function bvFetchTicketRecord(ticketId) {
+    // Reads work on the Freshdesk session alone (measured); anywhere else the
+    // agent's own API key is the only way in.
+    if (location.hostname === 'viewlift.freshdesk.com') {
+      return fetch(`/api/v2/tickets/${ticketId}`, { credentials: 'same-origin' }).then(response => {
+        if (!response.ok) throw new Error('http-' + response.status);
+        return response.json();
+      });
+    }
+    return new Promise((resolve, reject) => {
+      freshdeskApiRequest({
+        path: `/api/v2/tickets/${ticketId}`,
+        onDone: (error, data) => (error ? reject(error) : resolve(data))
+      });
+    });
+  }
+
+  function bvResolveTicketBrand(ticketId) {
+    const id = String(ticketId || '');
+    if (!/^\d+$/.test(id)) return Promise.resolve(null);
+    if (bvTicketBrandPending.has(id)) return bvTicketBrandPending.get(id);
+    const pending = bvFetchTicketRecord(id).then(ticket => {
+      const brand = bvBrandFromTicketRecord(ticket);
+      bvTicketBrandMemory.set(id, brand);
+      if (brand) bvStoreTicketBrand(id, brand);
+      // The chip is drawn by the toolbar; redraw it now that the answer is in.
+      if (typeof window.__bvReconcileFreshdeskToolbar === 'function') {
+        try {
+          window.__bvReconcileFreshdeskToolbar();
+        } catch (error) {
+          // The next route tick redraws it anyway.
+        }
+      }
+      return brand;
+    }).catch(error => {
+      // No retry storm: this page falls back to the old text heuristics.
+      bvTicketBrandMemory.set(id, null);
+      console.warn('[Better ViewLift] Could not read the ticket to find its brand; using page text.', error);
+      return null;
+    }).finally(() => bvTicketBrandPending.delete(id));
+    bvTicketBrandPending.set(id, pending);
+    return pending;
+  }
+
+  // Synchronous answer for the callers that cannot wait: what is already
+  // known (this page, or stored by any tab), else null - and the lookup is
+  // started so the next call has it.
+  function bvGetTicketBrand(ticketId = bvCurrentFreshdeskTicketId()) {
+    const id = String(ticketId || '');
+    if (!/^\d+$/.test(id)) return null;
+    if (bvTicketBrandMemory.has(id)) return bvTicketBrandMemory.get(id);
+    const stored = bvReadStoredTicketBrands()[id];
+    const known = stored && BV_TICKET_BRANDS.find(brand => brand.key === stored.key);
+    if (known) {
+      const brand = Object.assign({}, known, { source: stored.source || 'stored' });
+      bvTicketBrandMemory.set(id, brand);
+      return brand;
+    }
+    bvResolveTicketBrand(id);
+    return null;
+  }
 
   // Diagnostic channel for things worth knowing about (CMS session dying,
   // a lookup falling back to a worse method). Routed to the console -
@@ -723,6 +859,44 @@
           // field/value it rejected (e.g. a custom field validation error) -
           // surfacing it is the difference between "http-400" (useless) and
           // an actionable reason.
+          httpError.responseBody = response.responseText || '';
+          onDone(httpError, null);
+          return;
+        }
+        try {
+          onDone(null, response.responseText ? JSON.parse(response.responseText) : {});
+        } catch (error) {
+          onDone(error, null);
+        }
+      },
+      onerror: function () { onDone(new Error('network-error'), null); },
+      ontimeout: function () { onDone(new Error('timeout'), null); }
+    });
+  }
+
+  // Same as freshdeskApiRequest, for multipart bodies (a note with an image
+  // attachment). No Content-Type header: GM_xmlhttpRequest sets the
+  // multipart boundary itself from the FormData.
+  function freshdeskApiMultipart({ path, formData, onDone }) {
+    const apiKey = getFreshdeskApiKey();
+    if (!apiKey) {
+      onDone(new Error('no-api-key'), null);
+      return;
+    }
+
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: `https://viewlift.freshdesk.com${path}`,
+      headers: { Authorization: 'Basic ' + btoa(apiKey + ':X') },
+      data: formData,
+      timeout: 30000,
+      onload: function (response) {
+        if (response.status === 401 || response.status === 403) {
+          onDone(new Error('unauthorized'), null);
+          return;
+        }
+        if (response.status < 200 || response.status >= 300) {
+          const httpError = new Error('http-' + response.status);
           httpError.responseBody = response.responseText || '';
           onDone(httpError, null);
           return;
@@ -1953,7 +2127,10 @@
   }
 
   function captureRefundClientKey() {
-    const clientKey = detectRefundClientKeyFromText(getRefundClientContextText());
+    const recordBrand = getActiveTicketBrand();
+    const clientKey = recordBrand && REFUND_SHEETS[recordBrand.key]
+      ? recordBrand.key
+      : detectRefundClientKeyFromText(getRefundClientContextText());
 
     if (clientKey) {
       forceSet(STORAGE_KEYS.client, clientKey);
@@ -2005,7 +2182,21 @@
     return sheet.columns.map(name => fields[name] ?? '');
   }
 
+  // The brand of the ticket this refund is for, from the ticket record:
+  // on Freshdesk the open ticket, on CMS the stored Freshdesk ticket.
+  function getActiveTicketBrand() {
+    const ticketId = bvCurrentFreshdeskTicketId() ||
+      (String(getFreshdeskTicketURL() || '').match(/\/tickets\/(\d+)/i) || [])[1] || '';
+    return ticketId ? bvGetTicketBrand(ticketId) : null;
+  }
+
   function getRefundSheetKey() {
+    const recordBrand = getActiveTicketBrand();
+    if (recordBrand && REFUND_SHEETS[recordBrand.key]) {
+      forceSet(STORAGE_KEYS.client, recordBrand.key);
+      return recordBrand.key;
+    }
+
     const detected = detectRefundClientKeyFromText(getRefundClientContextText());
     if (detected && REFUND_SHEETS[detected]) {
       forceSet(STORAGE_KEYS.client, detected);
@@ -7175,6 +7366,29 @@ if (isCMSHost()) {
         { name: 'add_reply' },
         { name: 'responder_id', value: '-2' }
     ];
+    // FOX answers in Spanish with its own scenario (Sebastian, 2026-09-30:
+    // "para FOX quiero que uses el scenario de FOX refunded"). Read live, id
+    // 43001063853.
+    const FOX_REFUNDED_SCENARIO_NAME = 'FOX Refunded';
+    const FOX_REFUNDED_SCENARIO_FALLBACK_ACTIONS = [
+        { name: 'ticket_type', value: 'Refund' },
+        { name: 'responder_id', value: '-2' },
+        { name: 'add_tag', value: 'Refunded' },
+        { name: 'status', value: '12' },
+        { name: 'cf_platform_976229', value: 'Web' },
+        { name: 'add_reply' }
+    ];
+    const SCENARIO_FALLBACKS = {
+        [REFUNDED_SCENARIO_NAME]: REFUNDED_SCENARIO_FALLBACK_ACTIONS,
+        [FOX_REFUNDED_SCENARIO_NAME]: FOX_REFUNDED_SCENARIO_FALLBACK_ACTIONS
+    };
+
+    // FOX One has its own CMS host, which makes the brand unambiguous here.
+    function getRefundedScenarioName() {
+        return location.hostname === 'foxone.cms.viewlift.com'
+            ? FOX_REFUNDED_SCENARIO_NAME
+            : REFUNDED_SCENARIO_NAME;
+    }
 
     function freshdeskApi(method, path, body) {
         return new Promise((resolve, reject) => {
@@ -7288,7 +7502,7 @@ if (isCMSHost()) {
         } catch (error) {
             console.warn('[BV Refund Assist] Could not read the scenario list; using the built-in copy.', error);
         }
-        return { actions: REFUNDED_SCENARIO_FALLBACK_ACTIONS, source: 'built-in copy' };
+        return { actions: SCENARIO_FALLBACKS[name] || [], source: 'built-in copy' };
     }
 
     async function applyScenarioViaApi(ticketId, name) {
@@ -7298,6 +7512,16 @@ if (isCMSHost()) {
             freshdeskApi('GET', '/api/v2/agents/me')
         ]);
         const { update, skipped } = scenarioActionsToUpdate(actions, ticket, me?.id);
+        // The status is deliberately NOT set here. The ticket tab's "Send and
+        // set as Waiting on End User" sets it - and the SCHN+ Case Tracker
+        // userscript counts a case by seeing exactly that status change go
+        // out from the Freshdesk page. Setting it first from this CMS tab
+        // (invisible to the tracker) left the send with no status change to
+        // carry, so the case was never tracked (2026-09-30).
+        if ('status' in update) {
+            delete update.status;
+            skipped.push('status (set by the send)');
+        }
         if (!Object.keys(update).length) return { changed: [], skipped, source };
         await freshdeskApi('PUT', `/api/v2/tickets/${ticketId}`, update);
         return { changed: Object.keys(update), skipped, source };
@@ -7422,19 +7646,20 @@ if (isCMSHost()) {
 
         // 2. The scenario - only when money was actually refunded.
         if (!dryRun && done.length) {
-            const scenarioStep = addStep(`Scenario: ${REFUNDED_SCENARIO_NAME}`);
+            const scenarioName = getRefundedScenarioName();
+            const scenarioStep = addStep(`Scenario: ${scenarioName}`);
             if (!noteSaved) {
                 // The reply editor would replace the unsaved note draft.
                 endStep(scenarioStep, 'failed', 'not applied - the note is not saved yet; save it, then apply the scenario by hand');
             } else {
                 try {
-                    const result = await applyScenarioViaApi(ticketId, REFUNDED_SCENARIO_NAME);
+                    const result = await applyScenarioViaApi(ticketId, scenarioName);
                     // The customer reply cannot go through the API and must
                     // be reviewed anyway: the ticket tab clicks Apply so it
                     // lands in the reply editor, unsent.
                     queueNote(ticketURL, null, {
                         pasteNote: false,
-                        applyScenario: REFUNDED_SCENARIO_NAME,
+                        applyScenario: scenarioName,
                         replyEmail: contact.email,
                         replyFirstName: contact.firstName
                     });
@@ -8680,8 +8905,15 @@ if (isCMSHost()) {
             const snapshotDataUrl = await blobToDataUrl(blob);
             const ticketUrl = String(GM_getValue('Refund Active Ticket', '') || '').trim() ||
                 String(GM_getValue('Freshdesk ID', '') || '').trim();
+            const subscriptionDetails = collectSubscriptionDetails();
 
-            try {
+            // With the agent's API key the note is saved straight from here
+            // (Sebastian, 2026-09-30: "que la función de copy page snapshot
+            // pegue la nota con el API"); the Freshdesk-tab paste below is
+            // only the fallback, so a saved note is never pasted a second time.
+            const savedViaApi = await postSnapshotNote(ticketUrl, blob, subscriptionDetails);
+
+            if (!savedViaApi) try {
                 // A small queue, not a single value: requesting two snapshots
                 // (for the same ticket or different ones) within the consumer's
                 // poll window used to silently overwrite the first one.
@@ -8698,7 +8930,7 @@ if (isCMSHost()) {
                     // The same subscription fields the shot shows, as text, so
                     // the note stays searchable and quotable instead of being
                     // an image nobody can copy a plan name out of.
-                    subscriptionDetails: collectSubscriptionDetails(),
+                    subscriptionDetails,
                     createdAt: Date.now()
                 });
 
@@ -8741,6 +8973,70 @@ if (isCMSHost()) {
                 button.textContent = originalText;
             }, 1200);
         }
+    }
+
+    function escapeNoteHtml(value) {
+        return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    // The same content the Freshdesk tab pastes (Feature 9): the CMS link,
+    // then "Subscription details" with a blank line between plans - built
+    // here as HTML for the API, with the screenshot as the note's attachment.
+    function buildSnapshotNoteHtml(sourceUrl, details) {
+        const parts = [`<div>CMS: <a href="${escapeNoteHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeNoteHtml(sourceUrl)}</a></div>`];
+        const rows = (Array.isArray(details) ? details : [])
+            .slice(0, SUBSCRIPTION_DETAIL_MAX_FIELDS)
+            .map(detail => ({
+                label: cleanText(detail && detail.label).slice(0, 60),
+                value: cleanText(detail && detail.value).slice(0, SUBSCRIPTION_DETAIL_MAX_VALUE_LENGTH),
+                group: Number(detail && detail.group) || 0
+            }))
+            .filter(row => row.label && row.value);
+        if (rows.length) {
+            let group = rows[0].group;
+            const lines = ['<strong>Subscription details</strong>'];
+            for (const row of rows) {
+                if (row.group !== group) {
+                    lines.push('');
+                    group = row.group;
+                }
+                lines.push(`${escapeNoteHtml(row.label)}: ${escapeNoteHtml(row.value)}`);
+            }
+            parts.push(`<div>${lines.join('<br>')}</div>`);
+        }
+        return parts.join('<br>');
+    }
+
+    // true = the note is saved on the ticket. false = no key, no ticket, or
+    // the API refused - the caller falls back to the paste queue.
+    function postSnapshotNote(ticketUrl, blob, details) {
+        const ticketId = (String(ticketUrl || '').match(/\/tickets\/(\d+)/i) || [])[1];
+        if (!ticketId || !getFreshdeskApiKey()) return Promise.resolve(false);
+
+        return new Promise(resolve => {
+            try {
+                const formData = new FormData();
+                formData.append('body', buildSnapshotNoteHtml(location.href, details));
+                formData.append('private', 'true');
+                formData.append('attachments[]', new File([blob], 'cms-snapshot.png', { type: 'image/png' }));
+                freshdeskApiMultipart({
+                    path: `/api/v2/tickets/${ticketId}/notes`,
+                    formData,
+                    onDone: function (error) {
+                        if (error) {
+                            console.warn('[CMS Snapshot] API note failed, pasting it in the ticket tab instead.',
+                                error.message, error.responseBody || '');
+                            resolve(false);
+                            return;
+                        }
+                        resolve(true);
+                    }
+                });
+            } catch (error) {
+                console.warn('[CMS Snapshot] Could not build the API note.', error);
+                resolve(false);
+            }
+        });
     }
 
     function hideElementsForCapture() {
@@ -9214,7 +9510,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function buildBoldPattern() {
-    return /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})|(The Technical Support Team)|(Technical Support Team)|(Regards,)/g;
+    // The Spanish pair is FOX's template ("Gracias por contactar con el Equipo
+    // de Soporte Técnico" ... "Saludos cordiales, / Equipo de Soporte Técnico"),
+    // asked for in bold the same as the English one (2026-09-30).
+    return /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})|(The Technical Support Team)|(Technical Support Team)|(Regards,)|(Equipo de Soporte T[ée]cnico)|(Saludos cordiales,)/g;
   }
 
   function replaceLongDashCharacters(text) {
@@ -9291,7 +9590,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
               /[\u2013\u2014]/.test(node.nodeValue) ||
               /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(node.nodeValue) ||
               lowerText.includes("technical support team") ||
-              lowerText.includes("regards,")
+              lowerText.includes("regards,") ||
+              /equipo de soporte t[ée]cnico|saludos cordiales,/.test(lowerText)
             ) {
               return NodeFilter.FILTER_ACCEPT;
             }
@@ -9616,6 +9916,10 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
   }
 
   function detectBrand() {
+    // The ticket record wins (see BV_TICKET_BRANDS); page text is only the
+    // fallback while that lookup is in flight or when it fails.
+    const resolved = bvGetTicketBrand();
+    if (resolved) return BRAND_RULES.find(rule => rule.label === resolved.label) || { label: resolved.label, patterns: [] };
     const context = getContextText();
     return BRAND_RULES.find(rule => rule.patterns.some(pattern => pattern.test(context))) || null;
   }
@@ -10360,7 +10664,48 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     return '';
   }
 
-  const REPLY_EMAIL_SENTENCE = /associated with the email address/i;
+  // B2C Account Refunded (English) and FOX Refunded (Spanish), both read from
+  // sent replies on 2026-09-30. The sentence holding the email is how the
+  // scenario reply is recognised, in either language.
+  const REPLY_EMAIL_SENTENCE = /associated with the email address|asociada a la direcci[oó]n de correo electr[oó]nico/i;
+  const REPLY_PROFILES = {
+    en: {
+      sentence: /associated with the email address/i,
+      signature: /regards,/gi,
+      thanks: /thank you for contacting/gi,
+      team: /technical support team/gi
+    },
+    es: {
+      sentence: /asociada a la direcci[oó]n de correo electr[oó]nico/i,
+      signature: /saludos cordiales,/gi,
+      thanks: /gracias por contactar/gi,
+      team: /equipo de soporte t[ée]cnico/gi
+    }
+  };
+  const GREETING_WORDS = '(?:Hello|Hi|Dear|Hola|Estimad[oa])';
+
+  // What Froala is about to send, checked against the template's rules:
+  // email, team name and signature in bold (Sebastian, 2026-09-30: "bold en
+  // el saludo, correo y firma"), and one greeting / "thank you" / signature
+  // each - a reply once went out with two of everything. Returns the reason
+  // NOT to send, or ''.
+  function checkReplyLayout(html, expectedEmail) {
+    const doc = document.createElement('div');
+    doc.innerHTML = String(html || '');
+    const text = cleanText(doc.textContent);
+    const profile = REPLY_PROFILES.es.sentence.test(text) ? REPLY_PROFILES.es : REPLY_PROFILES.en;
+    const bold = Array.from(doc.querySelectorAll('strong, b')).map(node => cleanText(node.textContent).toLowerCase());
+    const count = pattern => (text.match(pattern) || []).length;
+    const boldCount = pattern => bold.reduce((total, value) => total + (value.match(pattern) || []).length, 0);
+
+    if (!bold.includes(expectedEmail)) return 'the email is not bold in what Freshdesk would send';
+    if (count(profile.signature) !== 1) return `the reply has ${count(profile.signature)} signatures`;
+    if (boldCount(profile.signature) !== 1) return 'the signature is not bold in what Freshdesk would send';
+    if (boldCount(profile.team) !== count(profile.team)) return 'the team name is not bold everywhere in what Freshdesk would send';
+    if (count(profile.thanks) > 1) return 'the reply repeats its "thank you for contacting" line';
+    if (count(new RegExp(`\\b${GREETING_WORDS}\\s+[^,]{1,40},`, 'gi')) > 1) return 'the reply has more than one greeting';
+    return '';
+  }
 
   function findScenarioReplyEditor() {
     return Array.from(document.querySelectorAll('[contenteditable="true"]'))
@@ -10388,7 +10733,7 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const text = node.nodeValue || '';
       if (!cleanText(text)) continue;
-      const match = text.match(/^(\s*(?:Hello|Hi|Dear)\s+)([^,\n]+?)(\s*,)/i);
+      const match = text.match(new RegExp(`^(\\s*${GREETING_WORDS}\\s+)([^,\\n]+?)(\\s*,)`, 'i'));
       if (!match) return '';
       if (cleanText(match[2]) === firstName) return '';
       node.nodeValue = match[1] + firstName + match[3] + text.slice(match[0].length);
@@ -10527,20 +10872,8 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     // FROALA will send - not what the page shows.
     const froalaHtml = syncFroala(editor);
     if (froalaHtml === null) return { problem: 'could not reach the Froala editor to sync it', changed };
-    const html = froalaHtml.toLowerCase();
-    if (!html.includes(`<strong>${expectedEmail}</strong>`)) {
-      return { problem: 'the email is not bold in what Freshdesk would send', changed };
-    }
-    if (/regards,/i.test(html) && !/<strong>[^<]*regards,/i.test(html)) {
-      return { problem: 'the signature is not bold in what Freshdesk would send', changed };
-    }
-    // The template's own layout, once: one greeting, one "Thank you for
-    // contacting", one signature (a reply went out with two of each).
-    const text = froalaHtml.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-    const count = pattern => (text.match(pattern) || []).length;
-    if (count(/regards,/gi) !== 1) return { problem: `the reply has ${count(/regards,/gi)} signatures`, changed };
-    if (count(/\b(hello|hi|dear)\s+[^,]{1,40},/gi) > 1) return { problem: 'the reply has more than one greeting', changed };
-    if (count(/thank you for contacting/gi) > 1) return { problem: 'the reply repeats "Thank you for contacting"', changed };
+    const layoutProblem = checkReplyLayout(froalaHtml, expectedEmail);
+    if (layoutProblem) return { problem: layoutProblem, changed };
 
     // Test mode (see the data-bv-reply-check hook below): everything up to
     // here ran for real on the editor, only the send is skipped.
@@ -12349,7 +12682,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function truncateAfterFirstSignature(text) {
-        const signaturePattern = /(^|\n)(\s*Regards,\s*\n\s*The Technical Support Team\b[\s\S]*?)(?=\n\s*\S)/i;
+        // FOX's replies are Spanish: "Saludos cordiales, / Equipo de Soporte
+        // Técnico" is the same signature and gets the same treatment.
+        const signaturePattern = /(^|\n)(\s*(?:Regards,\s*\n\s*The Technical Support Team|Saludos cordiales,\s*\n\s*Equipo de Soporte T[ée]cnico)\b[\s\S]*?)(?=\n\s*\S)/i;
         const match = signaturePattern.exec(text);
 
         if (!match) {
@@ -12369,8 +12704,9 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
 
     function removeDefaultTemplateAfterAppliedScenario(text) {
         const defaultTemplatePattern = /\n+\s*Thank you for contacting the Technical Support Team\.\s*\n+\s*Regards,\s*\n\s*The Technical Support Team\s*$/i;
+        const defaultSpanishTemplatePattern = /\n+\s*Gracias por contactar con el Equipo de Soporte T[ée]cnico\.\s*\n+\s*Saludos cordiales,\s*\n\s*Equipo de Soporte T[ée]cnico\s*$/i;
 
-        return text.replace(defaultTemplatePattern, '').trim();
+        return text.replace(defaultTemplatePattern, '').replace(defaultSpanishTemplatePattern, '').trim();
     }
 
     function shouldRunApplyDuplicateCleanup() {
@@ -13196,6 +13532,14 @@ if (location.hostname === 'viewlift.freshdesk.com' && location.pathname.startsWi
     }
 
     function getFreshdeskClientContext() {
+        // The ticket record's own brand, when known, is the whole context:
+        // in a combined filter view the page text below names the VIEW, and
+        // that is how the button used to open the wrong CMS.
+        const resolvedBrand = bvGetTicketBrand();
+        if (resolvedBrand && resolvedBrand.context) {
+            return { primary: resolvedBrand.context, fallback: '' };
+        }
+
         const primaryChunks = [];
         const viewNameChrome = getViewNameChrome();
         const preferredSelectors = [

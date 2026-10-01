@@ -435,7 +435,11 @@ function check(label, actual, expected) {
 
   check(
     'the capture queues the scraped fields alongside the PNG',
-    /subscriptionDetails:\s*collectSubscriptionDetails\(\)/.test(payload),
+    // Collected once before the queue (3.67.0) so the API note and the
+    // queued paste carry the same fields.
+    (/subscriptionDetails:\s*collectSubscriptionDetails\(\)/.test(payload) ||
+      (/\bsubscriptionDetails,/.test(payload) &&
+        /const subscriptionDetails = collectSubscriptionDetails\(\);/.test(fullSrc))),
     true
   );
   check('and still queues the CMS page URL', /sourceUrl:\s*location\.href/.test(payload), true);

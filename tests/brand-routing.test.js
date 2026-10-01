@@ -53,6 +53,9 @@ function extractConst(pattern, name) {
 }
 
 const sandbox = `
+  // The ticket-record brand (BV_TICKET_BRANDS) is stubbed per test: null =
+  // not resolved yet, so the page-text routing below is what gets exercised.
+  const bvGetTicketBrand = () => (typeof globalThis.__resolvedBrand === 'undefined' ? null : globalThis.__resolvedBrand);
   ${extractConst(/const CMS_USERS_URLS = \{[\s\S]*?\};/, 'CMS_USERS_URLS')}
   ${extractFunction(/function cleanText/, 'cleanText')}
   ${extractFunction(/function addClientContextText/, 'addClientContextText')}
@@ -360,8 +363,21 @@ const altitudeTicket = {
   check('and to MOTV, which is known but still has no host', key('MOTV ticket - the fox logo is missing'), '');
 }
 
+// 2026-09-30: once the ticket record has given the brand, it IS the context -
+// the combined view name and page text no longer get a say.
+{
+  globalThis.__resolvedBrand = { key: 'schn', label: 'SCHN', context: 'SCHN spacecityhn.com' };
+  const api = load(altitudeTicket);
+  const ctx = api.getFreshdeskClientContext();
+  check('a resolved ticket brand replaces the page text entirely', ctx.primary === 'SCHN spacecityhn.com' && ctx.fallback === '', true);
+  check('and routes by it, not by the view (ALTITUDE + LIV + MSN)', api.getCMSUsersURLForClient(ctx), 'https://cms-gcp.viewlift.com/users/search');
+  delete globalThis.__resolvedBrand;
+}
+
 if (failures) {
   console.log(`\n${failures} check(s) FAILED`);
+
+
   process.exit(1);
 }
 console.log('\nAll checks passed against the shipped source.');

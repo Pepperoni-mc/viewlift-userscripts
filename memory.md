@@ -31,6 +31,49 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.66.1-3.67.0 - send fixes, brand from the ticket record, FOX, tracker, snapshot via API (same day)
+
+- **Unbolded / double-signed replies (3.66.1-3.66.2).** Freshdesk sends **Froala's model**, not
+  the DOM (`window.FroalaEditor` 3.1.1, one instance per editor, `instance.el === editor`); the
+  model only updates on Froala events - measured: after `undo.saveStep()` the autosaved
+  `/api/_/tickets/<id>/draft` carried the DOM's `<strong>`s, ~4s later. And the Apply cleanup
+  (Feature 2, `scheduleClean`, 0.3-2.5s timer) rewrites the reply as **plain text**, while Auto
+  Bold (Feature 1) only runs on load/input/paste. The send beat both. Now `checkAndSendReply`:
+  wait for the insert to settle → `window.__bvCleanAppliedReply(editor)` (runs the cleanup now,
+  cancels the pending one via `scheduledCleanRunId`) → `window.__bvAutoBoldEditor(editor)` →
+  wrap the sentence's email in `<strong>` if needed → fix email/greeting → `syncFroala()` →
+  `checkReplyLayout()` on `instance.html.get()` (email, team name, signature bold; exactly one
+  signature / greeting / thank-you) → send. Test hook (no send): `<html data-bv-reply-check=
+  "email|First">` → `data-bv-reply-check-result`. Live on #361824: cleanup confirmed (one
+  greeting, one signature); 3.66.1's order bug (looked for the bold email before re-bolding)
+  found there and fixed in 3.66.2 - **3.66.2+ not yet re-tested live**.
+- **FOX (3.67.0)**: on `foxone.cms.viewlift.com` the scenario is **FOX Refunded** (id
+  43001063853: Refund / Refunded / 12 / cf_platform Web / reply). Spanish template read from a
+  sent reply: "Hola X, / Gracias por contactar con el Equipo de Soporte Técnico. / ...asociada a
+  la dirección de correo electrónico X se ha cancelado... / Saludos cordiales, / Equipo de
+  Soporte Técnico". Auto Bold now bolds "Equipo de Soporte Técnico" and "Saludos cordiales,";
+  the cleanup knows the Spanish default template and signature; the reply checks pick the
+  profile from the sentence. The Spanish *default* template wording is assumed, not read.
+- **Brand from the ticket record (3.67.0)**: `BV_TICKET_BRANDS` + `bvGetTicketBrand()` read
+  `cf_b2b_client_name` first, then `email_config_id` (inbox ids from `/api/v2/email_configs`,
+  e.g. 43000168570 = sc-appsupport@spacecityhn.com, 43000168571 = soportemx@fox.com), cached
+  per ticket in GM `betterViewliftTicketBrands`. Wired into the brand chip, the refund sheet key
+  (Freshdesk and CMS side) and the CMS button (`getFreshdeskClientContext` returns the brand's
+  canonical text, so host/account/tenant routing sees one brand, not the combined view). Page
+  text is only the fallback while the lookup is in flight. Tests: `ticket-brand.test.js`, plus a
+  routing case in `brand-routing.test.js`.
+- **SCHN+ Case Tracker conflict**: that separate script (deleted from the repo in d2033f1, still
+  installed) counts a case when the Freshdesk page sends a ticket update with `status: 12` or an
+  `execute_scenario` call. Refund Assist set status 12 by API from the CMS tab (invisible to it)
+  and then the send had no status change to carry, so nothing was tracked. The scenario PUT now
+  **leaves `status` out**; the ticket tab's "Send and set as Waiting on End User" sets it, as a
+  manual send does. The tracker itself was not touched.
+- **Snapshot via API**: with a key, the 📸 button POSTs the private note itself (multipart:
+  body = CMS link + Subscription details HTML, the PNG as `attachments[]`) via the new
+  `freshdeskApiMultipart()`; otherwise the old paste queue. The image is an attachment, not
+  inline. Not live-tested (no key available to Claude).
+- `@author` is now just `Happy`.
+
 ### 3.66.0 - the scenario reply is checked and SENT; Google Play refunds paired (same day)
 
 Sebastian (after 3.65.0 "funciona"): check the email in the scenario reply is the one just
