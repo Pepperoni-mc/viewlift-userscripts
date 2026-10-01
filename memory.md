@@ -31,6 +31,37 @@ Order is deliberate: **cancel first** so no new charge lands while the refunds g
 - Stop rules: a failed cancel refunds nothing; a failed refund stops the rest (listed as skipped).
   Success after Confirm Refund = the refund modal closes and no snackbar/alert says error.
 
+### 3.68.0 - the refund log row is written by the script (no Apps Script) (same day)
+
+Sebastian asked for the refund-capture row to land in the refund log by itself, without Apps
+Script. **Proven first on a test sheet** (`1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4`): a
+synthetic `ClipboardEvent('paste')` with a tab-separated row, dispatched at Sheets' hidden cell
+input `#waffle-rich-text-editor` after moving the cursor through the Name Box (`#t-name-box`,
+value + Enter keydown), is accepted exactly like Ctrl+V - landed A2:G2, link auto-linked, date
+parsed, and gviz `count` (the server copy) went 0 → 1. gviz `&headers=0&range=A3:Z3` reads one
+row (empty = no non-quote/comma chars) - also proven live.
+
+- **Real refund log re-read (2026-09-30, read-only, emails masked)** - 11 tabs (SCHN+,
+  Altitude+, MSN B2C, VGK B2C, CHSN B2C, TBL B2C, FoxOne, RootSport B2C, LivGolf B2C,
+  DirtVision B2C, LNP B2C), and all three column layouts in `REFUND_SHEETS` still match
+  (Altitude's and LivGolf's column A header is blank but it holds the email). Values seen:
+  `Stripe` / `Google`, `USD 19.99` / `MXN 175` / `AUD 70` / `EUR 49.99`, `yes` (FOX/LNP `Yes`),
+  `User's request`, dates `9-30` / `09-30` / `Sep 30`; Freshdesk/CMS cells are links (some show
+  as chips with titles). What the capture produces already matches.
+- **`bvRunRefundSheetWriter()`** runs on `docs.google.com` - `@match`ed ONLY for the refund log
+  and the test sheet - and the main IIFE **returns right after it**, so nothing else of the
+  toolkit runs on Google. It takes `BV_SHEET_ROW_QUEUE_KEY` entries for this sheet+gid (15 min
+  TTL, removed BEFORE writing so a retry can never double-paste), then: server count → row =
+  count+2 → row must read empty → Name Box must show `A<row>` → paste → count must reach +1
+  within 15s. Any failure: red banner + row on the clipboard. `closeWhenDone` closes the tab.
+- Refund Capture's sheet button now queues the row and opens the tab (clipboard kept as the
+  fallback); `window.__bvRefundSheet.fillAndSend()` lets Refund Assist fill the panel (account
+  email, ticket, CMS URL, handler mapped through PAYMENT_PATTERNS, total) and send the row in
+  the background. **Test mode**: menu "Refund sheet: toggle test mode" sends every row to the
+  test sheet's first tab; a Refund Assist **dry run** only sends a row in test mode.
+- Also: Feature 1's `CMS_USER_URL_RE` now includes `foxone.cms.viewlift.com`.
+- Not yet run through the installed script (needs 3.68.0 in Tampermonkey).
+
 ### 3.66.1-3.67.0 - send fixes, brand from the ticket record, FOX, tracker, snapshot via API (same day)
 
 - **Unbolded / double-signed replies (3.66.1-3.66.2).** Freshdesk sends **Froala's model**, not

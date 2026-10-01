@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.67.0
+// @version      3.68.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -11,6 +11,8 @@
 // @match        https://foxone.cms.viewlift.com/*
 // @match        https://cms.monumentalsportsnetwork.com/*
 // @match        https://claude.ai/*
+// @match        https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/*
+// @match        https://docs.google.com/spreadsheets/d/1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @run-at       document-idle
@@ -55,6 +57,195 @@
     // GM_info is not available - the marker still records that we loaded.
   }
   installMarker.setAttribute('data-better-viewlift-installed', installedVersion);
+
+  // The refund log (and a test copy) is the ONLY Google page this script is
+  // matched on, and there it does one job - write the queued refund row -
+  // and nothing else of the toolkit runs. Declared before the guard so the
+  // writer never touches a const that is not initialised yet.
+  const BV_SHEET_ROW_QUEUE_KEY = 'betterViewliftSheetRowQueue';
+  if (location.hostname === 'docs.google.com') {
+    bvRunRefundSheetWriter();
+    return;
+  }
+
+  /* ----------------------------------------------------------
+   * Refund log writer (Google Sheets side), 2026-09-30.
+   *
+   * Sheets draws its grid on a canvas, but takes a paste through its hidden
+   * cell input (#waffle-rich-text-editor): a ClipboardEvent carrying the row
+   * tab-separated lands across the columns exactly like Ctrl+V. Proven on a
+   * test sheet: pasted into A2:G2, and gviz (the server's copy) counted it.
+   *
+   * Never overwrites: the target row must read empty on the server, the Name
+   * Box must show exactly A<row> before the paste, and the server's row count
+   * must go up by one afterwards - otherwise the row stays on the clipboard
+   * and the banner says why.
+   * ---------------------------------------------------------- */
+  function bvRunRefundSheetWriter() {
+    const QUEUE_TTL_MS = 15 * 60 * 1000;
+    const BANNER_ID = 'bv-refund-sheet-banner';
+    const sheetId = (location.pathname.match(/\/spreadsheets\/d\/([^/]+)/) || [])[1] || '';
+    let busy = false;
+
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const currentGid = () => (location.hash.match(/gid=(\d+)/) || location.search.match(/gid=(\d+)/) || [])[1] || '0';
+
+    async function waitUntil(test, timeout, pollMs = 250) {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeout) {
+        let value = null;
+        try {
+          value = test();
+        } catch (error) {
+          value = null;
+        }
+        if (value) return value;
+        await sleep(pollMs);
+      }
+      return null;
+    }
+
+    function readQueue() {
+      try {
+        const value = GM_getValue(BV_SHEET_ROW_QUEUE_KEY, []);
+        return Array.isArray(value) ? value : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function removeEntry(entry) {
+      const rest = readQueue().filter(item => !(item && item.nonce === entry.nonce));
+      try {
+        if (rest.length) GM_setValue(BV_SHEET_ROW_QUEUE_KEY, rest);
+        else GM_deleteValue(BV_SHEET_ROW_QUEUE_KEY);
+      } catch (error) {
+        // Worst case it expires on its own (QUEUE_TTL_MS).
+      }
+    }
+
+    function banner(message, kind) {
+      let node = document.getElementById(BANNER_ID);
+      if (!node) {
+        node = document.createElement('div');
+        node.id = BANNER_ID;
+        node.style.cssText = 'position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:2147483647;max-width:640px;padding:10px 16px;border-radius:8px;color:#fff;font:600 13px/1.4 Arial,sans-serif;box-shadow:0 8px 24px rgba(15,23,42,.25)';
+        document.body.appendChild(node);
+      }
+      node.textContent = message;
+      node.style.background = kind === 'error' ? '#991b1b' : (kind === 'ok' ? '#166534' : '#17324d');
+    }
+
+    // The server's copy, not the canvas: gviz reads what Google has saved.
+    async function gviz(gid, extra) {
+      const url = `/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}&${extra}`;
+      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      if (!response.ok) throw new Error('gviz http-' + response.status);
+      return response.text();
+    }
+
+    async function countColumnB(gid) {
+      const text = await gviz(gid, 'tq=' + encodeURIComponent('select count(B)'));
+      const match = text.match(/"(\d+)"\s*$/);
+      if (!match) throw new Error('could not read the row count');
+      return Number(match[1]);
+    }
+
+    async function rowIsEmpty(gid, row) {
+      const text = await gviz(gid, `headers=0&range=A${row}:Z${row}`);
+      return !text.replace(/[",\s]/g, '');
+    }
+
+    async function write(entry) {
+      const gid = String(entry.gid);
+      const nameBox = await waitUntil(() => document.querySelector('#t-name-box'), 30000);
+      const input = await waitUntil(() => document.getElementById('waffle-rich-text-editor'), 30000);
+      if (!nameBox || !input) throw new Error('the sheet did not finish loading');
+
+      const before = await countColumnB(gid);
+      const row = before + 2;
+      if (entry.expectedRow && entry.expectedRow !== row) {
+        // Someone added a row since the tab was opened - still fine, as long
+        // as the new target is empty; it is re-checked right below.
+        console.info(`[BV Refund Sheet] Expected row ${entry.expectedRow}, the sheet now ends at ${row - 1}.`);
+      }
+      if (!await rowIsEmpty(gid, row)) throw new Error(`row ${row} is not empty`);
+
+      nameBox.focus();
+      nameBox.value = `A${row}`;
+      nameBox.dispatchEvent(new Event('input', { bubbles: true }));
+      nameBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      const placed = await waitUntil(() => (nameBox.value === `A${row}` && document.activeElement === input ? true : null), 5000, 150);
+      if (!placed) throw new Error(`could not put the cursor on A${row} (Name Box says ${nameBox.value})`);
+
+      const transfer = new DataTransfer();
+      transfer.setData('text/plain', entry.row.map(cell => String(cell == null ? '' : cell).replace(/[\t\r\n]+/g, ' ')).join('\t'));
+      input.focus();
+      input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await sleep(750);
+        if (await countColumnB(gid) === before + 1) return row;
+      }
+      throw new Error(`pasted on row ${row}, but Google never saved it`);
+    }
+
+    async function run() {
+      if (busy) return;
+      const now = Date.now();
+      const entry = readQueue().find(item =>
+        item && item.sheetId === sheetId && String(item.gid) === currentGid() &&
+        Array.isArray(item.row) && now - Number(item.createdAt || 0) < QUEUE_TTL_MS);
+      if (!entry) return;
+
+      busy = true;
+      // Taken off the queue BEFORE writing: a retry loop that re-pasted
+      // could put the same refund in twice. A failure is reported instead.
+      removeEntry(entry);
+      banner(`Refund log: writing the ${entry.label || 'refund'} row...`, 'info');
+      try {
+        const row = await write(entry);
+        banner(`Refund log: row ${row} saved${entry.label ? ` (${entry.label})` : ''}.`, 'ok');
+        if (entry.closeWhenDone) {
+          await sleep(2500);
+          try {
+            window.close();
+          } catch (error) {
+            // Tab stays open - harmless.
+          }
+        }
+      } catch (error) {
+        console.warn('[BV Refund Sheet] Not written.', error);
+        banner(`Refund log: NOT written - ${String(error && error.message || error)}. The row is on your clipboard: put the cursor on the first empty row (column A) and press Ctrl+V.`, 'error');
+        try {
+          GM_setClipboard(entry.row.join('\t'), 'text');
+        } catch (clipboardError) {
+          // Nothing more to do; the banner already explains.
+        }
+      } finally {
+        busy = false;
+      }
+    }
+
+    function start() {
+      if (!document.body) {
+        setTimeout(start, 300);
+        return;
+      }
+      setTimeout(run, 1500);
+      try {
+        GM_addValueChangeListener(BV_SHEET_ROW_QUEUE_KEY, (_name, _old, _value, remote) => {
+          if (remote) run();
+        });
+      } catch (error) {
+        // The interval below still picks it up.
+      }
+      setInterval(run, 4000);
+      window.addEventListener('hashchange', () => setTimeout(run, 800));
+    }
+
+    start();
+  }
 
   // foxone.cms.viewlift.com is FOX One's own CMS instance (user-confirmed
   // 2026-09-30). It sits on viewlift.com like the others but as a deeper
@@ -1171,10 +1362,31 @@
     lnp:       { gid: '0',          columns: REFUND_LAYOUT_COMMENTS_DATE }
   };
 
-  function refundSheetUrl(sheetKey) {
+  // Test mode (Tampermonkey menu "Refund sheet: test mode"): every row goes
+  // to the test spreadsheet's first tab instead of the real refund log. Only
+  // a sheet the script is @match-ed on can be written to.
+  const REFUND_SHEET_TEST_ID = '1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4';
+  const REFUND_SHEET_TEST_KEY = 'bvRefundSheetTestMode';
+
+  function isRefundSheetTestMode() {
+    try {
+      return GM_getValue(REFUND_SHEET_TEST_KEY, false) === true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function getRefundSheetTarget(sheetKey) {
     const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
-    return 'https://docs.google.com/spreadsheets/d/' + REFUND_SHEET_ID +
-      '/edit?gid=' + sheet.gid + '#gid=' + sheet.gid;
+    return isRefundSheetTestMode()
+      ? { sheetId: REFUND_SHEET_TEST_ID, gid: '0', test: true }
+      : { sheetId: REFUND_SHEET_ID, gid: sheet.gid, test: false };
+  }
+
+  function refundSheetUrl(sheetKey) {
+    const target = getRefundSheetTarget(sheetKey);
+    return 'https://docs.google.com/spreadsheets/d/' + target.sheetId +
+      '/edit?gid=' + target.gid + '#gid=' + target.gid;
   }
 
   const BLOCKED_EMAILS = [
@@ -1194,7 +1406,7 @@
   ];
 
   const CMS_USER_ID_RE = /\/users\/(?:search\/)?([0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
+  const CMS_USER_URL_RE = /https:\/\/(?:cms(?:-gcp|-qcp)?\.viewlift\.com|foxone\.cms\.viewlift\.com|cms\.monumentalsportsnetwork\.com)\/users\/(?:search\/)?(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[^\s"'<>]*)?/ig;
   const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 
   const PAYMENT_PATTERNS = [
@@ -2216,9 +2428,9 @@
   // where to put the cursor. Row 1 is the header, so the first free row is
   // count + 2 (verified against the tbl tab: count 101, data ends at 102).
   function fetchNextRefundRow(sheetKey, onDone) {
-    const sheet = REFUND_SHEETS[sheetKey] || REFUND_SHEETS.tbl;
-    const url = 'https://docs.google.com/spreadsheets/d/' + REFUND_SHEET_ID +
-      '/gviz/tq?tqx=out:csv&gid=' + sheet.gid + '&tq=' + encodeURIComponent('select count(B)');
+    const target = getRefundSheetTarget(sheetKey);
+    const url = 'https://docs.google.com/spreadsheets/d/' + target.sheetId +
+      '/gviz/tq?tqx=out:csv&gid=' + target.gid + '&tq=' + encodeURIComponent('select count(B)');
 
     try {
       GM_xmlhttpRequest({
@@ -2251,10 +2463,38 @@
     return { sheetKey, row: buildRefundRow(sheetKey) };
   }
 
-  function copyForRefundSheet() {
+  // Hands the row to the writer that runs on the sheet itself
+  // (bvRunRefundSheetWriter): it pastes it there, checked, on its own.
+  function queueRefundSheetRow(sheetKey, row, expectedRow, { closeWhenDone = false } = {}) {
+    const target = getRefundSheetTarget(sheetKey);
+    try {
+      const queue = GM_getValue(BV_SHEET_ROW_QUEUE_KEY, []);
+      const list = (Array.isArray(queue) ? queue : []).filter(item =>
+        item && Date.now() - Number(item.createdAt || 0) < 15 * 60 * 1000);
+      list.push({
+        sheetId: target.sheetId,
+        gid: target.gid,
+        row,
+        expectedRow: expectedRow || 0,
+        label: sheetKey.toUpperCase() + (target.test ? ' - TEST SHEET' : ''),
+        closeWhenDone,
+        createdAt: Date.now(),
+        nonce: Date.now() + '-' + Math.random().toString(36).slice(2)
+      });
+      GM_setValue(BV_SHEET_ROW_QUEUE_KEY, list.slice(-5));
+      return true;
+    } catch (error) {
+      console.warn('[Refund] Could not queue the sheet row.', error);
+      return false;
+    }
+  }
+
+  // background: opened behind the current tab and closed once written -
+  // Refund Assist's mode, so the agent lands on the ticket, not the sheet.
+  function copyForRefundSheet({ background = false } = {}) {
     const result = getRefundSheetRow();
     const sheetUrl = refundSheetUrl(result.sheetKey);
-    const client = result.sheetKey.toUpperCase();
+    const client = result.sheetKey.toUpperCase() + (isRefundSheetTestMode() ? ' (TEST SHEET)' : '');
 
     GM_setClipboard(result.row.join('\t'));
     markAllFieldStates();
@@ -2263,18 +2503,68 @@
     // GM_openInTab rather than window.open: the row count is fetched first,
     // so by the time the tab is opened the click that started this is no
     // longer a fresh user gesture and a popup blocker would eat it.
-    fetchNextRefundRow(result.sheetKey, function (nextRow) {
+    return new Promise(resolve => fetchNextRefundRow(result.sheetKey, function (nextRow) {
       if (nextRow) {
-        GM_openInTab(sheetUrl + '&range=A' + nextRow, { active: true, insert: true });
-        setStatus('Copied for ' + client + '. Opened row ' + nextRow + ' - just press Ctrl+V.');
+        const queued = queueRefundSheetRow(result.sheetKey, result.row, nextRow, { closeWhenDone: background });
+        GM_openInTab(sheetUrl + '&range=A' + nextRow, { active: !background, insert: true });
+        setStatus(queued
+          ? 'Opened ' + client + ' row ' + nextRow + ' - the row is pasted there automatically (also on your clipboard).'
+          : 'Copied for ' + client + '. Opened row ' + nextRow + ' - just press Ctrl+V.');
+        resolve({ sheetKey: result.sheetKey, row: nextRow, queued, test: isRefundSheetTestMode() });
         return;
       }
 
       // Could not read the length (offline, or the sheet moved): fall back to
       // the old landing spot, which needs Ctrl+Up + ArrowDown by hand.
+      // Never auto-pasted here: with no row count there is no way to check
+      // the target row is empty.
       GM_openInTab(sheetUrl + '&range=B1048576', { active: true, insert: true });
       setStatus('Copied for ' + client + '. Row count unavailable - in column B press Ctrl+Up, ArrowDown, then Ctrl+V.');
-    });
+      resolve({ sheetKey: result.sheetKey, row: 0, queued: false, test: isRefundSheetTestMode() });
+    }));
+  }
+
+  // Refund Assist (CMS Feature 3b) fills the panel from the refunds it just
+  // issued and sends the row the same way the panel's own button does.
+  // Values go through the panel's inputs AND storage, so the row is built by
+  // the one buildRefundRow() the button uses - same columns per client tab.
+  window.__bvRefundSheet = {
+    fillAndSend(fields) {
+      const set = (id, key, value) => {
+        const clean = cleanText(value);
+        if (!clean) return;
+        const input = document.getElementById(id);
+        if (input) input.value = clean;
+        if (key) forceSet(key, clean);
+      };
+      set('refund-email', STORAGE_KEYS.email, fields.email);
+      set('refund-freshdesk', STORAGE_KEYS.freshdesk, fields.freshdesk);
+      set('refund-cms', STORAGE_KEYS.cms, normalizeCMSUrl(fields.cms) || fields.cms);
+      set('refund-payment', STORAGE_KEYS.payment, findPaymentHandlerInText(fields.payment) || fields.payment);
+      set('refund-amount', STORAGE_KEYS.amount, fields.amount);
+      if (!document.getElementById('refund-email')) {
+        return Promise.resolve({ queued: false, row: 0, reason: 'the refund panel is not on this page' });
+      }
+      return copyForRefundSheet({ background: true });
+    },
+    isTestMode: () => isRefundSheetTestMode()
+  };
+
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('Refund sheet: toggle test mode (rows go to the test sheet)', function () {
+        const next = !isRefundSheetTestMode();
+        GM_setValue(REFUND_SHEET_TEST_KEY, next);
+        bvNotify(next ? 'Refund sheet TEST MODE on - rows go to the test spreadsheet.' : 'Refund sheet test mode off - rows go to the real refund log.', { level: 'info' });
+        try {
+          setStatus(next ? 'TEST MODE: rows go to the test sheet.' : 'Rows go to the real refund log again.');
+        } catch (error) {
+          // Panel not open.
+        }
+      });
+    }
+  } catch (error) {
+    console.warn('[Refund] Could not register the test-mode menu command.', error);
   }
 
   function markFieldState(field) {
@@ -7671,6 +7961,34 @@ if (isCMSHost()) {
                     ].join(' - '));
                 } catch (error) {
                     endStep(scenarioStep, 'failed', `API: ${describeApiError(error)}`);
+                }
+            }
+        }
+
+        // 3. The refund log row, through the Refund Capture panel. A dry run
+        // only sends it when the sheet is in test mode (it then goes to the
+        // test spreadsheet), so the whole chain can be tried without money.
+        const sheetBridge = window.__bvRefundSheet;
+        const sheetTest = Boolean(sheetBridge?.isTestMode?.());
+        if (done.length && (!dryRun || sheetTest)) {
+            const sheetStep = addStep(`Refund log row${sheetTest ? ' (TEST SHEET)' : ''}`);
+            if (!sheetBridge?.fillAndSend) {
+                endStep(sheetStep, 'failed', 'the Refund Capture panel is not loaded on this page');
+            } else {
+                try {
+                    const handlers = Array.from(new Set(done.map(charge => cleanText(charge.handler)).filter(Boolean)));
+                    const sent = await sheetBridge.fillAndSend({
+                        email: contact.email,
+                        freshdesk: ticketURL,
+                        cms: location.href,
+                        payment: handlers.join(' / '),
+                        amount: formatTotal(done)
+                    });
+                    endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
+                        ? `${String(sent.sheetKey || '').toUpperCase()} row ${sent.row} - written by the sheet tab, which closes itself when saved`
+                        : (sent?.reason || 'could not find the next free row - the row is on your clipboard'));
+                } catch (error) {
+                    endStep(sheetStep, 'failed', String(error?.message || error));
                 }
             }
         }

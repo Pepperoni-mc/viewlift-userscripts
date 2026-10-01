@@ -60,6 +60,10 @@ const sandbox = `
   ${extractConst(/const REFUND_LAYOUT_DATE_COMMENTS = [^\n]+/, 'REFUND_LAYOUT_DATE_COMMENTS')}
   ${extractConst(/const REFUND_LAYOUT_DATE_ONLY = [^\n]+/, 'REFUND_LAYOUT_DATE_ONLY')}
   ${extractConst(/const REFUND_SHEETS = \{[\s\S]*?\n  \};/, 'REFUND_SHEETS')}
+  ${extractConst(/const REFUND_SHEET_TEST_ID = [^\n]+/, 'REFUND_SHEET_TEST_ID')}
+  ${extractConst(/const REFUND_SHEET_TEST_KEY = [^\n]+/, 'REFUND_SHEET_TEST_KEY')}
+  ${extractFunction(/function isRefundSheetTestMode/, 'isRefundSheetTestMode')}
+  ${extractFunction(/function getRefundSheetTarget/, 'getRefundSheetTarget')}
   ${extractFunction(/function refundSheetUrl/, 'refundSheetUrl')}
   ${extractFunction(/function readRefundFields/, 'readRefundFields')}
   ${extractFunction(/function buildRefundRow/, 'buildRefundRow')}
@@ -119,12 +123,13 @@ function load(options) {
     getElementById: id => (id in panel ? { value: panel[id] } : null)
   };
 
-  new Function('module', 'document', 'getTodayShortDate', 'GM_xmlhttpRequest', 'console', sandbox)(
+  new Function('module', 'document', 'getTodayShortDate', 'GM_xmlhttpRequest', 'console', 'GM_getValue', sandbox)(
     mod,
     doc,
     () => '01-Jan',
     settings.GM_xmlhttpRequest || (() => { throw new Error('no request stub'); }),
-    { warn: () => {}, error: () => {} }
+    { warn: () => {}, error: () => {} },
+    (key, fallback) => (settings.gm && key in settings.gm ? settings.gm[key] : fallback)
   );
 
   return mod.exports;
@@ -288,6 +293,14 @@ Object.keys(HEADERS).forEach(client => {
   let landed = null;
   api2.fetchNextRefundRow('lnp', row => { landed = row; });
   check('an empty tab lands on row 2, under the header', landed, 2);
+}
+
+// Test mode (2026-09-30): every row goes to the test spreadsheet's first tab.
+{
+  const testApi = load({ gm: { bvRefundSheetTestMode: true } });
+  check('test mode opens the test spreadsheet', /1cku-2zVb-HC7Gpxlnr5eEe2Qp2gy1pcSAomur6Chin4/.test(testApi.refundSheetUrl('msn')), true);
+  check('test mode always uses its first tab', /gid=0#gid=0$/.test(testApi.refundSheetUrl('msn')), true);
+  check('outside test mode the real refund log is used', /1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/.test(load({}).refundSheetUrl('msn')), true);
 }
 
 console.log(
