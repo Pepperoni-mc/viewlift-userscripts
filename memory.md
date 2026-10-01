@@ -57,8 +57,11 @@ body }`:
   means its call errored or is still waiting - while the refund can still have happened).
 - **Cancel** uses the SAME `subscription-misc/refund` url: `body { userId, site, comment,
   paymentHandler, cancellation: { option }, deactivate: false }` (`query {site}`, `auth {site,
-  userId}`). The `option` value for CANCEL NOW vs CANCEL AFTER BILLING PERIOD is **not known
-  yet** - that dialog's chunk only loads when it opens, and this account was already cancelled.
+  userId}`). Read from the dialog's chunk (`6052.<hash>.js`) on a cms.viewlift.com account the
+  same day: **CANCEL NOW → `cancelOption: "CANCEL"`**, CANCEL AFTER BILLING PERIOD → `"DEFER"`
+  (disabled when the plan is already `DEFERRED_CANCELLATION`). Note: that dialog has no close
+  control and ignores Escape / backdrop clicks there - only a page reload dismissed it (nothing
+  was chosen).
 - **Audit log** CMS writes after each action: `POST <api host>/v3.0/user/admin/logs/<userId>`,
   headers `Authorization` + `Xapikey`, body `{ actionType: "refund" | "cancelSubscription" | ...,
   comments: "Issued refund of percentage: 100%, Reason: ROTH", sessionId:
