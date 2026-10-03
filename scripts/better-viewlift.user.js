@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.81.1
+// @version      3.82.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -5594,6 +5594,63 @@ if (isCMSHost()) {
         return waitFor(() => findAgentUpdateButton(trigger), { timeout, pollMs: 60 });
     }
 
+    // The fast path (Sebastian, 2026-10-03: Set Agent "lo hace un poco
+    // lento"): one PUT responder_id through the API instead of open the
+    // dropdown / pick / wait / Update. Only when it is safe to skip the UI:
+    // an API key is set, the saved agent IS the key's owner (agents/me), and
+    // the properties pane has no unsaved edits - the UI path's Update click
+    // used to save those too, so with any pending the UI path runs instead.
+    // Returns true when the API did it; false = run the UI path.
+    const ME_AGENT_KEY = 'betterFreshdeskMeAgent';
+
+    function freshdeskApiCall(method, path, body) {
+        return new Promise((resolve, reject) => {
+            freshdeskApiRequest({
+                method,
+                path,
+                body,
+                onDone: (error, data) => (error ? reject(error) : resolve(data))
+            });
+        });
+    }
+
+    async function getMeAgent() {
+        try {
+            const cached = GM_getValue(ME_AGENT_KEY, null);
+            if (cached && cached.id && cached.name) return cached;
+        } catch (error) {
+            // Read it again below.
+        }
+        const me = await freshdeskApiCall('GET', '/api/v2/agents/me');
+        const agent = { id: Number(me && me.id), name: cleanAgentText(me && me.contact && me.contact.name) };
+        if (!agent.id || !agent.name) throw new Error('agents/me returned no id/name');
+        try {
+            GM_setValue(ME_AGENT_KEY, agent);
+        } catch (error) {
+            // Fine - read again next time.
+        }
+        return agent;
+    }
+
+    function propertiesHaveUnsavedEdits() {
+        const update = document.querySelector('button[data-test-id="ticket-properties-btn"]');
+        return Boolean(update && isUsableAgentElement(update) && !update.disabled);
+    }
+
+    async function assignViaApi(savedAgentName) {
+        const ticketId = (location.pathname.match(/^\/a\/tickets\/(\d+)/i) || [])[1];
+        if (!ticketId || !getFreshdeskApiKey() || propertiesHaveUnsavedEdits()) return false;
+        try {
+            const me = await getMeAgent();
+            if (normalizeAgentName(me.name) !== normalizeAgentName(savedAgentName)) return false;
+            await freshdeskApiCall('PUT', `/api/v2/tickets/${ticketId}`, { responder_id: me.id });
+            return true;
+        } catch (error) {
+            console.warn('[Set Agent] API assign failed; using the properties pane.', error);
+            return false;
+        }
+    }
+
     async function applySavedAgent() {
         if (actionInProgress || !isTicketPage()) return;
 
@@ -5609,6 +5666,11 @@ if (isCMSHost()) {
         closeSetAgentMenu();
 
         try {
+            if (await assignViaApi(savedAgentName)) {
+                showSetAgentToast(`Agent updated: ${savedAgentName} (API)`);
+                return;
+            }
+
             const result = await openAgentOptions();
 
             if (!result.trigger) {

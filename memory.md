@@ -3495,3 +3495,9 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 
 ## 3.81.1 - canned buttons open Reply themselves
 - Reported: "No Reply button on this page". Cause: our own header cleanup hides `section#mainactionbar button[data-test-email-action="reply"]` (display:none), and the button required it visible. Now clicks `button[data-test-id="ticket-action-reply"]` (the Reply under the conversation), else the hidden top one (`ticket-action-reply-top`), which still opens the editor. Live-checked on #363265: synthetic click opens the editor with the template (draft discarded).
+
+## 3.82.0 - Set Agent through the API (2026-10-03)
+- Asked: Set Agent is slow; Freshdesk now has "Assign to me" - use the API. "Assign to me" is just an option inside the same Agent dropdown (ember-power-select `li[role=option]`, live-read on #363265), so clicking it would save almost nothing; the cost is the dropdown/wait/Update choreography.
+- Now `assignViaApi()` first: `PUT /api/v2/tickets/<id> {responder_id: me.id}`, me from `GET /api/v2/agents/me` cached in GM `betterFreshdeskMeAgent` (one call per click after the first). Only when: API key set, saved Set Agent name == the key owner's name, and the properties pane has no unsaved edits (`ticket-properties-btn` enabled -> the UI path, whose Update also saves them). Any failure (no key, 429, mismatch) -> the old UI path.
+- No CSRF token in the page for the internal `/api/_/` writes (no meta), so writes stay on /api/v2 with the key.
+- OPEN: after the API PUT the properties pane may still show the old agent until reload; whether Freshdesk refreshes it live, and whether a later pane Update could send the stale agent back, is unverified - check on first live use.
