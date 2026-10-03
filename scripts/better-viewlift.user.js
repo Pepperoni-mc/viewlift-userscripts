@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.80.1
+// @version      3.81.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -11020,6 +11020,10 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   const isTicketDetailPath = () => /^\/a\/tickets\/\d+(?:\/|$)/i.test(location.pathname);
 
   const TOOLBAR_ID = 'better-freshdesk-unified-toolbar';
+  const CANNED_BUTTONS = [
+    { id: 'better-freshdesk-canned-nosub', kind: 'nosub', text: 'No Sub', title: 'Send the "No Subscription" canned response (Waiting on End User)' },
+    { id: 'better-freshdesk-canned-last', kind: 'last', text: 'Last Response', title: 'Send the "Last Response" canned response (Waiting on End User)' }
+  ];
   const BRAND_ID = 'better-freshdesk-case-brand';
   const EMAIL_ID = 'better-freshdesk-action-email';
   const REFUND_TOGGLE_ID = 'better-freshdesk-refund-toggle';
@@ -11139,6 +11143,28 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       #${REFUND_TOGGLE_ID}:active {
         background: #11543b !important;
         border-color: #11543b !important;
+      }
+
+      #${TOOLBAR_ID} .better-freshdesk-canned-button {
+        display: inline-flex !important;
+        align-items: center !important;
+        height: 32px !important;
+        padding: 0 12px !important;
+        border: 1px solid #cfd7df !important;
+        border-radius: 4px !important;
+        background: #ffffff !important;
+        color: #12344d !important;
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        line-height: 30px !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+        box-shadow: none !important;
+      }
+
+      #${TOOLBAR_ID} .better-freshdesk-canned-button:hover {
+        background: #f5f7f9 !important;
+        border-color: #b9c3cd !important;
       }
 
       #${BRAND_ID} {
@@ -11415,6 +11441,21 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     const cms = document.getElementById('viewlift-open-cms-header-button');
     const agent = document.getElementById('better-freshdesk-my-agent-button');
 
+    // Canned replies sent in one click (Feature 9b does the work).
+    const cannedButtons = CANNED_BUTTONS.map(spec => {
+      let button = document.getElementById(spec.id);
+      if (!button) {
+        button = makeButton(spec.id, spec.text, spec.title);
+        button.className = 'better-freshdesk-canned-button';
+        button.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof window.__bvSendCannedReply === 'function') window.__bvSendCannedReply(spec.kind);
+        });
+      }
+      return button;
+    });
+
     // The refund panel is the round $ float in the corner again, beside 📋
     // and 🧠 (Sebastian, 2026-09-30: "aparece, pero desaparece al segundo" -
     // that second was this toolbar pulling it in as a hidden inline panel).
@@ -11448,7 +11489,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       document.getElementById('better-freshdesk-copy-case').remove();
     }
 
-    const orderedControls = [brand, cms, cmsSessionDot, agent].filter(Boolean);
+    const orderedControls = [brand, cms, cmsSessionDot, agent, ...cannedButtons].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
     const orderIsCorrect = orderedControls.length === currentControls.length &&
       orderedControls.every((element, index) => currentControls[index] === element);
@@ -12233,21 +12274,331 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     // here ran for real on the editor, only the send is skipped.
     if (!send) return { wouldSend: true, changed, html: froalaHtml };
 
+    const problem = await sendAsWaitingOnEndUser(editor);
+    return problem ? { problem, changed } : { sent: true, changed };
+  }
+
+  // "Send and set as" > Waiting on End User, then wait for the editor to
+  // close. Returns '' when sent, else the reason.
+  async function sendAsWaitingOnEndUser(editor) {
     const toggle = document.querySelector('button[aria-label="Send and set as"]');
-    if (!isShown(toggle)) return { problem: 'no "Send and set as" button', changed };
+    if (!isShown(toggle)) return 'no "Send and set as" button';
     fireClick(toggle);
     const option = await waitFor(() => {
       const link = document.querySelector('a[data-test-link="dropdown-submit-Waiting on End User"]');
       return isShown(link) ? link : null;
     }, { timeout: 4000, pollMs: 100 });
-    if (!option) return { problem: 'no "Waiting on End User" option in the send menu', changed };
+    if (!option) return 'no "Waiting on End User" option in the send menu';
     fireClick(option);
 
     const closed = await waitFor(() => (editor.isConnected && isShown(editor) ? null : true), { timeout: 15000, pollMs: 300 });
-    return closed
-      ? { sent: true, changed }
-      : { problem: 'clicked Send, but the reply is still open - check the ticket', changed };
+    return closed ? '' : 'clicked Send, but the reply is still open - check the ticket';
   }
+
+  /* ----------------------------------------------------------
+   * Canned reply buttons (No Sub / Last), beside Set Agent.
+   * Typing "/c B2C No Subscription" left the "/c" line and blank lines
+   * around the inserted text (Sebastian, 2026-10-03). These buttons open
+   * Reply, put the canned response between the template's "Thank you for
+   * contacting..." line and the signature with exactly one blank line on
+   * each side, check what Froala will send, and send it as Waiting on End
+   * User. The canned text is read live (/api/_/canned_responses/<id>, not
+   * the rate-limited /api/v2); the B2C copies below are the fallback when
+   * that read does not answer, read off Freshdesk on 2026-10-03.
+   * ---------------------------------------------------------- */
+  const CANNED_REPLIES = {
+    nosub: {
+      label: 'No Subscription',
+      ids: { default: 43000448462, dirt: 43000448465, fox: 43000444802 },
+      needsEmail: true
+    },
+    last: {
+      label: 'Last Response',
+      ids: { default: 43000448501, dirt: 43000449384, fox: 43000447136 },
+      needsEmail: false
+    }
+  };
+
+  const CANNED_FALLBACK_HTML = {
+    nosub: [
+      '<div>We were unable to locate an active subscription associated with the email address <strong>{{ticket.requester.email}}</strong> you provided. To help us find your account, please provide the details for the platform you used to subscribe:</div>',
+      '<div><br></div>',
+      '<div>1. <strong>Website</strong>: If you signed up directly on our website, please reply with:</div>',
+      '<ul><li>The last 4 digits of the credit/debit card used.</li><li>A screenshot of the transaction from your bank statement.</li></ul>',
+      '<div>2. <strong>Apple (iPhone, iPad, Apple TV):&nbsp;</strong>If you used "Sign in with Apple", you likely have a "Private Relay" email. To find it:</div>',
+      '<ol start="1"><li>Go to Settings &gt; [Your Name] &gt; Sign in with Apple.</li><li>Select the app from the list.</li><li>Look for the email ending in @privaterelay.appleid.com and share it with us.</li><li><a href="https://support.apple.com/en-us/102607" rel="noreferrer" target="_blank">Link: Manage Sign in with Apple</a></li></ol>',
+      '<div>3. <strong>Roku or Amazon Fire TV:&nbsp;</strong>Roku and Amazon accounts often use different emails than your primary address.</div>',
+      '<ul><li>Check Roku: Go to Settings &gt; System &gt; About to see the email linked to the device.</li><li>Check Amazon: Go to Settings &gt; Account &amp; Profile to see your Amazon email.</li><li>Action: Check the other household\'s emails and reply with a photo of your digital receipt or a screenshot of your active subscription in the device settings.</li></ul>',
+      '<div>4. <strong>Google Play (Android):&nbsp;</strong>Please provide your GPA transaction number (e.g., GPA.1234-5678-9012-34567).</div>',
+      '<ol start="1"><li>Visit the <a href="https://payments.google.com/" rel="noreferrer" target="_blank">Google Payments Center</a>.</li><li>Select Activity and click on your Altitude+ order.</li><li>The GPA number is at the top left of the receipt.</li><li><a href="https://store.google.com/orderhistory" rel="noreferrer" target="_blank">Link: Find your Google Store receipt</a></li><li>For more information, please follow<a href="https://support.google.com/store/answer/13714320?hl=en" rel="noreferrer" target="_blank"> this link.</a></li></ol>',
+      '<div>Note: If we are ultimately unable to locate your account, you may need to request a refund directly from the third-party provider (Apple, Google, Roku, or Amazon), as they manage your billing.</div>',
+      '<div><br></div>',
+      '<div>Once you reply with these details, we will immediately verify your subscription.</div>'
+    ].join(''),
+    last: '<div>If you have any other questions or need further assistance in the future, please do not hesitate to contact us. We\'re here to help.</div>'
+  };
+
+  const REPLY_THANKS_LINE = /^(thank you for contacting|gracias por contactar)/i;
+  const REPLY_SIGNATURE_LINE = /^(regards,|saludos cordiales,)/i;
+  let cannedSending = false;
+
+  function cannedBrandKey() {
+    const brand = typeof getActiveTicketBrand === 'function' ? getActiveTicketBrand() : null;
+    return brand && (brand.key === 'dirt' || brand.key === 'fox') ? brand.key : 'default';
+  }
+
+  // The live canned text; the B2C fallback only for the default brand (a
+  // DIRT/FOX ticket must not get the generic English copy).
+  async function readCannedHtml(kind, brandKey) {
+    const id = CANNED_REPLIES[kind].ids[brandKey];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const response = await fetch(`/api/_/canned_responses/${id}`, {
+        credentials: 'same-origin',
+        headers: { accept: 'application/json' },
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (!response.ok) throw new Error('http-' + response.status);
+      const data = await response.json();
+      const html = String(((data && data.canned_response) || data || {}).content_html || '');
+      if (cleanText(html.replace(/<[^>]*>/g, ' '))) return html;
+      throw new Error('empty canned response');
+    } catch (error) {
+      console.warn(`[BV Canned] Could not read canned response ${id}; ${brandKey === 'default' ? 'using the built-in copy' : 'no built-in copy for this brand'}.`, error);
+      return brandKey === 'default' ? CANNED_FALLBACK_HTML[kind] : '';
+    }
+  }
+
+  function isBlankBlock(node) {
+    if (!node) return false;
+    if (node.nodeType === 3) return !cleanText(node.nodeValue);
+    if (node.nodeType !== 1) return true;
+    if (node.querySelector('img, li, table')) return false;
+    return !cleanText(node.textContent);
+  }
+
+  function makeBlankBlock() {
+    const blank = document.createElement('div');
+    blank.appendChild(document.createElement('br'));
+    return blank;
+  }
+
+  // Canned HTML -> top-level blocks: placeholders filled, loose text wrapped
+  // in a <div>, blank blocks trimmed off both ends and never two in a row.
+  function buildCannedBlocks(html, email) {
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      node.nodeValue = node.nodeValue.replace(/\{\{\s*ticket\.requester\.email\s*\}\}/gi, email || '');
+    }
+
+    const blocks = [];
+    let looseRun = null;
+    Array.from(holder.childNodes).forEach(node => {
+      const isInline = node.nodeType === 3 || (node.nodeType === 1 && !/^(DIV|P|UL|OL|TABLE|BLOCKQUOTE|H[1-6]|PRE)$/.test(node.nodeName));
+      if (isInline) {
+        if (node.nodeType === 1 && node.nodeName === 'BR') {
+          looseRun = null;
+          return;
+        }
+        if (!looseRun) {
+          looseRun = document.createElement('div');
+          blocks.push(looseRun);
+        }
+        looseRun.appendChild(node);
+        return;
+      }
+      looseRun = null;
+      blocks.push(node);
+    });
+
+    const result = [];
+    blocks.forEach(block => {
+      if (isBlankBlock(block)) {
+        if (result.length && !isBlankBlock(result[result.length - 1])) result.push(makeBlankBlock());
+        return;
+      }
+      result.push(block);
+    });
+    while (result.length && isBlankBlock(result[result.length - 1])) result.pop();
+    return result;
+  }
+
+  function findReplyEditor() {
+    return Array.from(document.querySelectorAll('.fr-element[contenteditable="true"]'))
+      .find(editor => isShown(editor) && Array.from(editor.children)
+        .some(child => REPLY_SIGNATURE_LINE.test(cleanText(child.textContent)))) || null;
+  }
+
+  function topBlockIndex(editor, pattern) {
+    return Array.from(editor.children).findIndex(child => pattern.test(cleanText(child.textContent)));
+  }
+
+  // The requester, as Freshdesk itself puts it in the reply's To field
+  // ("name@x.com (Requester)"); the contact pane's email otherwise.
+  function readRequesterEmail() {
+    const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+    const chip = Array.from(document.querySelectorAll('[class*="email"], [class*="token"], [class*="chip"], li, span'))
+      .find(node => isShown(node) && /\(requester\)/i.test(node.textContent || '') && emailRe.test(node.textContent || '') &&
+        (node.textContent || '').length < 160);
+    const fromChip = chip && (chip.textContent.match(emailRe) || [])[0];
+    if (fromChip) return fromChip.toLowerCase();
+    const pane = Array.from(document.querySelectorAll('a[href^="mailto:" i]')).find(isShown);
+    return pane ? String(pane.getAttribute('href') || '').replace(/^mailto:/i, '').split('?')[0].trim().toLowerCase() : '';
+  }
+
+  function lockCleanerFor(editor) {
+    // Feature 2's cleaner rewrites the reply as plain text (the lists would
+    // go); its canned-response lock keeps it off while this runs.
+    window[BV_CANNED_RESPONSE_GLOBAL_KEY] = Date.now() + 15000;
+    editor.setAttribute(BV_CANNED_RESPONSE_LOCK_ATTR, 'yes');
+  }
+
+  // What Froala is about to send, checked: canned text present, nothing
+  // left unfilled, no "/c", one greeting / signature, blank lines single.
+  function checkCannedLayout(html, firstCannedText, email) {
+    const doc = document.createElement('div');
+    doc.innerHTML = String(html || '');
+    const text = cleanText(doc.textContent);
+    if (!text.includes(firstCannedText)) return 'the canned text is not in what Freshdesk would send';
+    if (/\{\{[^}]*\}\}/.test(text)) return 'a {{placeholder}} was left unfilled';
+    if (/(^|\s)\/c(\s|$)/i.test(text)) return 'a "/c" command is left in the reply';
+    if (email && !text.toLowerCase().includes(email)) return `the reply does not name ${email}`;
+    const signatures = (text.match(/regards,|saludos cordiales,/gi) || []).length;
+    if (signatures !== 1) return `the reply has ${signatures} signatures`;
+    if ((text.match(new RegExp(`\\b${GREETING_WORDS}\\s+[^,]{1,40},`, 'gi')) || []).length > 1) return 'the reply has more than one greeting';
+    const blocks = Array.from(doc.children);
+    if (isBlankBlock(blocks[0])) return 'the reply starts with a blank line';
+    if (blocks.some((block, index) => index > 0 && isBlankBlock(block) && isBlankBlock(blocks[index - 1]))) {
+      return 'the reply has a double blank line';
+    }
+    return '';
+  }
+
+  // send: false (the data-bv-canned-check test hook) does everything but
+  // the final send and leaves the reply in the editor.
+  async function sendCannedReply(kind, { send = true } = {}) {
+    const spec = CANNED_REPLIES[kind];
+    if (!spec || cannedSending) return;
+    if (!getTicketId()) return;
+    cannedSending = true;
+    const title = spec.label;
+    try {
+      let editor = findReplyEditor();
+      if (editor) {
+        // A reply already open is only reused while its body is empty.
+        const thanks = topBlockIndex(editor, REPLY_THANKS_LINE);
+        const signature = topBlockIndex(editor, REPLY_SIGNATURE_LINE);
+        const body = Array.from(editor.children).slice(thanks + 1, signature);
+        if (thanks === -1 || body.some(block => !isBlankBlock(block))) {
+          showStatus(`${title}: a reply with text is already open - send or discard it first.`, true);
+          return;
+        }
+      } else {
+        if (Array.from(document.querySelectorAll('.fr-element[contenteditable="true"]')).some(isShown)) {
+          showStatus(`${title}: a note or forward is open - close it first.`, true);
+          return;
+        }
+        const replyButton = document.querySelector('button[data-test-email-action="reply"]');
+        if (!isShown(replyButton)) {
+          showStatus(`${title}: no Reply button on this page.`, true);
+          return;
+        }
+        fireClick(replyButton);
+        editor = await waitFor(findReplyEditor, { timeout: 10000, pollMs: 200 });
+        if (!editor) {
+          showStatus(`${title}: the reply editor did not open.`, true);
+          return;
+        }
+      }
+
+      showStatus(`${title}: preparing the reply...`);
+      const brandKey = cannedBrandKey();
+      const [html] = await Promise.all([
+        readCannedHtml(kind, brandKey),
+        // Freshdesk fills the template in steps; wait for it to sit still.
+        (async () => {
+          let last = '';
+          let since = Date.now();
+          await waitFor(() => {
+            const now = editor.innerHTML;
+            if (now !== last) {
+              last = now;
+              since = Date.now();
+              return null;
+            }
+            return Date.now() - since >= 700 ? true : null;
+          }, { timeout: 5000, pollMs: 150 });
+        })()
+      ]);
+      if (!html) {
+        showStatus(`${title}: could not read the canned response for this brand - nothing was sent.`, true);
+        return;
+      }
+
+      const email = spec.needsEmail ? readRequesterEmail() : '';
+      if (spec.needsEmail && !email) {
+        showStatus(`${title}: could not read the requester's email - nothing was sent.`, true);
+        return;
+      }
+      const blocks = buildCannedBlocks(html, email);
+      if (!blocks.length) {
+        showStatus(`${title}: the canned response is empty - nothing was sent.`, true);
+        return;
+      }
+      const firstCannedText = cleanText(blocks[0].textContent).slice(0, 40);
+
+      if (!editor.isConnected) {
+        showStatus(`${title}: the reply editor closed - nothing was sent.`, true);
+        return;
+      }
+      lockCleanerFor(editor);
+      const children = Array.from(editor.children);
+      const signatureIndex = children.findIndex(child => REPLY_SIGNATURE_LINE.test(cleanText(child.textContent)));
+      const thanksIndex = children.findIndex(child => REPLY_THANKS_LINE.test(cleanText(child.textContent)));
+      if (signatureIndex === -1 || thanksIndex === -1 || thanksIndex > signatureIndex) {
+        showStatus(`${title}: the reply template is not the usual one - nothing was sent.`, true);
+        return;
+      }
+      // Greeting, blank, thanks, blank, canned, blank, signature.
+      children.slice(thanksIndex + 1, signatureIndex).forEach(node => node.remove());
+      const signatureBlock = children[signatureIndex];
+      [makeBlankBlock(), ...blocks, makeBlankBlock()].forEach(node => editor.insertBefore(node, signatureBlock));
+      // Anything left above the greeting that is blank goes too.
+      while (editor.firstElementChild && isBlankBlock(editor.firstElementChild)) editor.firstElementChild.remove();
+
+      const froalaHtml = syncFroala(editor);
+      if (froalaHtml === null) {
+        showStatus(`${title}: could not reach the Froala editor - review and send by hand.`, true);
+        return;
+      }
+      const problem = checkCannedLayout(froalaHtml, firstCannedText, email);
+      if (problem) {
+        showStatus(`${title}: NOT sent - ${problem}. Review it and send by hand.`, true);
+        return;
+      }
+
+      if (!send) {
+        showStatus(`${title}: checked, NOT sent (test mode) - the reply is in the editor.`);
+        return;
+      }
+      const sendProblem = await sendAsWaitingOnEndUser(editor);
+      showStatus(sendProblem
+        ? `${title}: ${sendProblem}.`
+        : `${title} sent (Waiting on End User).`, Boolean(sendProblem));
+    } catch (error) {
+      console.error('[BV Canned] Sending the canned reply failed.', error);
+      showStatus(`${title}: something failed - check the reply before sending.`, true);
+    } finally {
+      cannedSending = false;
+    }
+  }
+
+  // The toolbar (another module) draws the buttons and calls this.
+  window.__bvSendCannedReply = sendCannedReply;
 
   // Add note, the way the agent does it: Froala's model synced first (the
   // button stays disabled until Freshdesk sees content), then the note
@@ -12424,6 +12775,16 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       }
       root.setAttribute('data-bv-reply-check-result', JSON.stringify(result));
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bv-reply-check'] });
+
+    // Same idea for the canned buttons: <html data-bv-canned-check="nosub">
+    // (or "last") runs the whole button except the send.
+    new MutationObserver(function () {
+      const root = document.documentElement;
+      const kind = root.getAttribute('data-bv-canned-check');
+      if (!kind) return;
+      root.removeAttribute('data-bv-canned-check');
+      sendCannedReply(kind, { send: false });
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-bv-canned-check'] });
   }
 
   init();

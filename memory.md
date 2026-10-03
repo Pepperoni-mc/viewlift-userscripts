@@ -3479,3 +3479,16 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - Reported on cms.viewlift.com: no ↩ on `/users/search/apple-001618.<32 hex>.0003-vegas-golden-knights` (and `...0227-altitude`). Account ids are NOT always hex: Apple ones are `apple-<6 digits>.<32 hex>.<4 digits>-<site>`.
 - Refund Assist: `cmsAccountIdFromPath()` (any `[A-Za-z0-9._-]{8,}` segment after /users/search/) now drives both `isAccountPage()` and `cmsApiContext().userId`.
 - Refund Capture's `CMS_USER_ID_RE` / `CMS_USER_URL_RE` also accept the Apple form.
+
+## 3.81.0 - "No Sub" / "Last Response" buttons beside Set Agent (2026-10-03)
+- Asked: one-click send of `/c B2C No Subscription` and `/c B2C Last Response` with correct spacing (the /c path left the "/c" line and extra blank lines). Both send as **Waiting on End User** (Sebastian's choice).
+- Toolbar (Feature 8) draws `#better-freshdesk-canned-nosub` / `#better-freshdesk-canned-last` after Set Agent; click -> `window.__bvSendCannedReply(kind)` defined in Feature 9b (reuses its syncFroala/fireClick/showStatus; the send step is now `sendAsWaitingOnEndUser(editor)`, shared with checkAndSendReply).
+- Flow: open Reply (or reuse one whose body is empty; refuses if a reply with text or a note is open) -> wait for the template to settle -> canned HTML from `/api/_/canned_responses/<id>` (6s timeout) -> `{{ticket.requester.email}}` filled from the To field's "(Requester)" chip -> canned blocks trimmed (no leading/trailing/double blanks) -> placed as greeting / blank / thanks / blank / canned / blank / signature -> cleaner locked (canned lock key) -> Froala sync -> `checkCannedLayout` (canned present, no {{}}, no /c, email present, 1 signature, 1 greeting, no double blank) -> send.
+- Canned ids: B2C No Sub 43000448462, B2C Last 43000448501; DIRTVision 43000448465 / 43000449384; FOX 43000444802 / 43000447136 (picked by ticket brand). B2C texts are also hardcoded as a fallback (read 2026-10-03); DIRT/FOX have no fallback - refuse if the read fails.
+- Live template (#363265): `Hello X,` / blank / `Thank you for contacting the <strong>Technical Support Team</strong>.` / blank / `<strong>Regards,</strong><br><strong>The Technical Support Team</strong>`.
+- Verified: buildCannedBlocks + layout check run in real Chrome DOM against the live canned HTML (both OK). The full button (install from GitHub) not yet run live; test hook without sending: `<html data-bv-canned-check="nosub|last">`.
+- Fetches from the Freshdesk tab hung intermittently during this session (CDP timeouts) - why the fallback copy exists.
+
+## Predators (found 2026-10-03, not routed yet)
+- Freshdesk: Client Name `Predators B2C`, inbox 43000169257 (tvsupport@nashvillepredators.com). Fan Assist notes report CMS `site: predstv`.
+- cms-gcp tenant list for Sebastian's user = lightning / liv-golf / schn only (localStorage `tenants`), so no Predators switch there; cms.viewlift.com not checked (no session). No dedicated host (predators.cms... etc. don't resolve). Not in BV_TICKET_BRANDS -> chip shows CASE.
