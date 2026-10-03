@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.81.0
+// @version      3.81.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -12502,8 +12502,15 @@ if (location.hostname === 'viewlift.freshdesk.com') {
           showStatus(`${title}: a note or forward is open - close it first.`, true);
           return;
         }
-        const replyButton = document.querySelector('button[data-test-email-action="reply"]');
-        if (!isShown(replyButton)) {
+        // The top Reply is hidden by our own header cleanup (display:none),
+        // so the one under the conversation comes first; the hidden one
+        // still opens the editor when clicked, so it is the fallback.
+        const replyButton = [
+          'button[data-test-id="ticket-action-reply"]',
+          'button[data-test-id="ticket-action-reply-top"]',
+          'button[data-test-email-action="reply"]'
+        ].map(selector => document.querySelector(selector)).find(Boolean);
+        if (!replyButton) {
           showStatus(`${title}: no Reply button on this page.`, true);
           return;
         }

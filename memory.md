@@ -3492,3 +3492,6 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 ## Predators (found 2026-10-03, not routed yet)
 - Freshdesk: Client Name `Predators B2C`, inbox 43000169257 (tvsupport@nashvillepredators.com). Fan Assist notes report CMS `site: predstv`.
 - cms-gcp tenant list for Sebastian's user = lightning / liv-golf / schn only (localStorage `tenants`), so no Predators switch there; cms.viewlift.com not checked (no session). No dedicated host (predators.cms... etc. don't resolve). Not in BV_TICKET_BRANDS -> chip shows CASE.
+
+## 3.81.1 - canned buttons open Reply themselves
+- Reported: "No Reply button on this page". Cause: our own header cleanup hides `section#mainactionbar button[data-test-email-action="reply"]` (display:none), and the button required it visible. Now clicks `button[data-test-id="ticket-action-reply"]` (the Reply under the conversation), else the hidden top one (`ticket-action-reply-top`), which still opens the editor. Live-checked on #363265: synthetic click opens the editor with the template (draft discarded).
