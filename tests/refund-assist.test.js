@@ -58,6 +58,8 @@ function extractArray(source, name) {
 
 let passed = 0;
 let failed = 0;
+// Checks that need to await something run at the end, in order.
+const asyncChecks = [];
 function check(name, ok, detail) {
   if (ok) { passed++; console.log('PASS  ' + name); }
   else { failed++; console.log('FAIL  ' + name + (detail !== undefined ? '  -> ' + JSON.stringify(detail) : '')); }
@@ -210,6 +212,62 @@ check('the refund log gets the partial amount, not the charge', refundedAmount(p
 check('refund log: partial and full mixed', formatRefundAmount([partialCharge, full74].map(c => ({ amount: refundedAmount(c) }))) === 'USD 10.00 + USD 74.69');
 check('audit log uses CMS\'s own amount wording', refundAuditComment(partialCharge) === 'Issued refund of amount: 10, Reason: ROTH' &&
   refundAuditComment(full74) === 'Issued refund of percentage: 100%, Reason: ROTH', [refundAuditComment(partialCharge), refundAuditComment(full74)]);
+
+// ------------------------------------------------------------------ refunds in parallel
+
+// API mode sends every refund at once; whatever the API cannot do drops to
+// the screen afterwards, one by one, and the first screen failure stops the rest.
+async function parallelRun(apiOutcomes, screenOutcomes, { api = true } = {}) {
+  const events = [];
+  const run = { dryRun: false, done: [], failed: [], skipped: [] };
+  const refundEach = new Function('stubs', `
+    const { cmsApiContext, billingRecordsForRun, addRefundStep, refundChargeViaApi, endStep, refundChargeOnScreen, refundCharge, steps } = stubs;
+    async ${extractFunction(assistSrc, 'refundEach')}
+    return refundEach;
+  `)({
+    cmsApiContext: () => (api ? { site: 's', userId: 'u' } : null),
+    billingRecordsForRun: async () => { events.push('read'); return []; },
+    addRefundStep: charge => ({ label: charge.order, detail: '' }),
+    refundChargeViaApi: async (charge, dry, step) => {
+      events.push('api-start ' + charge.order);
+      await new Promise(r => setTimeout(r, 5));
+      events.push('api-end ' + charge.order);
+      const outcome = apiOutcomes[charge.order];
+      if (outcome === false) step.detail = 'api said no';
+      return outcome;
+    },
+    endStep: (step, state, detail) => { step.state = state; step.detail = detail; return state !== 'failed'; },
+    refundChargeOnScreen: async (charge, dry, step) => {
+      events.push('screen ' + charge.order);
+      const ok = screenOutcomes[charge.order];
+      if (!ok) step.detail = 'screen failed';
+      return ok;
+    },
+    refundCharge: async charge => { events.push('seq ' + charge.order); return true; },
+    steps: []
+  });
+  await refundEach(run, ['A', 'B', 'C', 'D'].map(order => ({ order })));
+  return { run, events };
+}
+
+asyncChecks.push(async () => {
+  const all = await parallelRun({ A: true, B: true, C: true, D: true }, {});
+  const starts = all.events.filter(e => e.startsWith('api-start')).length;
+  const firstEnd = all.events.findIndex(e => e.startsWith('api-end'));
+  check('API mode: every refund starts before any finishes (in parallel)', starts === 4 && firstEnd === 5, all.events);
+  check('API mode: billing history read once up front', all.events[0] === 'read', all.events);
+  check('API mode: all four done', all.run.done.length === 4 && !all.run.failed.length, all.run);
+
+  const mixed = await parallelRun({ A: true, B: false, C: null, D: null }, { C: false, D: true });
+  check('an API failure does not stop the other API refunds', mixed.run.done.map(c => c.order).includes('A') &&
+    mixed.run.failed.some(f => f.charge.order === 'B' && f.reason === 'api said no'), mixed.run);
+  check('API-impossible charges go to the screen one by one, stopping at the first screen failure',
+    mixed.events.includes('screen C') && !mixed.events.includes('screen D') &&
+    mixed.run.skipped.map(c => c.order).join() === 'D', { events: mixed.events, run: mixed.run });
+
+  const noApi = await parallelRun({}, {}, { api: false });
+  check('without the API, the old one-by-one path runs', noApi.events.join() === 'seq A,seq B,seq C,seq D', noApi.events);
+});
 
 // ------------------------------------------------------------------ API from cookies
 
@@ -449,6 +507,9 @@ const requestSrc = extractFunction(fullSrc, 'freshdeskApiRequest');
 check('the API key only ever goes to viewlift.freshdesk.com',
   requestSrc.includes('url: `https://viewlift.freshdesk.com${path}`') && !requestSrc.includes('https://${location.hostname}'));
 
-console.log(`\n${passed} passed, ${failed} failed`);
-if (!failed) console.log('All checks passed against the shipped source.');
-process.exit(failed ? 1 : 0);
+(async () => {
+  for (const run of asyncChecks) await run();
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (!failed) console.log('All checks passed against the shipped source.');
+  process.exit(failed ? 1 : 0);
+})();

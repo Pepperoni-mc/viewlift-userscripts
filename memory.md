@@ -3524,3 +3524,11 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - Dead code deleted: the legacy fill-the-box CMS search flow in "Feature 3: Freshdesk Header CMS User Search" (`getPendingCMSEmail` ... `scheduleCMSFlow`, `openCmsEmail` param, pending-email key and its one-time cleanup, plus the helpers only it used); Feature 8b (Daily Goal badge cleanup); the toolbar's removal of next-case / refund-launcher / generate / in-toolbar copy-case leftovers.
 - The `viewlift.freshdesk.com || isCMSHost()` guards stay: the refund-log Google Sheet is still a matched host.
 - ~950 lines fewer. 488 tests pass (headless Chrome). Not click-tested live.
+## 3.86.0 - faster API refunds: parallel charges, shorter verify poll (2026-10-06)
+- Asked: "ya que tenemos uso del API del CMS, podemos hacer los refunds mas rapido?". Last live API timing (3.78.1): 7.0s = cancel 0.9, refund 3.0, note 1.0, scenario 1.8.
+- `waitForRefundRecord`: 1.5s sleep between billing-history reads -> 0.4s (each read is a round trip itself). Expected ~1s less per refund; not measured yet.
+- `refundEach`: with an API context and >1 charge, every `refundChargeViaApi` starts at once (one shared billing read first), each with its own step. API failures do not stop the other API refunds (each call names its own transactionId - the stop rule was for the screen path's stale drawer). Charges the API returns `null` for go to `refundChargeOnScreen` afterwards, sequentially, first screen failure stops the rest (they are marked failed/skipped). No API or 1 charge -> the old loop.
+- `refundCharge` split into `addRefundStep` + API try + `refundChargeOnScreen(charge, dryRun, step)` (partial-refund guard lives there).
+- Review text says the refunds go out together when API + several charges.
+- Tests: `refundEach` with stubs (parallel start, one read, failure isolation, screen fallback order). Harness note: the headless-Chrome runner now waits 3s for async checks (before, copy-case's async checks were silently not counted) - 561 pass.
+- Not changed, worth measuring next: Freshdesk side (scenario reads/PUT 1.8s, ticket tab Apply/check/send after the hand-off, not in "Last run").

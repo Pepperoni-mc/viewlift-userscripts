@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.85.0
+// @version      3.86.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8092,7 +8092,9 @@ if (isCMSHost()) {
             } catch (error) {
                 stepLog(step, `Billing history read failed: ${error.message}`);
             }
-            await sleep(1500);
+            // Each read is itself a round trip, so a short gap is enough; 1.5s
+            // here was most of a refund's 3.0s (live 2026-10-01).
+            await sleep(400);
         }
         return null;
     }
@@ -8179,17 +8181,26 @@ if (isCMSHost()) {
             : 'CMS accepted the refund but it has not shown in the billing history yet (use Recheck)');
     }
 
-    async function refundCharge(charge, dryRun) {
+    function addRefundStep(charge) {
         const partial = Boolean(charge.refundPlan?.partial);
-        const step = addStep(`Refund ${partial ? `${charge.refundPlan.text} of ` : ''}${charge.date} ${charge.amount} (${charge.order})`);
+        return addStep(`Refund ${partial ? `${charge.refundPlan.text} of ` : ''}${charge.date} ${charge.amount} (${charge.order})`);
+    }
+
+    async function refundCharge(charge, dryRun) {
+        const step = addRefundStep(charge);
         const apiCtx = cmsApiContext();
         if (apiCtx) {
             const viaApi = await refundChargeViaApi(charge, dryRun, step, apiCtx);
             if (viaApi !== null) return viaApi;
         }
+        return refundChargeOnScreen(charge, dryRun, step);
+    }
+
+    // The drawer > Refund > dialog > Confirm path, for a step already shown.
+    async function refundChargeOnScreen(charge, dryRun, step) {
         // The screen path below only knows "Issue percentage refund - 100%":
         // a partial refund must never fall through to it and refund it all.
-        if (partial) {
+        if (charge.refundPlan?.partial) {
             return endStep(step, 'failed', `Partial refund needs the CMS API, which is not available here - nothing refunded. Do it by hand: Refund > Issue fixed amount refund > ${charge.refundPlan.value}`);
         }
         const bridge = getBridge();
@@ -8671,9 +8682,52 @@ if (isCMSHost()) {
         await finishRun(run);
     }
 
-    // Refunds the given charges in order; the first failure stops the rest,
-    // which are listed as skipped.
+    // Refunds the given charges. Through the API they all go out at once:
+    // each call names its own charge (transactionId), so nothing is shared
+    // between them - the one-by-one order and "first failure stops the rest"
+    // exist for the screen path, where a stale drawer could take the next
+    // refund. A charge the API cannot do drops to the screen afterwards, one
+    // at a time, with the old stop rule.
     async function refundEach(run, list) {
+        const apiCtx = cmsApiContext();
+        if (apiCtx && list.length > 1) {
+            // One billing read up front, shared by every call below.
+            try {
+                await billingRecordsForRun(apiCtx);
+            } catch (error) {
+                // Each refund retries the read itself and reports it.
+            }
+            const attempts = await Promise.all(list.map(async charge => {
+                const step = addRefundStep(charge);
+                let result = null;
+                try {
+                    result = await refundChargeViaApi(charge, run.dryRun, step, apiCtx);
+                } catch (error) {
+                    result = endStep(step, 'failed', String(error?.message || error));
+                }
+                return { charge, step, result };
+            }));
+            const onScreen = [];
+            for (const { charge, step, result } of attempts) {
+                if (result === null) onScreen.push({ charge, step });
+                else if (result) run.done.push(charge);
+                else run.failed.push({ charge, reason: step.detail || 'failed' });
+            }
+            for (let index = 0; index < onScreen.length; index += 1) {
+                const { charge, step } = onScreen[index];
+                if (await refundChargeOnScreen(charge, run.dryRun, step)) {
+                    run.done.push(charge);
+                } else {
+                    run.failed.push({ charge, reason: step.detail || 'failed' });
+                    onScreen.slice(index + 1).forEach(rest => {
+                        endStep(rest.step, 'failed', 'not done - an earlier screen refund failed');
+                        run.skipped.push(rest.charge);
+                    });
+                    break;
+                }
+            }
+            return;
+        }
         for (let index = 0; index < list.length; index += 1) {
             const charge = list[index];
             const ok = await refundCharge(charge, run.dryRun);
@@ -9399,7 +9453,9 @@ if (isCMSHost()) {
         list.appendChild(el('li', { text: `Copy the summary and paste it into a private note on ticket #${getTicketNumber(ticketURL)}.` }));
         if (picked.length) list.appendChild(el('li', { text: `Write the refund-log row with ${getRefunder() || 'the selected agent'} as the Refunder.` }));
         body.appendChild(list);
-        body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
+        body.appendChild(el('p', { class: 'bv-ra-muted', text: cmsApiContext() && picked.length > 1
+            ? '⚡ The refunds go out together through the API, each one checked in CMS. If the cancel fails, no refund is issued.'
+            : 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
 
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Back', onclick: () => { view = 'select'; render(); } }));
         actions.appendChild(el('button', {
