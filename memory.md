@@ -3543,3 +3543,7 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - Likely cause (not confirmed live): one global `creds.authorization`, replaced only by a token with a later `exp`. CMS tokens are per tenant (org switch issues a new one), so a fresher cms-gcp / Altitude token was sent to VGK's API with VGK's key and site.
 - `bvRecordCmsCreds` also stores `creds.siteAuth[site]` (same precedence rule); `bvGetCmsCredForSite` uses it, the global token only as a fallback for old records. Test 7 in cred-precedence.test.js.
 - Tests NOT run: no node on this machine at the time.
+
+## 3.87.2 - cms-network-error says why (2026-10-06)
+- Reported after 3.87.1: Connect API -> "API test failed: cms-network-error" (bare GM_xmlhttpRequest onerror, cause unknown; @connect already covers viewlift.com / monumentalsportsnetwork.com).
+- `bvCmsNetworkError(url, response)` (prelude): message is now `cms-network-error (<api host>: <response.error>)`, used by cmsInvoke and bvCmsUserSearch. Not verified live - Claude in Chrome was not connected.

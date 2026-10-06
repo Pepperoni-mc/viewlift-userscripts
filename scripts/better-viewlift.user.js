@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.87.1
+// @version      3.87.2
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -841,6 +841,16 @@
     'cms.monumentalsportsnetwork.com': 'https://cms-api.monumentalsportsnetwork.com'
   };
 
+  // A GM_xmlhttpRequest onerror says nothing by itself; Tampermonkey puts the
+  // reason (e.g. a host refused under @connect) in response.error. Keeps the
+  // 'cms-network-error' prefix and adds that reason and the API host.
+  function bvCmsNetworkError(url, response) {
+    let host = '';
+    try { host = new URL(url).host; } catch (error) { host = String(url || ''); }
+    const reason = response && (response.error || response.statusText);
+    return new Error(`cms-network-error (${host}${reason ? `: ${String(reason).slice(0, 160)}` : ''})`);
+  }
+
   function bvReadCookie(name) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`));
@@ -1130,7 +1140,7 @@
           onDone(error, null);
         }
       },
-      onerror: function () { onDone(new Error('cms-network-error'), null); },
+      onerror: function (response) { onDone(bvCmsNetworkError(cred.apiOrigin, response), null); },
       ontimeout: function () { onDone(new Error('cms-timeout'), null); }
     });
   }
@@ -7966,7 +7976,7 @@ if (isCMSHost()) {
                     }
                     resolve(parsed);
                 },
-                onerror: () => reject(new Error('cms-network-error')),
+                onerror: response => reject(bvCmsNetworkError(ctx.cred.apiOrigin, response)),
                 ontimeout: () => reject(new Error('cms-timeout'))
             });
         });
