@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.86.0
+// @version      3.87.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -8300,7 +8300,16 @@ if (isCMSHost()) {
     function buildNote({ dryRun, cancelOk, plan, cmsUrl, done, failed, skipped }) {
         const lines = [];
         if (dryRun) lines.push({ text: 'DRY RUN - nothing was cancelled or refunded', bold: true });
-        if (!cancelOk) lines.push({ text: 'Cancellation failed - no refunds issued', bold: true });
+        // With the API the cancel runs alongside the refunds, so a failed
+        // cancel can come with refunds that did go through.
+        if (!cancelOk) {
+            lines.push({
+                text: done.length
+                    ? 'Cancellation failed - the refunds below WERE issued; cancel the account by hand'
+                    : 'Cancellation failed - no refunds issued',
+                bold: true
+            });
+        }
         if (plan?.name) lines.push({ text: `(${plan.name})` });
         if (cmsUrl) lines.push({ text: `CMS: ${cmsUrl}`, href: cmsUrl });
 
@@ -8652,14 +8661,30 @@ if (isCMSHost()) {
         }
 
         try {
-            if (cancelFirst) {
-                const cancel = await cancelSubscriptions(ticketURL, dryRun);
-                run.cancelOk = cancel.ok;
-            }
-            if (!run.cancelOk) {
-                run.skipped.push(...picked);
+            if (cancelFirst && apiCtx && picked.length) {
+                // Through the API, Cancel Now runs ALONGSIDE the refunds
+                // (Sebastian, 2026-10-06: waiting for the cancel first was
+                // the slow part). Each refund names its own charge, so they
+                // do not depend on the cancel; the price is that a failed
+                // cancel no longer holds the refunds back - the note and the
+                // panel say so, and it is cancelled by hand. Anything that
+                // falls back to the screen still waits for the cancel.
+                const cancelPromise = cancelSubscriptions(ticketURL, dryRun).catch(error => {
+                    console.error('[BV Refund Assist] Cancel Now crashed.', error);
+                    return { ok: false };
+                });
+                await refundEach(run, picked, { beforeScreen: () => cancelPromise });
+                run.cancelOk = (await cancelPromise).ok;
             } else {
-                await refundEach(run, picked);
+                if (cancelFirst) {
+                    const cancel = await cancelSubscriptions(ticketURL, dryRun);
+                    run.cancelOk = cancel.ok;
+                }
+                if (!run.cancelOk) {
+                    run.skipped.push(...picked);
+                } else {
+                    await refundEach(run, picked);
+                }
             }
         } catch (error) {
             console.error('[BV Refund Assist] Run crashed.', error);
@@ -8687,10 +8712,11 @@ if (isCMSHost()) {
     // between them - the one-by-one order and "first failure stops the rest"
     // exist for the screen path, where a stale drawer could take the next
     // refund. A charge the API cannot do drops to the screen afterwards, one
-    // at a time, with the old stop rule.
-    async function refundEach(run, list) {
+    // at a time, with the old stop rule - after `beforeScreen` (the
+    // background Cancel Now, which may itself be using the screen).
+    async function refundEach(run, list, { beforeScreen = null } = {}) {
         const apiCtx = cmsApiContext();
-        if (apiCtx && list.length > 1) {
+        if (apiCtx && list.length) {
             // One billing read up front, shared by every call below.
             try {
                 await billingRecordsForRun(apiCtx);
@@ -8713,6 +8739,7 @@ if (isCMSHost()) {
                 else if (result) run.done.push(charge);
                 else run.failed.push({ charge, reason: step.detail || 'failed' });
             }
+            if (onScreen.length && beforeScreen) await beforeScreen();
             for (let index = 0; index < onScreen.length; index += 1) {
                 const { charge, step } = onScreen[index];
                 if (await refundChargeOnScreen(charge, run.dryRun, step)) {
@@ -9453,8 +9480,8 @@ if (isCMSHost()) {
         list.appendChild(el('li', { text: `Copy the summary and paste it into a private note on ticket #${getTicketNumber(ticketURL)}.` }));
         if (picked.length) list.appendChild(el('li', { text: `Write the refund-log row with ${getRefunder() || 'the selected agent'} as the Refunder.` }));
         body.appendChild(list);
-        body.appendChild(el('p', { class: 'bv-ra-muted', text: cmsApiContext() && picked.length > 1
-            ? '⚡ The refunds go out together through the API, each one checked in CMS. If the cancel fails, no refund is issued.'
+        body.appendChild(el('p', { class: 'bv-ra-muted', text: cmsApiContext() && picked.length
+            ? `⚡ Through the API${cancelFirst ? ', Cancel Now runs alongside the refunds' : ''}; ${picked.length > 1 ? 'the refunds go out together, ' : ''}each one checked in CMS.${cancelFirst ? ' If the cancel fails, the refunds still happen - the note says so and you cancel by hand.' : ''}`
             : 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
 
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Back', onclick: () => { view = 'select'; render(); } }));

@@ -217,7 +217,7 @@ check('audit log uses CMS\'s own amount wording', refundAuditComment(partialChar
 
 // API mode sends every refund at once; whatever the API cannot do drops to
 // the screen afterwards, one by one, and the first screen failure stops the rest.
-async function parallelRun(apiOutcomes, screenOutcomes, { api = true } = {}) {
+async function parallelRun(apiOutcomes, screenOutcomes, { api = true, beforeScreen = null } = {}) {
   const events = [];
   const run = { dryRun: false, done: [], failed: [], skipped: [] };
   const refundEach = new Function('stubs', `
@@ -246,7 +246,8 @@ async function parallelRun(apiOutcomes, screenOutcomes, { api = true } = {}) {
     refundCharge: async charge => { events.push('seq ' + charge.order); return true; },
     steps: []
   });
-  await refundEach(run, ['A', 'B', 'C', 'D'].map(order => ({ order })));
+  await refundEach(run, ['A', 'B', 'C', 'D'].map(order => ({ order })),
+    beforeScreen ? { beforeScreen: () => beforeScreen(events) } : undefined);
   return { run, events };
 }
 
@@ -264,6 +265,18 @@ asyncChecks.push(async () => {
   check('API-impossible charges go to the screen one by one, stopping at the first screen failure',
     mixed.events.includes('screen C') && !mixed.events.includes('screen D') &&
     mixed.run.skipped.map(c => c.order).join() === 'D', { events: mixed.events, run: mixed.run });
+
+  // The background Cancel Now: screen refunds wait for it, API refunds do not.
+  const waited = await parallelRun({ A: true, B: null, C: true, D: true }, { B: true }, {
+    beforeScreen: async events => { events.push('cancel finished'); }
+  });
+  check('API refunds go out without waiting for the cancel; a screen refund waits for it',
+    waited.events.indexOf('api-end A') < waited.events.indexOf('cancel finished') &&
+    waited.events.indexOf('cancel finished') < waited.events.indexOf('screen B'), waited.events);
+  const noScreen = await parallelRun({ A: true, B: true, C: true, D: true }, {}, {
+    beforeScreen: async events => { events.push('cancel finished'); }
+  });
+  check('with nothing for the screen, the refunds never wait on the cancel', !noScreen.events.includes('cancel finished'), noScreen.events);
 
   const noApi = await parallelRun({}, {}, { api: false });
   check('without the API, the old one-by-one path runs', noApi.events.join() === 'seq A,seq B,seq C,seq D', noApi.events);
@@ -380,6 +393,11 @@ check('a failed charge is not in the table', !partial.rows.some(cells => cells.i
 
 const cancelFailed = buildNote({ dryRun: false, cancelOk: false, plan: null, cmsUrl: CMS_URL, done: [], failed: [], skipped: [charge] });
 check('a failed cancel says no refund was issued', cancelFailed.lines[0].text === 'Cancellation failed - no refunds issued', cancelFailed.lines);
+// API mode runs the cancel alongside the refunds, so they can both be true.
+const cancelFailedAfterRefund = buildNote({ dryRun: false, cancelOk: false, plan: null, cmsUrl: CMS_URL, done: [charge], failed: [], skipped: [] });
+check('a failed cancel with refunds done says they WERE issued',
+  /WERE issued; cancel the account by hand/.test(cancelFailedAfterRefund.lines[0].text) && cancelFailedAfterRefund.rows.length > 0,
+  cancelFailedAfterRefund.lines);
 check('a failed cancel has an empty table', cancelFailed.rows.length === 0, cancelFailed.rows);
 
 const dry = buildNote({ dryRun: true, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL, done: [charge2], failed: [], skipped: [] });

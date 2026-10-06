@@ -3532,3 +3532,9 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - Review text says the refunds go out together when API + several charges.
 - Tests: `refundEach` with stubs (parallel start, one read, failure isolation, screen fallback order). Harness note: the headless-Chrome runner now waits 3s for async checks (before, copy-case's async checks were silently not counted) - 561 pass.
 - Not changed, worth measuring next: Freshdesk side (scenario reads/PUT 1.8s, ticket tab Apply/check/send after the hand-off, not in "Last run").
+## 3.87.0 - Cancel Now runs alongside the refunds (API mode) (2026-10-06)
+- Asked: "se queda esperando que se cancele la cuenta primero antes de continuar, esto mejor hazlo en segundo plano". 3.86.0 confirmed faster live.
+- `runAssist`: with an API context, picked charges and "Cancel first" ticked, `cancelSubscriptions` starts as a promise and `refundEach(run, picked, { beforeScreen: () => cancelPromise })` runs at the same time; `run.cancelOk` is read after both. No API -> the old order (cancel, then refunds only if it worked).
+- **Deliberate reversal of the 3.63.0 rule** "a failed cancel refunds nothing" (in API mode only): the refunds no longer wait on the cancel. buildNote's first line becomes "Cancellation failed - the refunds below WERE issued; cancel the account by hand" when refunds are done; the review text says so up front. Recheck still re-tries a failed cancel.
+- `refundEach` now takes the API path for 1 charge too (was >1), and awaits `beforeScreen` only if some charge has to fall back to the screen (the cancel may be using the screen itself).
+- 564 tests pass. Not timed live yet - expect the cancel's ~0.9s (plus its billing read) off the total.
