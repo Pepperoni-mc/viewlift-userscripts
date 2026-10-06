@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.87.0
+// @version      3.87.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -767,18 +767,28 @@
       //    for an untested one.
       const source = authSource || 'header';
       const incomingExpiry = bvTokenExpiresAt(authorization);
-      const stored = creds.authorization;
-      const storedExpiry = stored ? bvTokenExpiresAt(stored.value) : 0;
+      const shouldReplace = stored => {
+        const storedExpiry = stored ? bvTokenExpiresAt(stored.value) : 0;
+        return !stored ||
+          !storedExpiry ||
+          !incomingExpiry ||
+          incomingExpiry > storedExpiry ||
+          (incomingExpiry === storedExpiry && source === 'header' && stored.source === 'cookie');
+      };
 
-      const replace =
-        !stored ||
-        !storedExpiry ||
-        !incomingExpiry ||
-        incomingExpiry > storedExpiry ||
-        (incomingExpiry === storedExpiry && source === 'header' && stored.source === 'cookie');
-
-      if (replace) {
+      if (shouldReplace(creds.authorization)) {
         creds.authorization = { value: authorization, capturedAt: now, source };
+      }
+      // The token is per tenant (switching organization makes CMS issue a
+      // new one), so the single newest token above can belong to another
+      // brand - a fresher cms-gcp or Altitude token sent to VGK's API failed
+      // with "Cannot read properties of null (reading 'site')" (Sebastian,
+      // 2026-10-06). So each site also keeps its own.
+      if (site) {
+        creds.siteAuth = creds.siteAuth || {};
+        if (shouldReplace(creds.siteAuth[site])) {
+          creds.siteAuth[site] = { value: authorization, capturedAt: now, source };
+        }
       }
     }
     if (site && xApiKey) {
@@ -800,7 +810,9 @@
     if (!site) return null;
 
     const creds = bvGetCmsCreds();
-    const auth = creds.authorization;
+    // This site's own token; the shared one only for records saved before
+    // tokens were kept per site.
+    const auth = (creds.siteAuth && creds.siteAuth[site]) || creds.authorization;
     const siteEntry = creds.sites[site];
 
     if (!auth || !auth.value || !siteEntry || !siteEntry.xApiKey) return null;

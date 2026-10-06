@@ -132,5 +132,17 @@ bvRecordCmsCreds({ site: 'schn', authorization: cookieToken, host: 'cms-gcp.view
 check('cookie-only capture leaves the brand key intact',
   bvGetCmsCreds().sites.schn.xApiKey, 'k-1');
 
+// 7. Tokens are per tenant: a fresher token from another brand must not
+//    replace the one VGK's own API calls use.
+reset();
+bvRecordCmsCreds({ site: 'vegas-golden-knights', xApiKey: 'k-vgk', apiOrigin: 'https://cms.api.viewlift.com',
+  authorization: fakeJwt(sameExp, 'vgk'), host: 'cms.viewlift.com', authSource: 'cookie' });
+bvRecordCmsCreds({ site: 'lightning', xApiKey: 'k-l', apiOrigin: 'https://cms-gcp.api.viewlift.com',
+  authorization: fakeJwt(laterExp, 'lightning'), host: 'cms-gcp.viewlift.com' });
+check('each brand keeps its own token',
+  tokenMarker(bvGetCmsCreds().siteAuth['vegas-golden-knights'].value), 'vgk');
+check('the other brand has its own',
+  tokenMarker(bvGetCmsCreds().siteAuth.lightning.value), 'lightning');
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll checks passed against the shipped source.');
 process.exit(failures ? 1 : 0);

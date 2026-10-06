@@ -3538,3 +3538,8 @@ Not yet click-tested on a live account page — no CMS user page was open in thi
 - **Deliberate reversal of the 3.63.0 rule** "a failed cancel refunds nothing" (in API mode only): the refunds no longer wait on the cancel. buildNote's first line becomes "Cancellation failed - the refunds below WERE issued; cancel the account by hand" when refunds are done; the review text says so up front. Recheck still re-tries a failed cancel.
 - `refundEach` now takes the API path for 1 charge too (was >1), and awaits `beforeScreen` only if some charge has to fall back to the screen (the cancel may be using the screen itself).
 - 564 tests pass. Not timed live yet - expect the cancel's ~0.9s (plus its billing read) off the total.
+## 3.87.1 - CMS API token kept per site (2026-10-06)
+- Reported: VGK (cms.viewlift.com, `vegas-golden-knights`) Connect API -> "cms-http-500: Cannot read properties of null (reading 'site')", even right after reading the cookies.
+- Likely cause (not confirmed live): one global `creds.authorization`, replaced only by a token with a later `exp`. CMS tokens are per tenant (org switch issues a new one), so a fresher cms-gcp / Altitude token was sent to VGK's API with VGK's key and site.
+- `bvRecordCmsCreds` also stores `creds.siteAuth[site]` (same precedence rule); `bvGetCmsCredForSite` uses it, the global token only as a fallback for old records. Test 7 in cred-precedence.test.js.
+- Tests NOT run: no node on this machine at the time.
