@@ -214,18 +214,17 @@ const schnTicket = {
 }
 
 // ---------------------------------------------------------------------------
-// cms.viewlift.com switches organization like cms-gcp does (3.80.0): it used
-// to get only a warning, so an Altitude session opened KnightTime accounts as
-// an empty shell.
+// Never /v5 (3.88.0): the button opens the account itself and leaves a
+// pending entry; the CMS page switches organization through the API.
 // ---------------------------------------------------------------------------
 const pendingOf = stored => JSON.parse(stored.betterCmsPendingAccountSwitch || 'null');
 
 {
   const { api, stored } = load({ hostSites: { 'cms.viewlift.com': 'altitude' } });
   const href = api.buildCMSDestination(vgkTicket, { email: 'a@b.co', userId: 'abc' });
-  check('a VGK ticket on an Altitude session goes through the v5 picker', href, 'https://cms.viewlift.com/v5/overview?betterSwitch=vegas-golden-knights');
-  check('and returns to the account afterwards', pendingOf(stored).returnUrl, 'https://cms.viewlift.com/users/search/abc');
-  check('as a v5 switch', pendingOf(stored).viaV5, true);
+  check('a VGK ticket on an Altitude session opens the account directly', href, 'https://cms.viewlift.com/users/search/abc');
+  check('with a pending switch to VGK', pendingOf(stored).key, 'vegas-golden-knights');
+  check('that returns to the account', pendingOf(stored).returnUrl, 'https://cms.viewlift.com/users/search/abc');
 }
 
 {
@@ -233,19 +232,27 @@ const pendingOf = stored => JSON.parse(stored.betterCmsPendingAccountSwitch || '
   const href = api.buildCMSDestination(vgkTicket, { email: 'a@b.co', userId: 'abc' });
   check('a VGK ticket on a VGK session goes straight to the account', href, 'https://cms.viewlift.com/users/search/abc');
   check('still leaving a brand check for the CMS page', pendingOf(stored).key, 'vegas-golden-knights');
-  check('not marked as already switched', pendingOf(stored).viaV5, undefined);
+  check('not marked as already switched', pendingOf(stored).viaApi, undefined);
 }
 
 {
-  const { api } = load({ hostSites: { 'cms.viewlift.com': 'vegas-golden-knights' } });
-  check('Altitude and DIRT get their own picker keys',
-    [api.buildCMSDestination(altitudeTicket, { email: 'a@b.co' }).includes('betterSwitch=altitude'),
-     api.buildCMSDestination(dirtTicket, { email: 'a@b.co' }).includes('betterSwitch=dirtvision')].join(), 'true,true');
+  const { api, stored } = load({ hostSites: { 'cms.viewlift.com': 'vegas-golden-knights' } });
+  api.buildCMSDestination(altitudeTicket, { email: 'a@b.co' });
+  const altitudeKey = pendingOf(stored).key;
+  api.buildCMSDestination(dirtTicket, { email: 'a@b.co' });
+  check('Altitude and DIRT get their own organization keys', [altitudeKey, pendingOf(stored).key].join(), 'altitude,dirtvision');
 }
 
 {
-  const { api } = load({ hostSites: { 'cms-gcp.viewlift.com': 'lightning' } });
-  check('a GCP brand still switches on cms-gcp', api.buildCMSDestination(schnTicket, { email: 'a@b.co', userId: 'x' }), 'https://cms-gcp.viewlift.com/v5/overview?betterSwitch=schn');
+  const { api, stored } = load({ hostSites: { 'cms-gcp.viewlift.com': 'lightning' } });
+  check('a GCP brand opens the account on cms-gcp, no /v5', api.buildCMSDestination(schnTicket, { email: 'a@b.co', userId: 'x' }), 'https://cms-gcp.viewlift.com/users/search/x');
+  check('with a pending switch to SCHN', pendingOf(stored).key, 'schn');
+}
+
+{
+  const fs = require('fs');
+  const source = fs.readFileSync(require('path').join(__dirname, '..', 'scripts', 'better-viewlift.user.js'), 'utf8');
+  check('no code navigates to /v5', /\/v5\/overview|betterSwitch/.test(source), false);
 }
 
 if (failures) {

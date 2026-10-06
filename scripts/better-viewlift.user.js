@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.87.2
+// @version      3.88.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -4007,8 +4007,8 @@
 
 /* ============================================================
  * Feature 1c: Classic CMS Account Switcher
- * The classic CMS does not expose the v5 organization picker. This helper
- * offers the same control and automates the short v5 handoff in the background.
+ * The classic CMS has no organization picker. This helper offers one and
+ * switches through CMS's own API - never through /v5.
  * ============================================================ */
 
 (function () {
@@ -4058,10 +4058,6 @@
         return /^\/users(?:\/|$)/i.test(location.pathname);
     }
 
-    function isV5Page() {
-        return /^\/v5(?:\/|$)/i.test(location.pathname);
-    }
-
     function isLogoutPage() {
         return /^\/logout(?:\/|$)/i.test(location.pathname);
     }
@@ -4074,16 +4070,123 @@
         return match ? decodeURIComponent(match[1]).trim().toLowerCase() : '';
     }
 
-    // Finishes a pending switch from WHEREVER the app happens to land.
-    //
-    // Selecting an organization makes the v5 app do a full page navigation
-    // of its own (measured 2026-08-13: it lands on /content). The old code
-    // waited a fixed 1200ms and then redirected, which raced that
-    // navigation - when the app won, the redirect never happened and the
-    // journey just stopped there, which is exactly the "it gets stuck and
-    // never runs the search" report. Completing on page load instead of on
-    // a timer removes the race: whatever page the app ends up on, this runs
-    // there and continues to the real destination.
+    /* Organization switch without /v5 (Sebastian, 2026-10-06: "para ningún
+     * CMS se use nunca el /v5"). What the v5 picker does, read from its
+     * bundle the same day: GraphQL userTenantSwitch(targetSite, deviceId) on
+     * <api>/management/graphql with the current token, then it writes the
+     * new tokens and, from loginInfo, the ~35 cookies the classic pages read
+     * (CookieManager.set: encodeURIComponent value, path=/, the options
+     * below). Skipped: v5's own "permissions" cookie and isUserAdmin, whose
+     * domain is the brand's website and so never lands on this host. */
+    const TENANT_SWITCH_MUTATION = `mutation userTenantSwitch($targetSite: String!, $deviceId: String!) {
+  userTenantSwitch(targetSite: $targetSite, deviceId: $deviceId) {
+    success v2ManagementApiEnabled v2VodManagementApiEnabled isTwoFactorOnLogin obscureMobileNumber username accessToken refreshToken
+  }
+}`;
+    const USER_INFO_QUERY = `query {
+  loginInfo {
+    response {
+      username otpDetails isVerified id site siteId bucket firebasePropertyId roles
+      contributorData { categories tags persons }
+      contentContributorData { accessLevel permissions { publishUnpublishAccess archiveAccess } users }
+      isSocialPublishAutomated siteType renditionUrl desktopLogo enableLiveStream enableSSAISupport bucketRegion
+      isDRMEncryptionRequired encodingService tbHostUrl templateBuilderUrl analyticsURL reelybaseURL serviceId
+      domainName settingsId enableQOS managementXApiKey defaultTimezone
+    }
+  }
+}`;
+    // CMS's cookie lifetimes (CookieTTL): 12h, refresh token 7 days.
+    const COOKIE_TTL_S = 43200;
+    const REFRESH_COOKIE_TTL_S = 604800;
+
+    function setCmsCookie(name, value, { domain = location.hostname, maxAge = COOKIE_TTL_S } = {}) {
+        const text = String(value);
+        document.cookie = `${name}=${encodeURIComponent(text)}; path=/; domain=${domain}; max-age=${maxAge}; expires=${new Date(Date.now() + maxAge * 1000).toUTCString()}`;
+    }
+
+    // The last two labels of the host (viewlift.com), CMS's default domain.
+    function registrableDomain() {
+        return location.hostname.split('.').filter(Boolean).slice(-2).join('.');
+    }
+
+    async function cmsGraphql(apiOrigin, token, xApiKey, query, variables) {
+        const response = await fetch(apiOrigin + '/management/graphql', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: token, xApiKey },
+            body: JSON.stringify({ query, variables: variables || {} })
+        });
+        let json = null;
+        try { json = await response.json(); } catch (error) { json = null; }
+        const graphError = json && Array.isArray(json.errors) && json.errors[0] && json.errors[0].message;
+        if (!response.ok || graphError || !json || !json.data) {
+            throw new Error(graphError ? String(graphError).slice(0, 160) : `HTTP ${response.status}`);
+        }
+        return json.data;
+    }
+
+    async function switchTenantViaApi(key) {
+        const apiOrigin = BV_CMS_API_ORIGINS[location.hostname];
+        const deviceId = bvReadCookie('deviceId');
+        const token = bvReadCookie('vl-accessToken');
+        const xApiKey = bvReadCookie('managementXApiKey');
+        if (!apiOrigin) throw new Error(`no known API for ${location.hostname}`);
+        if (!deviceId || !token) throw new Error('no CMS session (log in again)');
+
+        const switched = (await cmsGraphql(apiOrigin, token, xApiKey, TENANT_SWITCH_MUTATION, { targetSite: key, deviceId })).userTenantSwitch;
+        if (!switched || !switched.accessToken) throw new Error('CMS refused the switch');
+
+        setCmsCookie('v2ManagementApiEnabled', switched.v2ManagementApiEnabled);
+        setCmsCookie('v2VodManagementApiEnabled', switched.v2VodManagementApiEnabled);
+        setCmsCookie('obscureMobileNumber', switched.obscureMobileNumber);
+        setCmsCookie('vl-accessToken', switched.accessToken);
+        setCmsCookie('vl-refreshToken', switched.refreshToken, { maxAge: REFRESH_COOKIE_TTL_S });
+        // Before the next call: the credential capture files the token it
+        // sees under the "site" cookie, which must already be the new one.
+        setCmsCookie('site', key);
+
+        const info = (await cmsGraphql(apiOrigin, switched.accessToken, xApiKey, USER_INFO_QUERY)).loginInfo.response;
+        if (!info || !info.site) throw new Error('CMS returned no account info');
+
+        const json = value => JSON.stringify(value || {});
+        const cookies = {
+            id: info.id, site: info.site, siteId: info.siteId,
+            userRoles: json(info.roles), contributorData: json(info.contributorData),
+            contentContributorData: json(info.contentContributorData),
+            DomainName: JSON.stringify(info.domainName || []), domainName: JSON.stringify(info.domainName || []),
+            desktopLogo: info.desktopLogo, user: info.username, otpDetails: info.otpDetails, siteType: info.siteType,
+            firebasePropertyId: info.firebasePropertyId, serviceId: info.serviceId, 'bucket-name': info.bucket,
+            analyticsURL: info.analyticsURL, reelybaseURL: info.reelybaseURL, encodingService: info.encodingService,
+            isToolsMonetizationModelEnabled: false, renditionUrl: info.renditionUrl,
+            templateBuilderURL: info.templateBuilderUrl, tbHostUrl: info.tbHostUrl,
+            isDRMEncryptionRequired: info.isDRMEncryptionRequired, isVerified: info.isVerified,
+            settingsId: info.settingsId, enableQOS: info.enableQOS, enableLiveStream: info.enableLiveStream,
+            enableSSAISupport: info.enableSSAISupport, bucketRegion: info.bucketRegion,
+            managementXApiKey: info.managementXApiKey, isVerticalVideo: false,
+            enableEncoding: info.site !== 'rchdtv'
+        };
+        if (info.defaultTimezone) cookies.defaultTimezone = info.defaultTimezone;
+        Object.keys(cookies).forEach(name => setCmsCookie(name, cookies[name]));
+
+        const shared = { domain: registrableDomain() };
+        setCmsCookie('tbUserToken', info.username, shared);
+        setCmsCookie('clientLogo', info.desktopLogo, shared);
+        const tbHost = info.tbHostUrl ? String(info.tbHostUrl).split('://')[1] : '';
+        setCmsCookie(`${tbHost}-${info.site}-key`, info.managementXApiKey, shared);
+
+        try {
+            localStorage['content-view.current-siteid'] = '/' + info.site;
+            localStorage.isSocialPublishAutomated = info.isSocialPublishAutomated;
+            localStorage.removeItem('currentNetwork');
+            sessionStorage.removeItem('siteConfig');
+        } catch (error) { /* storage blocked - cookies are what matter */ }
+
+        bvCaptureCmsCredsFromCookies();
+        return info.site;
+    }
+
+    // Finishes a pending switch on page load: switches through the API when
+    // the session is on another brand, then reloads the destination; once
+    // the session is on the right brand, clears the entry.
     function completePendingSwitchIfReady() {
         const pending = safeGetPending();
         if (!pending || !pending.key || !pending.returnUrl) return false;
@@ -4099,13 +4202,20 @@
         if (pendingHost && pendingHost !== location.hostname) return false;
 
         if (currentSessionSite() !== String(pending.key).toLowerCase()) {
-            // Landed straight on the classic page (the Freshdesk side thought
-            // the session was already on this brand - its record of that can
-            // lag) but the session is on another one: an account page would
-            // show an empty shell, so do the switch now, once.
-            if (isClassicCMSPage() && !pending.viaV5 && ORGANIZATIONS.some(item => item.key === pending.key)) {
-                safeSetPending(Object.assign({}, pending, { viaV5: true, startedAt: Date.now() }));
-                location.replace(`${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(pending.key)}`);
+            // The session is on another organization: an account page would
+            // show an empty shell, so switch through the API, once, and
+            // reload the destination.
+            if (isClassicCMSPage() && !pending.viaApi && !switchRunning && ORGANIZATIONS.some(item => item.key === pending.key)) {
+                safeSetPending(Object.assign({}, pending, { viaApi: true, startedAt: Date.now() }));
+                switchRunning = true;
+                showStatus('Switching...');
+                switchTenantViaApi(pending.key)
+                    .then(() => location.replace(pending.returnUrl))
+                    .catch(error => {
+                        clearPending();
+                        switchRunning = false;
+                        bvNotify(`Could not switch CMS to ${pending.key}: ${error.message}. Switch the organization by hand.`, { level: 'warn', ttl: 12000 });
+                    });
                 return true;
             }
             return false;
@@ -4118,38 +4228,6 @@
 
         location.replace(pending.returnUrl);
         return true;
-    }
-
-    function captureQuerySwitchRequest() {
-        try {
-            const params = new URLSearchParams(location.search);
-            const key = clean(params.get('betterSwitch')).toLowerCase();
-            if (!ORGANIZATIONS.some(item => item.key === key)) return;
-
-            // CMS's own /users/search page reads "keyword"/"filter" itself and
-            // runs the real search on load - carrying the email through as
-            // these native params means no DOM fill/click simulation is
-            // needed once we land back there after the account switch.
-            // The Freshdesk button already stored a pending entry with the
-            // real destination (often a direct account URL). Rebuilding one
-            // from this page's query string would overwrite it with a bare
-            // search page, throwing away the account id the lookup just
-            // found - which stranded every cross-brand jump on an empty
-            // search screen. Only build one when nothing usable is pending.
-            const existing = safeGetPending();
-            const existingIsUsable = existing &&
-                String(existing.key || '').toLowerCase() === key &&
-                existing.returnUrl &&
-                Date.now() - Number(existing.startedAt || 0) < 60000;
-
-            if (existingIsUsable) return;
-
-            const email = clean(params.get('keyword'));
-            const returnUrl = `${location.origin}/users/search${email ? `?keyword=${encodeURIComponent(email)}&filter=all` : ''}`;
-            safeSetPending({ key, returnUrl, startedAt: Date.now() });
-        } catch (error) {
-            console.warn('[CMS Account Switcher] Could not read the requested account.', error);
-        }
     }
 
     function addStyles() {
@@ -4228,37 +4306,6 @@
         }) || null;
     }
 
-    function getOrganizationButton() {
-        const knownKeys = ORGANIZATIONS.map(item => item.key);
-        return Array.from(document.querySelectorAll('button')).find(button => {
-            if (!button.getBoundingClientRect().width) return false;
-            const imgAlt = button.querySelector('img')?.getAttribute('alt') || '';
-            const text = clean([button.textContent, button.getAttribute('aria-label'), imgAlt].join(' ')).toLowerCase();
-            return knownKeys.some(key => text === key || text.includes(` ${key}`));
-        }) || null;
-    }
-
-    function getOrganizationOption(key) {
-        const byValue = document.querySelector(`[role="option"][data-value="${CSS.escape(key)}"]`) ||
-            document.querySelector(`[role="option"][data-value="${key}"]`);
-
-        if (byValue) return byValue;
-
-        return Array.from(document.querySelectorAll('[role="option"]')).find(option => {
-            const text = clean(option.textContent).toLowerCase();
-            return text === key || text.startsWith(`${key} `) || text.includes(` ${key}`);
-        }) || null;
-    }
-
-    function getOrganizationKeyFromButton(button) {
-        const text = clean([
-            button?.textContent,
-            button?.getAttribute('aria-label'),
-            button?.querySelector('img')?.getAttribute('alt')
-        ].join(' ')).toLowerCase();
-        return ORGANIZATIONS.find(item => text === item.key || text.includes(item.key))?.key || '';
-    }
-
     function showStatus(message, error = false) {
         const button = document.getElementById(BUTTON_ID);
         if (!button) return;
@@ -4293,10 +4340,10 @@
                 option.addEventListener('click', event => {
                     event.stopPropagation();
                     const key = option.dataset.account;
-                    safeSetPending({ key, returnUrl: location.href, startedAt: Date.now() });
                     closeAccountMenu();
-                    showStatus('Switching...');
-                    location.href = `${location.origin}/v5/overview?betterSwitch=${encodeURIComponent(key)}`;
+                    if (currentSessionSite() === key) return;
+                    safeSetPending({ key, returnUrl: location.href, startedAt: Date.now() });
+                    completePendingSwitchIfReady();
                 });
                 menu.appendChild(option);
             });
@@ -4352,86 +4399,16 @@
         document.body.appendChild(button);
     }
 
-    function runV5Switch() {
-        if (!isV5Page()) return;
-        if (switchRunning) return;
-        const pending = safeGetPending();
-        if (!pending || !pending.key) return;
-        if (Date.now() - Number(pending.startedAt || 0) > 30000) {
-            clearPending();
-            return;
-        }
-
-        const accountButton = getOrganizationButton();
-        if (!accountButton) {
-            window.setTimeout(runV5Switch, 250);
-            return;
-        }
-
-        const currentKey = getOrganizationKeyFromButton(accountButton);
-        const returnUrl = pending.returnUrl || `${location.origin}/users/search`;
-        if (currentKey === pending.key) {
-            clearPending();
-            window.setTimeout(() => location.replace(returnUrl), 400);
-            return;
-        }
-
-        switchRunning = true;
-        // A real account switch is genuinely slower than a same-org search
-        // (this v5 dashboard has to load, then the org dropdown, before the
-        // actual search can even start) - visible so the delay reads as
-        // expected instead of a mystery slowdown, unlike hosts that never
-        // need this step (MSN, standard) and go straight to the search.
-        bvNotify(
-            `Switching CMS account to ${pending.key.toUpperCase()} before searching - this takes a bit longer than brands that don't need an account switch.`,
-            { level: 'info', ttl: 8000 }
-        );
-        const existingOption = getOrganizationOption(pending.key);
-        if (!existingOption) accountButton.click();
-        window.setTimeout(() => {
-            const option = getOrganizationOption(pending.key);
-            if (!option || option.getAttribute('aria-disabled') === 'true' || option.getAttribute('data-disabled') === 'true') {
-                console.warn('[CMS Account Switcher] Account is unavailable:', pending.key);
-                clearPending();
-                switchRunning = false;
-                return;
-            }
-
-            option.click();
-
-            // Deliberately does NOT clear the pending switch or redirect on a
-            // timer: selecting an organization makes the app navigate itself,
-            // and racing that navigation is what used to strand the journey
-            // half-way. The pending entry is left in place so that whichever
-            // page the app lands on finishes it via
-            // completePendingSwitchIfReady(). This poll is only a fallback
-            // for the case where the app re-renders without navigating - it
-            // watches for the session's brand to actually flip rather than
-            // guessing at a fixed delay, so it fires as soon as it is ready.
-            let waited = 0;
-            const settleTimer = window.setInterval(() => {
-                waited += 250;
-                if (completePendingSwitchIfReady() || waited > 15000) {
-                    window.clearInterval(settleTimer);
-                    switchRunning = false;
-                }
-            }, 250);
-        }, 500);
-    }
-
-    captureQuerySwitchRequest();
     // Runs first, and on every CMS page: if a switch was requested earlier
     // and the session is now on that brand, continue straight to the real
     // destination no matter which page the app dropped us on.
     completePendingSwitchIfReady();
     installClassicButton();
     continueFromLogout();
-    runV5Switch();
     onRouteChange(() => {
         completePendingSwitchIfReady();
         installClassicButton();
         continueFromLogout();
-        runV5Switch();
     });
     document.addEventListener('click', event => {
         const menu = document.getElementById(MENU_ID);
@@ -15956,44 +15933,21 @@ if (location.hostname === 'viewlift.freshdesk.com') {
             ? `${url.origin}/users/search/${encodeURIComponent(userId)}`
             : `${url.origin}/users/search?keyword=${encodeURIComponent(email)}&filter=all`;
 
-        // The classic CMS has no account selector. Route through the v5
-        // selector when the ticket identifies the account.
+        // Always the account (or search) itself - never /v5 (Sebastian,
+        // 2026-10-06). Opening an account while the session sits on another
+        // org renders an empty shell (measured 2026-08-13), so a pending
+        // entry goes along: the CMS page sees the session on another brand,
+        // switches it through the API (Feature 1c) and reloads this page.
         if (account && bvCmsOrganizationsForHost(url.hostname).some(item => item.key === account)) {
-            // A pending entry goes along either way: if "already on this
-            // brand" below is stale (it is only the last brand seen here),
-            // the CMS page finds the session elsewhere and switches itself.
-            const pending = { key: account, returnUrl: finalPath, startedAt: Date.now() };
-            const savePending = () => {
-                try {
-                    GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify(pending));
-                } catch (error) {
-                    console.warn('[CMS Search] Could not save the pending account switch.', error);
-                }
-            };
-            // ...but only when the session isn't already on that brand.
-            // Measured 2026-08-13: opening an account id while the session
-            // sits on a different org renders an empty shell (no account
-            // data), so the switch is genuinely required when they differ -
-            // yet going through /v5/overview when they ALREADY match is the
-            // pure-waste second hop that reads as a "double lookup". The
-            // captured credentials record which brand this host last really
-            // used, so that check costs nothing.
-            if (bvGetSiteForCmsHost(url.hostname) === account) {
-                bvTimingMark('destination-direct', `${account} - session already on this brand`);
-                savePending();
-                return finalPath;
+            try {
+                GM_setValue('betterCmsPendingAccountSwitch', JSON.stringify({ key: account, returnUrl: finalPath, startedAt: Date.now() }));
+            } catch (error) {
+                console.warn('[CMS Search] Could not save the pending account switch.', error);
             }
-
             bvTimingMark(
-                'destination-via-v5-switch',
+                bvGetSiteForCmsHost(url.hostname) === account ? 'destination-direct' : 'destination-api-switch',
                 `wanted ${account}, stored slug for this host is "${bvGetSiteForCmsHost(url.hostname) || '(none)'}"`
             );
-
-            url.pathname = '/v5/overview';
-            url.searchParams.set('betterSwitch', account);
-            pending.viaV5 = true;
-            savePending();
-            return url.href;
         }
 
         return finalPath;
