@@ -211,6 +211,39 @@ check('refund log: partial and full mixed', formatRefundAmount([partialCharge, f
 check('audit log uses CMS\'s own amount wording', refundAuditComment(partialCharge) === 'Issued refund of amount: 10, Reason: ROTH' &&
   refundAuditComment(full74) === 'Issued refund of percentage: 100%, Reason: ROTH', [refundAuditComment(partialCharge), refundAuditComment(full74)]);
 
+// ------------------------------------------------------------------ API from cookies
+
+// CMS keeps site / vl-accessToken / managementXApiKey in plain cookies
+// (2026-10-06); the API origin is per host. Erick never got ⚡ API from
+// request interception alone.
+function cookieCapture(host, cookie) {
+  const recorded = [];
+  const fn = new Function('location', 'document', 'bvRecordCmsCreds', `
+    const BV_CMS_CRED_EXPIRY_MARGIN_MS = 2 * 60 * 1000;
+    ${extractFunction(fullSrc, 'bvTokenExpiresAt')}
+    ${fullSrc.slice(fullSrc.indexOf('const BV_CMS_API_ORIGINS'), fullSrc.indexOf('};', fullSrc.indexOf('const BV_CMS_API_ORIGINS')) + 2)}
+    ${extractFunction(fullSrc, 'bvReadCookie')}
+    ${extractFunction(fullSrc, 'bvCaptureCmsCredsFromCookies')}
+    return bvCaptureCmsCredsFromCookies();
+  `);
+  const result = fn({ hostname: host }, { cookie }, entry => recorded.push(entry));
+  return { result, recorded };
+}
+const b64 = obj => btoa(JSON.stringify(obj)).replace(/=+$/, '');
+const liveJwt = `${b64({ alg: 'HS256' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+const deadJwt = `${b64({ alg: 'HS256' })}.${b64({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
+
+const msn = cookieCapture('cms.monumentalsportsnetwork.com', `foo=1; site=msn; vl-accessToken=${liveJwt}; managementXApiKey=KEY%2B1`);
+check('MSN cookies give the whole API context, with MSN\'s own API host', msn.result.ok &&
+  msn.recorded[0].apiOrigin === 'https://cms-api.monumentalsportsnetwork.com' && msn.recorded[0].site === 'msn' &&
+  msn.recorded[0].xApiKey === 'KEY+1' && msn.recorded[0].authorization === liveJwt, msn);
+check('cms.viewlift.com uses cms.api.viewlift.com',
+  cookieCapture('cms.viewlift.com', `site=altitude; vl-accessToken=${liveJwt}; managementXApiKey=K`).recorded[0].apiOrigin === 'https://cms.api.viewlift.com');
+const noKey = cookieCapture('cms-gcp.viewlift.com', `site=schn; vl-accessToken=${liveJwt}`);
+check('a missing key cookie is named, nothing recorded', !noKey.result.ok && noKey.result.missing.some(m => /managementXApiKey/.test(m)) && !noKey.recorded.length, noKey);
+const expired = cookieCapture('cms-gcp.viewlift.com', `site=schn; vl-accessToken=${deadJwt}; managementXApiKey=K`);
+check('an expired session says log in again', !expired.result.ok && expired.result.missing.some(m => /expired/.test(m)), expired);
+
 // ------------------------------------------------------------------ plan card
 
 // Line order read live from the MSN account's plan card on 2026-09-30.

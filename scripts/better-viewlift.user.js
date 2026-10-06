@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.83.0
+// @version      3.84.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -823,6 +823,56 @@
     return bvGetCmsCreds().hostSites[host] || '';
   }
 
+  // Each CMS host's API origin, read from that host's own _app bundle on
+  // 2026-10-06 (it is a build-time constant there, not a per-user value).
+  // MSN's is NOT under api.viewlift.com, which is why interception alone
+  // never recorded a key for it.
+  const BV_CMS_API_ORIGINS = {
+    'cms.viewlift.com': 'https://cms.api.viewlift.com',
+    'cms-gcp.viewlift.com': 'https://cms-gcp.api.viewlift.com',
+    'foxone.cms.viewlift.com': 'https://cms-foxone.api.viewlift.com',
+    'cms.monumentalsportsnetwork.com': 'https://cms-api.monumentalsportsnetwork.com'
+  };
+
+  function bvReadCookie(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`));
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]).trim();
+    } catch (error) {
+      return match[1].trim();
+    }
+  }
+
+  // The CMS app keeps everything its API calls need in plain cookies -
+  // `site`, `vl-accessToken` and `managementXApiKey` (its own code reads them
+  // with js-cookie: `c["vl-accessToken"]`, `c.managementXApiKey`, `c.site`,
+  // checked 2026-10-06). So the credentials can be read directly, instead of
+  // waiting to catch one of the app's requests - which, for some agents,
+  // never happened (Erick: no ⚡ API). CMS hosts only.
+  // Returns { ok, site, apiOrigin } or { ok: false, site, missing: [...] }.
+  function bvCaptureCmsCredsFromCookies() {
+    const host = location.hostname;
+    const apiOrigin = BV_CMS_API_ORIGINS[host] || '';
+    const site = bvReadCookie('site');
+    const token = bvReadCookie('vl-accessToken');
+    const xApiKey = bvReadCookie('managementXApiKey');
+    const expiresAt = bvTokenExpiresAt(token);
+
+    const missing = [];
+    if (!apiOrigin) missing.push(`no known API for ${host}`);
+    if (!site) missing.push('no "site" cookie');
+    if (!token) missing.push('no session token (log in to CMS)');
+    else if (!expiresAt) missing.push('session token unreadable');
+    else if (Date.now() >= expiresAt - BV_CMS_CRED_EXPIRY_MARGIN_MS) missing.push('session expired (log in to CMS again)');
+    if (!xApiKey) missing.push('no "managementXApiKey" cookie');
+    if (missing.length) return { ok: false, site, missing };
+
+    bvRecordCmsCreds({ site, xApiKey, authorization: token, host, apiOrigin, authSource: 'cookie' });
+    return { ok: true, site, apiOrigin };
+  }
+
   // Keeps the CMS session from lapsing by making a REAL authenticated
   // backend call, which is the part the old keep-alive never did.
   //
@@ -1264,7 +1314,7 @@
           // uses cms-gcp.api.viewlift.com, MSN has its own, and the same
           // credentials ride along on both the /v3.0/invoke and the
           // /management/graphql calls.
-          if (!/\bapi\.viewlift\.com/i.test(href)) return;
+          if (!/\bapi\.viewlift\.com|\/\/cms-api\.monumentalsportsnetwork\.com/i.test(href)) return;
 
           const xApiKey = readHeader(headers, 'xApiKey');
           const authorization = readHeader(headers, 'Authorization');
@@ -1366,6 +1416,9 @@
       // It only keeps our copy honest.
       function captureTokenFromCookie() {
         try {
+          // Everything at once (token, key, site, API) when the cookies
+          // have it all; otherwise at least the token, as before.
+          if (bvCaptureCmsCredsFromCookies().ok) return;
           const match = document.cookie.match(/(?:^|;\s*)vl-accessToken=([^;]*)/);
           if (!match) return;
 
@@ -7915,6 +7968,49 @@ if (isCMSHost()) {
         });
     }
 
+    // The "⚡ Connect API" button (Sebastian, 2026-10-06: Erick never got the
+    // API - "un botón que lo que haga es el fetch"): reads CMS's own cookies,
+    // then proves them with one read-only call (1 billing record) and says
+    // exactly what is missing when it cannot.
+    let apiCheck = null; // { state: 'ok' | 'failed' | 'testing', text }
+
+    async function connectCmsApi() {
+        if (running) return;
+        const read = bvCaptureCmsCredsFromCookies();
+        if (!read.ok) {
+            apiCheck = { state: 'failed', text: `API not connected - ${read.missing.join(', ')}` };
+            render();
+            return;
+        }
+        const ctx = cmsApiContext();
+        if (!ctx) {
+            apiCheck = { state: 'failed', text: cmsAccountIdFromPath()
+                ? `Read the "${read.site}" credentials but could not use them - reload CMS and try again`
+                : 'Credentials saved - open a customer account to use the API' };
+            render();
+            return;
+        }
+        apiCheck = { state: 'testing', text: `Testing the CMS API (${ctx.site})...` };
+        render();
+        try {
+            const parsed = await cmsInvoke(ctx, {
+                url: '/v3/billing/history',
+                method: 'GET',
+                role: 'Customer Support',
+                auth: { site: ctx.site, userId: ctx.userId },
+                query: { site: ctx.site, limit: 1, offset: 0, purchaseType: 'SUBSCRIPTION' },
+                body: {}
+            });
+            if (parsed && 'error' in parsed) throw new Error(String(parsed.error).slice(0, 160));
+            apiCheck = { state: 'ok', text: `⚡ API connected (${ctx.site}) - refunds and Cancel Now go through the API` };
+        } catch (error) {
+            apiCheck = { state: 'failed', text: error.message === 'cms-unauthorized'
+                ? 'CMS rejected the session (401/403) - reload CMS or log in again, then retry'
+                : `API test failed: ${error.message}` };
+        }
+        render();
+    }
+
     // The audit record CMS itself writes after a refund / cancel, so a run
     // through the API leaves exactly the trail a hand-made one does.
     function cmsAuditLog(ctx, logs) {
@@ -9032,7 +9128,13 @@ if (isCMSHost()) {
 #${PANEL_ID} header .bv-ra-x:hover{background:#202d45;color:#fff}
 #${PANEL_ID} header .bv-ra-x:disabled{opacity:.5;cursor:not-allowed}
 #${PANEL_ID} header .bv-ra-title{white-space:nowrap}
-#${PANEL_ID} .bv-ra-badge.is-api{background:rgba(13,148,136,.22);color:#5eead4;border-color:rgba(45,212,191,.55)}
+#${PANEL_ID} button.bv-ra-api{height:24px;padding:0 9px;border-radius:999px;border:1px solid rgba(245,158,11,.6);background:rgba(120,53,15,.35);color:#fbbf24;font:700 11px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;white-space:nowrap}
+#${PANEL_ID} button.bv-ra-api.is-on{background:rgba(13,148,136,.22);color:#5eead4;border-color:rgba(45,212,191,.55)}
+#${PANEL_ID} button.bv-ra-api:hover{filter:brightness(1.2)}
+#${PANEL_ID} button.bv-ra-api:disabled{opacity:.6;cursor:not-allowed}
+#${PANEL_ID} .bv-ra-apicheck{margin-bottom:8px;padding:7px 10px;border-radius:7px;border:1px solid #34425a;background:#111b2e;color:#cbd5e1;font-weight:600}
+#${PANEL_ID} .bv-ra-apicheck.is-ok{border-color:rgba(45,212,191,.55);color:#5eead4}
+#${PANEL_ID} .bv-ra-apicheck.is-failed{border-color:rgba(248,113,113,.55);color:#fca5a5}
 #${PANEL_ID} header .bv-ra-agent{margin-left:6px;max-width:140px;height:28px;padding:0 8px;border:1px solid #34425a;border-radius:7px;background:#111b2e;color:#f1f5f9;font:600 12px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;cursor:pointer;color-scheme:dark}
 #${PANEL_ID} header .bv-ra-agent:focus{outline:none;border-color:#14b8a6;box-shadow:0 0 0 3px rgba(20,184,166,.18)}
 #${PANEL_ID} header .bv-ra-agent:disabled{opacity:.6;cursor:not-allowed}
@@ -9153,6 +9255,9 @@ if (isCMSHost()) {
         addStyles();
         view = 'select';
         steps = [];
+        // Picks up the cookies' credentials silently, so ⚡ API is usually
+        // already on without pressing Connect.
+        bvCaptureCmsCredsFromCookies();
         render(true);
         const table = await openSubscriptionCharges();
         charges = markRefundedCharges(scrapeCharges(table));
@@ -9165,6 +9270,7 @@ if (isCMSHost()) {
     }
 
     function renderSelect(body, actions, loading) {
+        if (apiCheck) body.appendChild(el('div', { class: `bv-ra-apicheck is-${apiCheck.state}`, text: apiCheck.text }));
         const ticketURL = getTicketURL();
         if (!ticketURL) {
             body.appendChild(el('div', { class: 'bv-ra-warn', text: 'No Freshdesk ticket stored. Open the ticket in Freshdesk first (or set it in the $ panel) - it is the required comment for the cancel and every refund.' }));
@@ -9209,7 +9315,7 @@ if (isCMSHost()) {
         const amountProblem = charge => {
             const plan = refundPlanFor(charge, refundAmounts.get(charge.order));
             if (plan.error) return plan.error;
-            if (plan.partial && !apiReady) return 'Partial refunds need the CMS API (⚡), not available on this page';
+            if (plan.partial && !apiReady) return 'Partial refunds need the CMS API - press ⚡ Connect API above';
             return '';
         };
         const pickedHaveProblem = () => charges.some(charge =>
@@ -9446,7 +9552,15 @@ if (isCMSHost()) {
             el('span', { class: 'bv-ra-title', text: 'Refund Assist' }),
             buildRefunderSelect(),
             isDryRun() ? el('span', { class: 'bv-ra-badge', text: 'DRY RUN' }) : null,
-            cmsApiContext() ? el('span', { class: 'bv-ra-badge is-api', title: 'Refunds and Cancel Now go straight through the CMS API', text: '\u26a1 API' }) : null,
+            el('button', {
+                class: `bv-ra-api${cmsApiContext() ? ' is-on' : ''}`,
+                title: cmsApiContext()
+                    ? 'Refunds and Cancel Now go straight through the CMS API - click to test the connection again'
+                    : 'Read the CMS credentials from this session and test the API',
+                disabled: running,
+                text: cmsApiContext() ? '\u26a1 API' : '\u26a1 Connect API',
+                onclick: connectCmsApi
+            }),
             el('button', {
                 class: 'bv-ra-x is-capture',
                 title: 'Open the old Refund Capture panel',
