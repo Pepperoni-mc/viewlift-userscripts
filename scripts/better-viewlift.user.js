@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.82.0
+// @version      3.83.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -7160,6 +7160,8 @@ if (isCMSHost()) {
     let view = 'select';
     let charges = [];
     let selected = new Set();
+    // order -> what was typed in its "Refund" box (empty = the full charge).
+    let refundAmounts = new Map();
     let cancelFirst = true;
     let steps = [];
     let lastNoteText = '';
@@ -7411,6 +7413,42 @@ if (isCMSHost()) {
         return Array.from(totals.entries())
             .map(([currency, value]) => `${currency ? currency + ' ' : ''}${value.toFixed(2)}`)
             .join(' + ');
+    }
+
+    // Partial refunds (Sebastian, 2026-10-06: "a veces quiero hacer refunds
+    // parciales"). What was typed in a charge's Refund box: empty or the full
+    // amount = the usual 100% refund; less = a partial refund of exactly that
+    // amount - the same call CMS's own "Issue fixed amount refund" makes
+    // (body `amount` instead of `refundPercentage`, read from its dialog
+    // chunk 2026-10-06). Returns { partial, value, text } or { error }.
+    function refundPlanFor(charge, typed) {
+        const full = parseAmount(charge.amount);
+        // "USD 10" / "$10" are fine; the prefix only goes when a number follows,
+        // so "abc" stays an error instead of becoming an empty = full refund.
+        const raw = cleanText(typed).replace(/^(?:[A-Z]{3}\s*)?\$?\s*(?=\d)/i, '');
+        const fullPlan = { partial: false, value: full ? full.value : 0, text: cleanText(charge.amount) };
+        if (!raw) return fullPlan;
+        if (!full) return { error: 'The charge amount could not be read - only a full refund is possible' };
+        if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) return { error: 'Type an amount like 10 or 10.50' };
+        const cents = Math.round(Number(raw) * 100);
+        const fullCents = Math.round(full.value * 100);
+        if (cents <= 0) return { error: 'The amount must be more than 0' };
+        if (cents > fullCents) return { error: `More than the charge (${cleanText(charge.amount)})` };
+        if (cents === fullCents) return fullPlan;
+        return { partial: true, value: cents / 100, text: `${full.currency ? full.currency + ' ' : ''}${(cents / 100).toFixed(2)}` };
+    }
+
+    // The amount a charge was (or will be) refunded - for totals and the
+    // refund log, which must never claim the full charge for a partial one.
+    function refundedAmount(charge) {
+        return charge.refundPlan?.partial ? charge.refundPlan.text : charge.amount;
+    }
+
+    // CMS's own audit-log wording for each kind of refund.
+    function refundAuditComment(charge) {
+        return charge.refundPlan?.partial
+            ? `Issued refund of amount: ${charge.refundPlan.value}, Reason: ROTH`
+            : 'Issued refund of percentage: 100%, Reason: ROTH';
     }
 
     /* ---------------- navigation ---------------- */
@@ -8001,6 +8039,8 @@ if (isCMSHost()) {
         }
 
         const ticketURL = getTicketURL();
+        const partial = Boolean(charge.refundPlan?.partial);
+        const howMuch = partial ? `${charge.refundPlan.text} of ${charge.amount}` : '100%';
         const request = {
             method: 'POST',
             role: 'Customer Support',
@@ -8008,7 +8048,7 @@ if (isCMSHost()) {
             query: { site: ctx.site, userId: ctx.userId },
             auth: { site: ctx.site, userId: ctx.userId },
             body: {
-                refundPercentage: 100,
+                ...(partial ? { amount: charge.refundPlan.value } : { refundPercentage: 100 }),
                 comment: `Customer wanted a refund: ${ticketURL}`,
                 deactivate: false,
                 paymentHandler: record.paymentHandler,
@@ -8019,11 +8059,11 @@ if (isCMSHost()) {
             }
         };
         if (dryRun) {
-            stepLog(step, `would POST subscription-misc/refund - 100%, ${record.paymentHandler}, transactionId ${record.gatewayChargeId}`);
+            stepLog(step, `would POST subscription-misc/refund - ${howMuch}, ${record.paymentHandler}, transactionId ${record.gatewayChargeId}`);
             return endStep(step, 'dry-run', 'API request built, not sent (dry run)');
         }
 
-        stepLog(step, `\u26a1 API: refund 100% of ${record.gatewayChargeId} (${record.paymentHandler})`);
+        stepLog(step, `\u26a1 API: refund ${partial ? charge.refundPlan.text : '100%'} of ${record.gatewayChargeId} (${record.paymentHandler})`);
         let callError = null;
         try {
             const response = await cmsInvoke(ctx, request);
@@ -8035,7 +8075,7 @@ if (isCMSHost()) {
         else {
             stepLog(step, 'CMS accepted the refund - audit log written in the background');
             // Not awaited (like Cancel Now's): the log must not hold the run up.
-            cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' })
+            cmsAuditLog(ctx, { actionType: 'refund', comments: refundAuditComment(charge), reason: 'ROTH' })
                 .then(logged => { if (!logged) console.warn('[BV Refund Assist] Refund audit log could not be written (the refund itself is done).'); });
         }
 
@@ -8043,8 +8083,8 @@ if (isCMSHost()) {
         const refund = await waitForRefundRecord(ctx, charge.order, step, callError ? 12000 : 20000);
         if (refund) {
             charge.refundRow = recordToRow(refund, charge);
-            if (callError) cmsAuditLog(ctx, { actionType: 'refund', comments: 'Issued refund of percentage: 100%, Reason: ROTH', reason: 'ROTH' });
-            return endStep(step, 'done', `\u26a1 refunded via the API - REFUND ${charge.refundRow.order}`);
+            if (callError) cmsAuditLog(ctx, { actionType: 'refund', comments: refundAuditComment(charge), reason: 'ROTH' });
+            return endStep(step, 'done', `\u26a1 refunded ${partial ? `${charge.refundPlan.text} ` : ''}via the API - REFUND ${charge.refundRow.order}`);
         }
         return endStep(step, 'failed', callError
             ? `API refund failed: ${callError.message} - and no REFUND in the billing history (use Recheck)`
@@ -8052,11 +8092,17 @@ if (isCMSHost()) {
     }
 
     async function refundCharge(charge, dryRun) {
-        const step = addStep(`Refund ${charge.date} ${charge.amount} (${charge.order})`);
+        const partial = Boolean(charge.refundPlan?.partial);
+        const step = addStep(`Refund ${partial ? `${charge.refundPlan.text} of ` : ''}${charge.date} ${charge.amount} (${charge.order})`);
         const apiCtx = cmsApiContext();
         if (apiCtx) {
             const viaApi = await refundChargeViaApi(charge, dryRun, step, apiCtx);
             if (viaApi !== null) return viaApi;
+        }
+        // The screen path below only knows "Issue percentage refund - 100%":
+        // a partial refund must never fall through to it and refund it all.
+        if (partial) {
+            return endStep(step, 'failed', `Partial refund needs the CMS API, which is not available here - nothing refunded. Do it by hand: Refund > Issue fixed amount refund > ${charge.refundPlan.value}`);
         }
         const bridge = getBridge();
         if (!bridge?.start) return endStep(step, 'failed', 'The refund workflow (Feature 3) is not loaded');
@@ -8169,6 +8215,13 @@ if (isCMSHost()) {
             lines.push({ text: 'Subscription details', bold: true });
             details.forEach(([label, value]) => lines.push({ text: `${label}: ${cleanText(value)}` }));
         }
+
+        // The CHARGE row shows the full charge, so a partial refund says what
+        // was actually given back - even when CMS never listed its REFUND row.
+        done.filter(charge => charge.refundPlan?.partial).forEach(charge => lines.push({
+            text: `Partial refund: ${charge.refundPlan.text} of ${cleanText(charge.amount)} (${cleanText(charge.order)})`,
+            bold: true
+        }));
 
         const rows = [];
         for (const charge of done) {
@@ -8440,6 +8493,13 @@ if (isCMSHost()) {
         const ticketURL = getTicketURL();
         if (!ticketURL) return;
         const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
+        // Fixed for the whole run (Recheck reuses these same charge objects).
+        picked.forEach(charge => { charge.refundPlan = refundPlanFor(charge, refundAmounts.get(charge.order)); });
+        if (picked.some(charge => charge.refundPlan.error)) {
+            view = 'select';
+            render();
+            return;
+        }
         const dryRun = isDryRun();
 
         running = true;
@@ -8649,7 +8709,7 @@ if (isCMSHost()) {
                             freshdesk: ticketURL,
                             cms: location.href,
                             payment: handlers.join(' / '),
-                            amount: formatRefundAmount(done)
+                            amount: formatRefundAmount(done.map(charge => ({ amount: refundedAmount(charge) })))
                         });
                         if (sent?.queued) run.sheetDone = true;
                         endStep(sheetStep, sent?.queued ? 'done' : 'failed', sent?.queued
@@ -8992,6 +9052,13 @@ if (isCMSHost()) {
 #${PANEL_ID} label.bv-ra-row.is-off:hover{border-color:#34425a}
 #${PANEL_ID} input[type="checkbox"]{accent-color:#14b8a6;margin:0}
 #${PANEL_ID} .bv-ra-order{font-family:Consolas,monospace;font-size:11px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#${PANEL_ID} .bv-ra-order.is-partial{color:#fbbf24}
+#${PANEL_ID} .bv-ra-amount{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:-2px 0 8px 26px;color:#cbd5e1}
+#${PANEL_ID} .bv-ra-amount input{width:110px;height:26px;box-sizing:border-box;padding:0 8px;border:1px solid #34425a;border-radius:6px;background:#111b2e;color:#f1f5f9;font:600 12px Consolas,monospace}
+#${PANEL_ID} .bv-ra-amount input:focus{outline:none;border-color:#14b8a6;box-shadow:0 0 0 3px rgba(20,184,166,.18)}
+#${PANEL_ID} .bv-ra-amount-hint{font-size:11px;color:#94a3b8}
+#${PANEL_ID} .bv-ra-amount-hint.is-partial{color:#fbbf24;font-weight:700}
+#${PANEL_ID} .bv-ra-amount-hint.is-error{color:#f87171;font-weight:700}
 #${PANEL_ID} strong{color:#f1f5f9}
 #${PANEL_ID} .bv-ra-actions{flex:0 0 auto;display:flex;gap:10px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #27344a;background:#121c30}
 #${PANEL_ID} button.bv-ra-btn{box-sizing:border-box;min-width:96px;padding:8px 12px;border:1px solid #34425a;border-radius:7px;background:#172238;color:#dbe4f1;cursor:pointer;font:600 12px Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif;transition:background 140ms ease,box-shadow 140ms ease}
@@ -9078,6 +9145,7 @@ if (isCMSHost()) {
         view = 'select';
         // A choice made for one account must not still be ticked next time.
         selected = new Set();
+        refundAmounts = new Map();
         mountFloat();
     }
 
@@ -9134,6 +9202,19 @@ if (isCMSHost()) {
             ]));
         }
 
+        // Typing in an amount box must not redraw the panel (it would lose
+        // the cursor), so each box updates its own hint and the Review button.
+        const apiReady = Boolean(cmsApiContext());
+        let reviewButton = null;
+        const amountProblem = charge => {
+            const plan = refundPlanFor(charge, refundAmounts.get(charge.order));
+            if (plan.error) return plan.error;
+            if (plan.partial && !apiReady) return 'Partial refunds need the CMS API (⚡), not available on this page';
+            return '';
+        };
+        const pickedHaveProblem = () => charges.some(charge =>
+            selected.has(charge.order) && isRefundable(charge) && amountProblem(charge));
+
         for (const charge of charges) {
             const on = isRefundable(charge);
             body.appendChild(el('label', { class: `bv-ra-row${on ? '' : ' is-off'}`, title: on ? '' : (charge.refundedBy ? `Already refunded (${charge.refundedBy})` : `${charge.type} - not a refundable charge`) }, [
@@ -9146,6 +9227,33 @@ if (isCMSHost()) {
                 el('span', { class: 'bv-ra-order', text: `${charge.title} - ${charge.order}` }),
                 el('strong', { text: charge.refundedBy ? `${charge.amount} refunded` : charge.amount })
             ]));
+
+            if (!on || !selected.has(charge.order)) continue;
+            const hint = el('span', { class: 'bv-ra-amount-hint' });
+            const showHint = () => {
+                const problem = amountProblem(charge);
+                const plan = refundPlanFor(charge, refundAmounts.get(charge.order));
+                hint.textContent = problem || (plan.partial ? `partial refund of ${plan.text}` : 'full refund (100%)');
+                hint.className = `bv-ra-amount-hint${problem ? ' is-error' : (plan.partial ? ' is-partial' : '')}`;
+                if (reviewButton) reviewButton.disabled = !ticketURL || pickedHaveProblem();
+            };
+            body.appendChild(el('div', { class: 'bv-ra-amount' }, [
+                el('span', { text: 'Refund' }),
+                el('input', {
+                    type: 'text',
+                    inputmode: 'decimal',
+                    placeholder: `${parseAmount(charge.amount)?.value.toFixed(2) || ''} (all)`,
+                    value: refundAmounts.get(charge.order) || '',
+                    'aria-label': `Amount to refund of ${charge.amount}`,
+                    oninput: event => {
+                        refundAmounts.set(charge.order, event.target.value);
+                        showHint();
+                    }
+                }),
+                el('span', { class: 'bv-ra-muted', text: `of ${charge.amount}` }),
+                hint
+            ]));
+            showHint();
         }
 
         body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Only the current page of the table is listed.' }));
@@ -9156,12 +9264,17 @@ if (isCMSHost()) {
 
         const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Refresh', onclick: openPanel }));
-        actions.appendChild(el('button', {
+        reviewButton = el('button', {
             class: 'bv-ra-btn bv-ra-primary',
-            disabled: !ticketURL || (!picked.length && !cancelFirst),
+            disabled: !ticketURL || (!picked.length && !cancelFirst) || pickedHaveProblem(),
             text: 'Review',
-            onclick: () => { view = 'confirm'; render(); }
-        }));
+            onclick: () => {
+                if (pickedHaveProblem()) return;
+                view = 'confirm';
+                render();
+            }
+        });
+        actions.appendChild(reviewButton);
     }
 
     function renderConfirm(body, actions) {
@@ -9173,9 +9286,16 @@ if (isCMSHost()) {
         const list = el('ol');
         if (cancelFirst) list.appendChild(el('li', { text: 'Cancel the subscription with CANCEL NOW (not after the billing period).' }));
         if (picked.length) {
+            const planned = picked.map(charge => ({ charge, plan: refundPlanFor(charge, refundAmounts.get(charge.order)) }));
+            const anyPartial = planned.some(({ plan }) => plan.partial);
             list.appendChild(el('li', {}, [
-                `Refund 100% of ${picked.length} charge${picked.length === 1 ? '' : 's'} - total ${formatTotal(picked)}:`,
-                el('ul', {}, picked.map(charge => el('li', { class: 'bv-ra-order', text: `${charge.date} ${charge.amount} ${charge.order}` })))
+                `Refund ${anyPartial ? '' : '100% of '}${picked.length} charge${picked.length === 1 ? '' : 's'} - total ${formatTotal(planned.map(({ plan }) => ({ amount: plan.text })))}:`,
+                el('ul', {}, planned.map(({ charge, plan }) => el('li', {
+                    class: `bv-ra-order${plan.partial ? ' is-partial' : ''}`,
+                    text: plan.partial
+                        ? `${charge.date} PARTIAL ${plan.text} of ${charge.amount} ${charge.order}`
+                        : `${charge.date} ${charge.amount} (100%) ${charge.order}`
+                })))
             ]));
         }
         list.appendChild(el('li', { text: `Copy the summary and paste it into a private note on ticket #${getTicketNumber(ticketURL)}.` }));

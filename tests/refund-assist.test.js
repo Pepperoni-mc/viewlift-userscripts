@@ -106,6 +106,9 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'parseAmount')}
   ${extractFunction(assistSrc, 'formatTotal')}
   ${extractFunction(assistSrc, 'formatRefundAmount')}
+  ${extractFunction(assistSrc, 'refundPlanFor')}
+  ${extractFunction(assistSrc, 'refundedAmount')}
+  ${extractFunction(assistSrc, 'refundAuditComment')}
   ${extractFunction(assistSrc, 'isRefundRecord')}
   ${extractFunction(assistSrc, 'refundRecordFor')}
   ${extractFunction(assistSrc, 'recordToRow')}
@@ -120,7 +123,7 @@ const loader = new Function('ctx', 'bvEventView', `
   function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { refundPlanFor, refundedAmount, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -135,7 +138,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { refundPlanFor, refundedAmount, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -183,6 +186,30 @@ check('two of the same amount -> "x2"', formatRefundAmount([{ amount: 'USD 19.99
   formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 19.99' }]));
 check('different amounts are listed, never summed', formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 9.99' }, { amount: 'USD 19.99' }]) === 'USD 19.99 x2 + USD 9.99',
   formatRefundAmount([{ amount: 'USD 19.99' }, { amount: 'USD 9.99' }, { amount: 'USD 19.99' }]));
+
+// ------------------------------------------------------------------ partial refunds
+
+const full74 = { amount: 'USD 74.69', order: 'ch_P' };
+check('an empty box is the full 100% refund', JSON.stringify(refundPlanFor(full74, '')) === JSON.stringify({ partial: false, value: 74.69, text: 'USD 74.69' }),
+  refundPlanFor(full74, ''));
+check('typing the full amount is still the 100% refund', refundPlanFor(full74, '74.69').partial === false, refundPlanFor(full74, '74.69'));
+check('a smaller amount is a partial refund of exactly that', JSON.stringify(refundPlanFor(full74, '10.5')) === JSON.stringify({ partial: true, value: 10.5, text: 'USD 10.50' }),
+  refundPlanFor(full74, '10.5'));
+check('a "USD" / "$" prefix is accepted', refundPlanFor(full74, 'USD 10').value === 10 && refundPlanFor(full74, '$10').value === 10,
+  [refundPlanFor(full74, 'USD 10'), refundPlanFor(full74, '$10')]);
+check('more than the charge is refused', Boolean(refundPlanFor(full74, '80').error), refundPlanFor(full74, '80'));
+check('zero is refused', Boolean(refundPlanFor(full74, '0').error), refundPlanFor(full74, '0'));
+check('three decimals / text / negatives are refused', ['1.234', 'abc', '-5', '10,5'].every(v => refundPlanFor(full74, v).error),
+  ['1.234', 'abc', '-5', '10,5'].map(v => refundPlanFor(full74, v)));
+check('an unreadable charge amount only allows a full refund', Boolean(refundPlanFor({ amount: '' }, '5').error) &&
+  refundPlanFor({ amount: '' }, '').partial === false, refundPlanFor({ amount: '' }, '5'));
+
+const partialCharge = Object.assign({}, full74, { refundPlan: refundPlanFor(full74, '10') });
+check('the refund log gets the partial amount, not the charge', refundedAmount(partialCharge) === 'USD 10.00' && refundedAmount(full74) === 'USD 74.69',
+  [refundedAmount(partialCharge), refundedAmount(full74)]);
+check('refund log: partial and full mixed', formatRefundAmount([partialCharge, full74].map(c => ({ amount: refundedAmount(c) }))) === 'USD 10.00 + USD 74.69');
+check('audit log uses CMS\'s own amount wording', refundAuditComment(partialCharge) === 'Issued refund of amount: 10, Reason: ROTH' &&
+  refundAuditComment(full74) === 'Issued refund of percentage: 100%, Reason: ROTH', [refundAuditComment(partialCharge), refundAuditComment(full74)]);
 
 // ------------------------------------------------------------------ plan card
 
@@ -267,6 +294,12 @@ check('a failed cancel has an empty table', cancelFailed.rows.length === 0, canc
 const dry = buildNote({ dryRun: true, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL, done: [charge2], failed: [], skipped: [] });
 check('a dry run says so first', dry.lines[0].text === 'DRY RUN - nothing was cancelled or refunded', dry.lines[0]);
 check('a dry run does not complain about missing refund ids', dry.after.length === 0, dry.after);
+
+const partialNote = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL,
+  done: [Object.assign({}, charge2, { refundPlan: { partial: true, value: 5, text: 'USD 5.00' } })], failed: [], skipped: [] });
+check('a partial refund says how much of the charge was given back',
+  partialNote.lines.some(line => line.text === 'Partial refund: USD 5.00 of USD 19.99 (ch_BBB)'), partialNote.lines);
+check('a full refund adds no partial line', !okNote.lines.some(line => /partial/i.test(line.text)), okNote.lines);
 
 // ------------------------------------------------------------------ order pin
 
