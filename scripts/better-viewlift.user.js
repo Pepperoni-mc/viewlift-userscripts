@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.84.0
+// @version      3.85.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -10,7 +10,6 @@
 // @match        https://cms-qcp.viewlift.com/*
 // @match        https://foxone.cms.viewlift.com/*
 // @match        https://cms.monumentalsportsnetwork.com/*
-// @match        https://claude.ai/*
 // @match        https://docs.google.com/spreadsheets/d/1f6uuak92FiHwq3GFUJ98IKbN9lI6BmWRfC_qcLLrcrM/*
 // @updateURL    https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
 // @downloadURL  https://raw.githubusercontent.com/Pepperoni-mc/viewlift-userscripts/main/scripts/better-viewlift.user.js
@@ -440,10 +439,6 @@
     const name = String(host || '').toLowerCase();
     return BV_CMS_ORGANIZATIONS.filter(item => item.host === name);
   }
-  // Freshdesk queues a case here, the claude.ai side takes it. Two tabs, two
-  // different hosts, one script - same shape as the CMS snapshot queue.
-  const BV_CASE_TO_CLAUDE_KEY = 'betterFreshdeskCaseToClaude';
-  const BV_CASE_TO_CLAUDE_TTL_MS = 3 * 60 * 1000;
   // CMS Refund Assist queues its "cancelled + refunded" summary here and the
   // ticket's own Freshdesk tab pastes it into a private note.
   const BV_REFUND_ASSIST_NOTE_KEY = 'betterViewliftRefundAssistNote';
@@ -1453,9 +1448,8 @@
 (function () {
   'use strict';
 
-  // claude.ai is a matched host now (Feature 11 delivers cases into a chat
-  // there), and this feature has no business running on it. Guarding here
-  // rather than at the @match keeps the one script.
+  // The refund-log Google Sheet is a matched host too (the row writer runs
+  // there), and this feature has no business running on it.
   if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   if (window.__refundCaptureToolEnhancedInstalled) {
     return;
@@ -3687,9 +3681,7 @@
 (function () {
   'use strict';
 
-  // claude.ai is a matched host now (Feature 11 delivers cases into a chat
-  // there), and this feature has no business running on it. Guarding here
-  // rather than at the @match keeps the one script.
+  // Freshdesk and CMS only - not the refund-log sheet (see Feature 1).
   if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
   const REFUNDER_PREF_KEY = 'Better CMS Preferred Refunder';
   const REFUNDER_SELECT_ID = 'refund-refunder';
@@ -11753,7 +11745,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     });
 
     // The refund panel is the round $ float in the corner again, beside 📋
-    // and 🧠 (Sebastian, 2026-09-30: "aparece, pero desaparece al segundo" -
+    // (Sebastian, 2026-09-30: "aparece, pero desaparece al segundo" -
     // that second was this toolbar pulling it in as a hidden inline panel).
     // So no $ toggle here, and a panel an older pass pulled in goes back out.
     document.getElementById(REFUND_TOGGLE_ID)?.remove();
@@ -11774,16 +11766,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       });
     }
     updateCmsSessionDot(cmsSessionDot);
-
-    // These legacy toolbar controls are intentionally removed. Delete any
-    // copies left behind by an older Better ViewLift version as well.
-    document.getElementById('better-freshdesk-next-case')?.remove();
-    document.getElementById('better-freshdesk-refund-launcher')?.remove();
-    document.getElementById('better-freshdesk-generate-toggle')?.remove();
-    document.getElementById('better-freshdesk-generate-panel')?.remove();
-    if (document.getElementById(TOOLBAR_ID)?.querySelector('#better-freshdesk-copy-case')) {
-      document.getElementById('better-freshdesk-copy-case').remove();
-    }
 
     const orderedControls = [brand, cms, cmsSessionDot, agent, ...cannedButtons].filter(Boolean);
     const currentControls = Array.from(toolbar.children).filter(element => orderedControls.includes(element));
@@ -11852,22 +11834,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   }
 
   init();
-})();
-
-
-/* ============================================================
- * Feature 8b: Remove the SCHN+ Daily Goal Badge (removed feature)
- * Cleans up the badge element/style for anyone who still has a page open
- * from before this was pulled - the feature itself is gone per request.
- * ============================================================ */
-
-(function () {
-  'use strict';
-
-  if (location.hostname !== 'viewlift.freshdesk.com') return;
-
-  document.getElementById('better-freshdesk-tracker-goal')?.remove();
-  document.getElementById('better-freshdesk-tracker-goal-style')?.remove();
 })();
 
 
@@ -13116,11 +13082,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   if (location.hostname !== 'viewlift.freshdesk.com') return;
 
   const LAUNCHER_ID = 'better-freshdesk-copy-case';
-  const CLAUDE_LAUNCHER_ID = 'better-freshdesk-case-to-claude';
-  const PICKER_ID = 'better-freshdesk-case-helper-picker';
-  const CHAT_KEY = 'betterFreshdeskCaseHelperChat';
-  // Superseded by CHAT_KEY - read once so an existing choice is not lost.
-  const LEGACY_SESSIONS_KEY = 'betterFreshdeskCaseHelperSessions';
   const LAUNCHER_STYLE_ID = 'better-freshdesk-copy-case-style';
   const FIELDS_CACHE_KEY = 'betterFreshdeskTicketFieldLabels';
   const AGENTS_CACHE_KEY = 'betterFreshdeskAgentNames';
@@ -13579,7 +13540,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     }
   }
 
-  // Shared by both launchers: the clipboard one and the send-to-Claude one.
   async function collectCase(ticketId) {
     try {
       return { report: await collectViaApi(ticketId), viaApi: true };
@@ -13611,179 +13571,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     return report;
   }
 
-  /* ---------- Case helper: which chat, and sending to it ---------- */
-
-  // One link, not a set of named sessions: whichever chat the agent wants the
-  // case in, pasted once.
-  function readChatUrl() {
-    try {
-      const stored = GM_getValue(CHAT_KEY, '');
-      if (typeof stored === 'string' && stored) return stored;
-
-      // Carry over the first usable URL from the two-session version.
-      const legacy = GM_getValue(LEGACY_SESSIONS_KEY, null);
-      if (legacy && typeof legacy === 'object' && legacy.urls) {
-        const carried = legacy.urls[legacy.chosen] ||
-          Object.values(legacy.urls).find(Boolean);
-        if (carried) return String(carried);
-      }
-    } catch (error) { /* storage unavailable */ }
-
-    return '';
-  }
-
-  function writeChatUrl(url) {
-    try {
-      GM_setValue(CHAT_KEY, url);
-    } catch (error) {
-      console.warn('[Case helper] Could not save the chat link.', error);
-    }
-  }
-
-  // The stored URL is typed by hand and later opened in a tab, so it is
-  // validated the same way the CMS snapshot link is: https, claude.ai, and a
-  // path that is actually a chat or a project.
-  function toSafeClaudeUrl(value) {
-    const raw = cleanText(value);
-    if (!raw) return '';
-
-    try {
-      const url = new URL(raw);
-      if (url.protocol !== 'https:') return '';
-      if (url.hostname !== 'claude.ai' && url.hostname !== 'www.claude.ai') return '';
-      // /cowork/<id> is what a Case helper session actually is; /chat and
-      // /project are the classic surfaces and still accepted.
-      if (url.pathname !== '/new' && !/^\/(?:chat|project|cowork)\/[^/]+/.test(url.pathname)) return '';
-      return url.href;
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function closeSessionPicker() {
-    const picker = document.getElementById(PICKER_ID);
-    if (picker) picker.remove();
-  }
-
-  function openSessionPicker(onChosen) {
-    closeSessionPicker();
-    addLauncherStyles();
-
-    const overlay = document.createElement('div');
-    overlay.id = PICKER_ID;
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) closeSessionPicker();
-    });
-
-    const card = document.createElement('div');
-    card.className = 'bv-case-helper-card';
-
-    const title = document.createElement('div');
-    title.className = 'bv-case-helper-title';
-    title.textContent = 'Case helper: link del chat';
-    card.appendChild(title);
-
-    const hint = document.createElement('div');
-    hint.className = 'bv-case-helper-hint';
-    hint.textContent = 'Pega el link una vez y queda guardado. Click derecho en el botón para cambiarlo.';
-    card.appendChild(hint);
-
-    const row = document.createElement('div');
-    row.className = 'bv-case-helper-row';
-
-    const input = document.createElement('input');
-    input.type = 'url';
-    input.spellcheck = false;
-    input.placeholder = 'https://claude.ai/cowork/...';
-    input.value = readChatUrl();
-    row.appendChild(input);
-
-    const use = document.createElement('button');
-    use.type = 'button';
-    use.textContent = 'Guardar y enviar';
-
-    const save = () => {
-      const url = toSafeClaudeUrl(input.value);
-      if (!url) {
-        input.dataset.invalid = 'yes';
-        hint.textContent = 'Ese link no es de claude.ai, o no es un chat/cowork/project.';
-        return;
-      }
-
-      writeChatUrl(url);
-      closeSessionPicker();
-      if (typeof onChosen === 'function') onChosen();
-    };
-
-    use.addEventListener('click', save);
-    input.addEventListener('keydown', event => { if (event.key === 'Enter') save(); });
-    row.appendChild(use);
-
-    card.appendChild(row);
-
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-  }
-
-  // At most three, and each one carries the chat it is meant for: the
-  // claude.ai side must never paste a case into the wrong chat just because
-  // that tab happened to open first.
-  function queueCaseForClaude(entry) {
-    try {
-      const existing = GM_getValue(BV_CASE_TO_CLAUDE_KEY, null);
-      const queue = Array.isArray(existing) ? existing : (existing ? [existing] : []);
-      queue.push(entry);
-      GM_setValue(BV_CASE_TO_CLAUDE_KEY, queue.slice(-3));
-      return true;
-    } catch (error) {
-      console.error('[Case helper] Could not queue the case for claude.ai.', error);
-      return false;
-    }
-  }
-
-  async function sendCaseToClaude() {
-    const ticketId = getTicketId();
-    if (!ticketId) {
-      bvNotify('Open a ticket first - there is no case to send.', { level: 'warn' });
-      return false;
-    }
-
-    const targetUrl = toSafeClaudeUrl(readChatUrl());
-    if (!targetUrl) {
-      openSessionPicker(sendCaseToClaude);
-      return false;
-    }
-
-    const { report, viaApi } = await collectCase(ticketId);
-
-    // Also on the clipboard, always: if claude.ai ever renames its composer
-    // and the paste fails, Ctrl+V still gets the job done.
-    copyToClipboard(report);
-
-    if (!queueCaseForClaude({
-      ticketId,
-      report,
-      targetUrl,
-      createdAt: Date.now()
-    })) return false;
-
-    try {
-      GM_openInTab(targetUrl, { active: true, insert: true });
-    } catch (error) {
-      console.error('[Case helper] Could not open the chat tab.', error);
-      return false;
-    }
-
-    const messageCount = (report.match(/^--- \d+ /gm) || []).length;
-    bvNotify(
-      'Case #' + ticketId + ' (' + messageCount + ' messages' +
-        (viaApi ? '' : ', read off the page') + ') sent to the Case helper chat.',
-      { level: 'info' }
-    );
-
-    return true;
-  }
-
   /* ---------- the floating launchers ---------- */
 
   function isTicketPage() {
@@ -13800,10 +13587,10 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     const style = document.createElement('style');
     style.id = LAUNCHER_STYLE_ID;
     style.textContent = `
-      #${LAUNCHER_ID}, #${CLAUDE_LAUNCHER_ID} {
+      #${LAUNCHER_ID} {
         position: fixed !important;
-        /* The corner itself: the Refund Capture float lives on CMS now and
-           the 🧠 float is gone, so on Freshdesk this is the only one. */
+        /* The corner itself: the Refund Capture float lives on CMS, so on
+           Freshdesk this is the only one. */
         right: 20px !important;
         bottom: 20px !important;
         width: 52px !important;
@@ -13826,125 +13613,12 @@ if (location.hostname === 'viewlift.freshdesk.com') {
         transition: background 140ms ease, transform 140ms ease !important;
       }
 
-      /* One more 52px + 12px gap along, so the row reads
-         [case to Claude] [copy case] [refund]. */
-      #${CLAUDE_LAUNCHER_ID} { right: 148px !important; background: #a8492c !important; }
-      #${CLAUDE_LAUNCHER_ID}:hover { background: #8f3d25 !important; }
-
       #${LAUNCHER_ID}:hover { background: #274e75 !important; }
-
-      #${LAUNCHER_ID}:active,
-      #${CLAUDE_LAUNCHER_ID}:active { transform: scale(.94) !important; }
-
-      #${LAUNCHER_ID}:disabled,
-      #${CLAUDE_LAUNCHER_ID}:disabled { opacity: .75 !important; cursor: default !important; }
-
-      #${PICKER_ID} {
-        position: fixed !important;
-        inset: 0 !important;
-        z-index: 1000002 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        background: rgba(15, 23, 42, .38) !important;
-        font-family: Arial, sans-serif !important;
-      }
-
-      #${PICKER_ID} .bv-case-helper-card {
-        width: 460px !important;
-        max-width: calc(100vw - 32px) !important;
-        padding: 18px !important;
-        border-radius: 14px !important;
-        background: #ffffff !important;
-        box-shadow: 0 22px 55px rgba(15, 23, 42, .32) !important;
-        color: #17324d !important;
-      }
-
-      #${PICKER_ID} .bv-case-helper-title {
-        font: 700 14px/1.3 Arial, sans-serif !important;
-        margin-bottom: 6px !important;
-      }
-
-      #${PICKER_ID} .bv-case-helper-hint {
-        font: 400 12px/1.45 Arial, sans-serif !important;
-        color: #5a6c7d !important;
-        margin-bottom: 14px !important;
-      }
-
-      #${PICKER_ID} .bv-case-helper-row {
-        display: grid !important;
-        grid-template-columns: 1fr auto !important;
-        gap: 6px 8px !important;
-        margin-bottom: 14px !important;
-      }
-
-      #${PICKER_ID} .bv-case-helper-label {
-        grid-column: 1 / -1 !important;
-        font: 700 12px/1.2 Arial, sans-serif !important;
-      }
-
-      #${PICKER_ID} input {
-        padding: 8px 10px !important;
-        border: 1px solid #d5dbe1 !important;
-        border-radius: 7px !important;
-        font: 400 12px/1.2 Arial, sans-serif !important;
-        color: #17324d !important;
-        background: #ffffff !important;
-      }
-
-      #${PICKER_ID} input[data-invalid="yes"] { border-color: #dc2626 !important; }
-
-      #${PICKER_ID} button {
-        padding: 8px 12px !important;
-        border: none !important;
-        border-radius: 7px !important;
-        background: #2f5f8f !important;
-        color: #ffffff !important;
-        font: 700 12px/1.2 Arial, sans-serif !important;
-        cursor: pointer !important;
-      }
-
-      #${PICKER_ID} button:hover { background: #274e75 !important; }
+      #${LAUNCHER_ID}:active { transform: scale(.94) !important; }
+      #${LAUNCHER_ID}:disabled { opacity: .75 !important; cursor: default !important; }
     `;
 
     (document.head || document.documentElement).appendChild(style);
-  }
-
-  async function onClaudeLauncherClick(event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const button = document.getElementById(CLAUDE_LAUNCHER_ID);
-    if (!button || button.disabled) return;
-
-    if (!toSafeClaudeUrl(readChatUrl())) {
-      // First run: no link saved yet, so ask instead of guessing.
-      openSessionPicker(sendCaseToClaude);
-      return;
-    }
-
-    button.disabled = true;
-    button.textContent = '⏳';
-
-    let sent = false;
-    try {
-      sent = await sendCaseToClaude();
-    } catch (error) {
-      console.error('[Case helper] Sending the case failed.', error);
-    }
-
-    button.disabled = false;
-    button.textContent = sent ? '✅' : '⚠️';
-    window.setTimeout(() => {
-      const current = document.getElementById(CLAUDE_LAUNCHER_ID);
-      if (current) current.textContent = '🧠';
-    }, 1400);
-  }
-
-  function onClaudeLauncherContextMenu(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    openSessionPicker(sendCaseToClaude);
   }
 
   async function onLauncherClick(event) {
@@ -13974,57 +13648,30 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     }, 1400);
   }
 
-  // The handlers are reached through arrows on purpose: this table is built
-  // while the module is still being defined.
-  // The 🧠 "send the case to a Case helper chat" float was removed on
-  // request (2026-09-30: "ya ese no lo voy a usar"); a copy left on screen by
-  // an older version is taken down by installLauncher().
-  const LAUNCHERS = [
-    {
-      id: LAUNCHER_ID,
-      glyph: '📋',
-      title: 'Copy the whole case (every message, including the collapsed ones)',
-      ariaLabel: 'Copy the whole case to the clipboard',
-      click: event => onLauncherClick(event)
-    }
-  ];
-
   function installLauncher() {
-    document.getElementById(CLAUDE_LAUNCHER_ID)?.remove();
     if (!isTicketPage()) {
-      LAUNCHERS.forEach(spec => {
-        const stale = document.getElementById(spec.id);
-        if (stale) stale.remove();
-      });
-      closeSessionPicker();
+      document.getElementById(LAUNCHER_ID)?.remove();
       return;
     }
 
     if (!document.body) return;
+    if (document.getElementById(LAUNCHER_ID)?.isConnected) return;
 
     addLauncherStyles();
 
-    LAUNCHERS.forEach(spec => {
-      const existing = document.getElementById(spec.id);
-      if (existing && existing.isConnected) return;
-
-      const button = document.createElement('button');
-      button.id = spec.id;
-      button.type = 'button';
-      button.textContent = spec.glyph;
-      button.title = spec.title;
-      button.setAttribute('aria-label', spec.ariaLabel);
-      button.addEventListener('click', spec.click);
-      if (spec.contextMenu) button.addEventListener('contextmenu', spec.contextMenu);
-
-      document.body.appendChild(button);
-    });
+    const button = document.createElement('button');
+    button.id = LAUNCHER_ID;
+    button.type = 'button';
+    button.textContent = '📋';
+    button.title = 'Copy the whole case (every message, including the collapsed ones)';
+    button.setAttribute('aria-label', 'Copy the whole case to the clipboard');
+    button.addEventListener('click', onLauncherClick);
+    document.body.appendChild(button);
   }
 
   onRouteChange(installLauncher);
 
-  // Also the hook Feature 8's old toolbar button used, and how the copy can be
-  // triggered from the console.
+  // How the copy can be triggered from the console.
   window.__bvCopyFullCase = copyFullCase;
 })();
 
@@ -15478,7 +15125,7 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 (function () {
     'use strict';
 
-    // See the note in Feature 1: claude.ai is a matched host now.
+    // Freshdesk and CMS only - not the refund-log sheet (see Feature 1).
     if (location.hostname !== 'viewlift.freshdesk.com' && !isCMSHost()) return;
 
     const CMS_USERS_URLS = {
@@ -15488,25 +15135,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
         fox: 'https://foxone.cms.viewlift.com/users/search'
     };
     const BUTTON_ID = 'viewlift-open-cms-header-button';
-    const CMS_EMAIL_PARAM = 'openCmsEmail';
-    const CMS_PENDING_EMAIL_KEY = 'betterFreshdeskPendingCmsEmail';
-    let cmsSearchCompleted = false;
-    let cmsSearchStarted = false;
-    let cmsFlowTimer = null;
-    let cmsFlowObserver = null;
 
     function isFreshdeskPage() {
         return location.hostname === 'viewlift.freshdesk.com';
-    }
-
-    function isCMSUsersPage() {
-        return isCMSHost() &&
-            /^\/users\/search(?:\/|$)/i.test(location.pathname);
-    }
-
-    function isCMSPage() {
-        return isCMSHost() &&
-            /^\/users(?:\/|$)/i.test(location.pathname);
     }
 
     function cleanText(value) {
@@ -15859,27 +15490,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
         } catch (error) {
             return '';
         }
-    }
-
-    function extractEmailFromText(text) {
-        const match = String(text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-
-        return match ? cleanText(match[0]) : '';
-    }
-
-    function isVisible(element) {
-        if (!element) return false;
-
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-
-        return (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            style.opacity !== '0'
-        );
     }
 
     const CMS_SEARCH_BLOCKED_EMAILS = [
@@ -16625,314 +16235,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
         console.log('[CMS Search] Header CMS button added.');
     }
 
-    function setNativeValue(element, value) {
-        const tagName = element.tagName.toLowerCase();
-
-        let prototype = null;
-
-        if (tagName === 'input') {
-            prototype = window.HTMLInputElement.prototype;
-        } else if (tagName === 'textarea') {
-            prototype = window.HTMLTextAreaElement.prototype;
-        }
-
-        const descriptor = prototype
-            ? Object.getOwnPropertyDescriptor(prototype, 'value')
-            : null;
-
-        const previousValue = element.value;
-
-        if (descriptor && descriptor.set) {
-            descriptor.set.call(element, value);
-        } else {
-            element.value = value;
-        }
-
-        // Without resetting React's internal value tracker, React sees the
-        // native setter's write as a no-op change and never fires its own
-        // onChange, so the component's controlled state stays empty and the
-        // next render reverts the input right back to blank.
-        if (element._valueTracker) {
-            element._valueTracker.setValue(previousValue);
-        }
-
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-    }
-
-    function realClick(element, logMessage) {
-        if (!element || !isVisible(element)) return false;
-
-        element.scrollIntoView({
-            block: 'center',
-            inline: 'center'
-        });
-
-        element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: bvEventView }));
-        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: bvEventView }));
-        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: bvEventView }));
-        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: bvEventView }));
-
-        if (logMessage) {
-            console.log(logMessage);
-        }
-
-        return true;
-    }
-
-    function getEmailFromURL() {
-        try {
-            const params = new URLSearchParams(location.search);
-            return cleanText(params.get(CMS_EMAIL_PARAM) || '');
-        } catch (error) {
-            return '';
-        }
-    }
-
-    function getPendingCMSEmail() {
-        const emailFromURL = extractEmailFromText(getEmailFromURL());
-
-        if (emailFromURL && !isBlockedCmsSearchEmail(emailFromURL)) {
-            try {
-                sessionStorage.setItem(CMS_PENDING_EMAIL_KEY, emailFromURL);
-            } catch (error) {
-                console.warn('[CMS Search] Could not save the pending email.', error);
-            }
-
-            return emailFromURL;
-        }
-
-        try {
-            const storedEmail = extractEmailFromText(sessionStorage.getItem(CMS_PENDING_EMAIL_KEY) || '');
-            if (storedEmail && !isBlockedCmsSearchEmail(storedEmail)) return storedEmail;
-        } catch (error) {
-            console.warn('[CMS Search] Could not read the pending email.', error);
-        }
-
-        try {
-            const sharedEmail = extractEmailFromText(GM_getValue(CMS_PENDING_EMAIL_KEY, '') || '');
-            if (sharedEmail && !isBlockedCmsSearchEmail(sharedEmail)) {
-                sessionStorage.setItem(CMS_PENDING_EMAIL_KEY, sharedEmail);
-                return sharedEmail;
-            }
-        } catch (error) {
-            console.warn('[CMS Search] Could not read the shared pending email.', error);
-        }
-
-        return '';
-    }
-
-    function clearPendingCMSRequest() {
-        try {
-            sessionStorage.removeItem(CMS_PENDING_EMAIL_KEY);
-        } catch (error) {
-            console.warn('[CMS Search] Could not clear the pending email.', error);
-        }
-
-        try {
-            GM_deleteValue(CMS_PENDING_EMAIL_KEY);
-        } catch (error) {
-            console.warn('[CMS Search] Could not clear the shared pending email.', error);
-        }
-
-        try {
-            const url = new URL(location.href);
-
-            if (!url.searchParams.has(CMS_EMAIL_PARAM)) return;
-
-            url.searchParams.delete(CMS_EMAIL_PARAM);
-            history.replaceState(history.state, '', url.pathname + url.search + url.hash);
-        } catch (error) {
-            console.warn('[CMS Search] Could not remove the email from the URL.', error);
-        }
-    }
-
-    function openCustomerSupportPage(email) {
-        if (isCMSUsersPage()) return true;
-
-        const target = new URL('/users/search', location.origin);
-        target.searchParams.set(CMS_EMAIL_PARAM, email);
-        console.log('[CMS Search] Redirecting directly to Customer Support:', target.href);
-        location.replace(target.href);
-        return true;
-    }
-
-    function getSearchUserInput() {
-        const exact = document.querySelector(
-            'input[placeholder="Search"], input[placeholder="Search user"]'
-        );
-
-        if (exact && isVisible(exact)) {
-            return exact;
-        }
-
-        return Array.from(document.querySelectorAll('input'))
-            .filter(input => {
-                if (!isVisible(input)) return false;
-                if (input.disabled || input.readOnly) return false;
-
-                const text = [
-                    input.getAttribute('placeholder'),
-                    input.getAttribute('aria-label'),
-                    input.getAttribute('name'),
-                    input.getAttribute('id')
-                ].filter(Boolean).join(' ').toLowerCase();
-
-                return text.includes('search user') || text.includes('search') ||
-                    /@/.test(String(input.value || ''));
-            })[0] || null;
-    }
-
-    function getSearchButton() {
-        return Array.from(document.querySelectorAll('button, [role="button"]'))
-            .filter(isVisible)
-            .find(button => {
-                const text = cleanText(button.innerText || button.textContent || '').toLowerCase();
-                const label = cleanText([
-                    button.getAttribute('aria-label'),
-                    button.getAttribute('title'),
-                    button.getAttribute('data-testid')
-                ].filter(Boolean).join(' ')).toLowerCase();
-
-                return text === 'search' || text === 'buscar' ||
-                    /\bsearch\b|\bbuscar\b/.test(label);
-            }) || null;
-    }
-
-    function stopCMSFlow() {
-        clearTimeout(cmsFlowTimer);
-
-        if (cmsFlowObserver) {
-            cmsFlowObserver.disconnect();
-            cmsFlowObserver = null;
-        }
-    }
-
-    // Makes "why is this showing no results" self-diagnosing: if the email
-    // we searched for isn't actually the customer's real account email
-    // (wrong contact-info detection, or the customer has a different email
-    // on file than the one mentioned in the ticket), this makes that obvious
-    // immediately instead of leaving a blank results table with no clue why.
-    function showSearchedEmailToast(email) {
-        bvNotify('Searched: ' + email, { level: 'info', ttl: 6000 });
-    }
-
-    function runCMSSearch(email) {
-        if (cmsSearchCompleted || cmsSearchStarted) return true;
-
-        if (!email) {
-            console.log('[CMS Search] No pending email.');
-            return false;
-        }
-
-        const input = getSearchUserInput();
-
-        if (!input) {
-            console.log('[CMS Search] Search user input not found yet.');
-            return false;
-        }
-
-        // From this point onward the email must never be injected again.
-        // Some CMS versions search as the user types and do not expose a
-        // detectable Search button. Retrying in that state would overwrite
-        // anything the user types after clearing the original search.
-        cmsSearchStarted = true;
-
-        try {
-            input.focus();
-            setNativeValue(input, email);
-            showSearchedEmailToast(email);
-
-            const searchButton = getSearchButton();
-            let searchTriggered = false;
-
-            if (searchButton) {
-                searchButton.scrollIntoView({ block: 'center', inline: 'center' });
-                searchButton.focus();
-                // Native click is required by the newer CMS search component;
-                // dispatching synthetic mouse events alone does not submit it.
-                searchButton.click();
-                searchTriggered = true;
-                console.log('[CMS Search] Search clicked once for: ' + email);
-            }
-
-            if (!searchTriggered) {
-                input.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                }));
-                input.dispatchEvent(new KeyboardEvent('keyup', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                }));
-
-                console.log('[CMS Search] Email entered once; the CMS handles search from the input.');
-            }
-        } catch (error) {
-            console.warn('[CMS Search] One-time search could not be completed.', error);
-        } finally {
-            cmsSearchCompleted = true;
-            clearPendingCMSRequest();
-            stopCMSFlow();
-        }
-
-        return true;
-    }
-
-    function runCMSFlow() {
-        if (cmsSearchCompleted) return true;
-
-        const email = getPendingCMSEmail();
-
-        if (!email) {
-            stopCMSFlow();
-            return false;
-        }
-
-        if (!isCMSUsersPage()) {
-            return openCustomerSupportPage(email);
-        }
-
-        return runCMSSearch(email);
-    }
-
-    async function initCMSFlow() {
-        await waitFor(() => {
-            if (cmsSearchCompleted) return true;
-
-            const email = getPendingCMSEmail();
-
-            if (!email) {
-                stopCMSFlow();
-                return true;
-            }
-
-            if (!isCMSUsersPage()) {
-                return runCMSFlow();
-            }
-
-            if (!getSearchUserInput()) return false;
-
-            return runCMSFlow();
-        }, { timeout: 10200, pollMs: 50 });
-    }
-
-    function scheduleCMSFlow(delay = 200) {
-        if (cmsSearchCompleted) return;
-
-        clearTimeout(cmsFlowTimer);
-        cmsFlowTimer = setTimeout(runCMSFlow, delay);
-    }
-
     if (isFreshdeskPage()) {
         installHeaderButton();
 
@@ -16952,28 +16254,6 @@ if (location.hostname === 'viewlift.freshdesk.com') {
                 installHeaderButton();
             }, 250);
         });
-    }
-
-    // The legacy fill-the-box-and-click-Search flow below is no longer
-    // reachable: nothing has produced its "openCmsEmail" parameter since the
-    // CMS button switched to CMS's own keyword/filter URL, and the account
-    // lookup replaced it entirely. Leaving it *running* was not harmless
-    // though - on every CMS page it polled for up to 10s (scanning every
-    // input on the page each tick), and if a stale pending email were still
-    // sitting in storage from an old version it would happily type that into
-    // the search box. So the entry point is disabled and the leftovers are
-    // cleared once.
-    //
-    // The functions themselves are left in place deliberately: removing ~150
-    // lines of interconnected code is a change that deserves to be made when
-    // someone can click through CMS afterwards, not silently.
-    if (isCMSPage()) {
-        try {
-            sessionStorage.removeItem(CMS_PENDING_EMAIL_KEY);
-        } catch (error) { /* storage unavailable */ }
-        try {
-            GM_deleteValue(CMS_PENDING_EMAIL_KEY);
-        } catch (error) { /* storage unavailable */ }
     }
 
     window.__betterFreshdeskGetCustomerEmail = getCustomerEmailFromContactInfo;
@@ -17317,212 +16597,5 @@ if (location.hostname === 'viewlift.freshdesk.com') {
 })();
   })();
 
-/* ============================================================
- * Feature 11: deliver a queued case into a Case helper chat
- *
- * The Freshdesk side (Feature 10) collects the case, queues it and opens the
- * chosen chat in a tab. This is the other end: it takes the case meant for
- * THIS chat, writes it into the composer and sends it.
- *
- * Why a tab and not Claude in Chrome's side panel: the panel is a separate
- * chrome-extension:// document. A userscript cannot open it (only the
- * extension itself can), and cannot read or type into it even while it is
- * open - the origin boundary does not care that it is visible. Verified
- * 2026-08-21 before building this.
- * ============================================================ */
-
-if (location.hostname === 'claude.ai' || location.hostname === 'www.claude.ai') {
-
-(function () {
-  'use strict';
-
-  // Both read live off claude.ai on 2026-08-21. data-testid rather than the
-  // Tailwind classes next to them, which are generated and change constantly.
-  const EDITOR_SELECTOR = 'div[contenteditable="true"][data-testid="chat-input"]';
-  const SEND_SELECTOR = 'button[data-testid="chat-input-send"]';
-  const EDITOR_WAIT_MS = 20000;
-  const SEND_WAIT_MS = 15000;
-  const SETTLE_MS = 400;
-
-  function readQueue() {
-    try {
-      let value = GM_getValue(BV_CASE_TO_CLAUDE_KEY, null);
-      if (typeof value === 'string') value = JSON.parse(value);
-      if (!value) return [];
-      return Array.isArray(value) ? value : [value];
-    } catch (error) {
-      console.warn('[Case helper] Could not read the queued case.', error);
-      return [];
-    }
-  }
-
-  function writeQueue(queue) {
-    try {
-      if (queue.length) GM_setValue(BV_CASE_TO_CLAUDE_KEY, queue);
-      else GM_deleteValue(BV_CASE_TO_CLAUDE_KEY);
-    } catch (error) {
-      console.warn('[Case helper] Could not update the case queue.', error);
-    }
-  }
-
-  function pathOf(url) {
-    try {
-      return new URL(url).pathname;
-    } catch (error) {
-      return '';
-    }
-  }
-
-  // TAKEN, not peeked: the entry is removed before anything is pasted, so a
-  // case can be missed but never posted twice. A miss is recoverable - the
-  // Freshdesk side always leaves the same text on the clipboard, so Ctrl+V
-  // finishes the job. A duplicate post into a chat is not recoverable.
-  function takeCaseForThisPage() {
-    const queue = readQueue();
-    const now = Date.now();
-    const fresh = entry => entry && now - Number(entry.createdAt || 0) < BV_CASE_TO_CLAUDE_TTL_MS;
-
-    const index = queue.findIndex(entry =>
-      fresh(entry) && entry.report && pathOf(entry.targetUrl) === location.pathname
-    );
-
-    if (index === -1) {
-      // Still worth dropping anything stale, so a case queued for a tab that
-      // was never opened cannot surface hours later in an unrelated chat.
-      const kept = queue.filter(fresh);
-      if (kept.length !== queue.length) writeQueue(kept);
-      return null;
-    }
-
-    const entry = queue[index];
-    queue.splice(index, 1);
-    writeQueue(queue.filter(fresh));
-    return entry;
-  }
-
-  function waitFor(test, timeoutMs) {
-    return new Promise(resolve => {
-      const started = Date.now();
-
-      const tick = () => {
-        let found = null;
-        try {
-          found = test();
-        } catch (error) {
-          found = null;
-        }
-
-        if (found) { resolve(found); return; }
-        if (Date.now() - started > timeoutMs) { resolve(null); return; }
-        window.setTimeout(tick, 200);
-      };
-
-      tick();
-    });
-  }
-
-  function editorText(editor) {
-    return String(editor.innerText || '').replace(/\u00a0/g, ' ').trim();
-  }
-
-  function settle() {
-    return new Promise(resolve => window.setTimeout(resolve, SETTLE_MS));
-  }
-
-  async function deliver() {
-    const entry = takeCaseForThisPage();
-    if (!entry) return;
-
-    const editor = await waitFor(() => document.querySelector(EDITOR_SELECTOR), EDITOR_WAIT_MS);
-    if (!editor) {
-      console.warn(
-        '[Case helper] The chat composer never appeared. The case is still on the clipboard - Ctrl+V.'
-      );
-      return;
-    }
-
-    // A draft already in the box is the agent's own writing, not ours.
-    const draft = editorText(editor);
-
-    editor.focus();
-    try {
-      const transfer = new DataTransfer();
-      transfer.setData('text/plain', entry.report);
-      editor.dispatchEvent(new ClipboardEvent('paste', {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: transfer
-      }));
-    } catch (error) {
-      console.warn('[Case helper] The paste event failed - falling back to insertText.', error);
-    }
-
-    await settle();
-
-    if (editorText(editor) === draft) {
-      // ProseMirror ignored the synthetic paste - one more way in.
-      try {
-        editor.focus();
-        document.execCommand('insertText', false, entry.report);
-      } catch (error) {
-        console.warn('[Case helper] insertText failed too.', error);
-      }
-      await settle();
-    }
-
-    if (editorText(editor) === draft) {
-      console.error(
-        '[Case helper] Nothing landed in the composer - claude.ai may have renamed it. ' +
-        'The case is on the clipboard, paste it with Ctrl+V.'
-      );
-      return;
-    }
-
-    if (draft) {
-      console.warn(
-        '[Case helper] There was already a draft in this chat, so the case was appended but NOT ' +
-        'sent - review it and press Enter yourself.'
-      );
-      return;
-    }
-
-    // Waiting for the button to be ENABLED covers both a composer that has
-    // not registered the text yet and a chat that is still streaming an
-    // earlier answer.
-    const send = await waitFor(() => {
-      const button = document.querySelector(SEND_SELECTOR);
-      return button && !button.disabled ? button : null;
-    }, SEND_WAIT_MS);
-
-    if (!send) {
-      console.warn(
-        '[Case helper] The send button never became clickable. The case is written in the ' +
-        'composer - press Enter yourself.'
-      );
-      return;
-    }
-
-    send.click();
-    console.info('[Case helper] Case #' + entry.ticketId + ' sent to the Case helper chat.');
-  }
-
-  // The route bus, because a tab opened at /chat/<id> gets there only after
-  // the SPA settles - the first pass usually runs before the path is right.
-  onRouteChange(() => { deliver(); });
-
-  // And a direct nudge, for a chat tab that is already open when the button
-  // is clicked on the Freshdesk side.
-  try {
-    if (typeof GM_addValueChangeListener === 'function') {
-      GM_addValueChangeListener(BV_CASE_TO_CLAUDE_KEY, function (_name, _oldValue, _newValue, remote) {
-        if (remote) deliver();
-      });
-    }
-  } catch (error) {
-    console.warn('[Case helper] Could not subscribe to queued cases.', error);
-  }
-})();
-
-}
 
 })();

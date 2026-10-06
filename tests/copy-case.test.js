@@ -77,15 +77,6 @@ const sandbox = `
   ${extractFunction(/function readTextSkippingOurUi/, 'readTextSkippingOurUi')}
   ${extractFunction(/async function collectViaApi/, 'collectViaApi')}
   ${extractConst(/const LAUNCHER_ID = [^\n]+/, 'LAUNCHER_ID')}
-  ${extractConst(/const CLAUDE_LAUNCHER_ID = [^\n]+/, 'CLAUDE_LAUNCHER_ID')}
-  ${extractConst(/const PICKER_ID = [^\n]+/, 'PICKER_ID')}
-  ${extractConst(/const CHAT_KEY = [^\n]+/, 'CHAT_KEY')}
-  ${extractConst(/const LEGACY_SESSIONS_KEY = [^\n]+/, 'LEGACY_SESSIONS_KEY')}
-  ${extractFunction(/function readChatUrl/, 'readChatUrl')}
-  ${extractFunction(/function writeChatUrl/, 'writeChatUrl')}
-  ${extractFunction(/function toSafeClaudeUrl/, 'toSafeClaudeUrl')}
-  ${extractFunction(/function closeSessionPicker/, 'closeSessionPicker')}
-  ${extractConst(/const LAUNCHERS = \[[\s\S]*?\n  \];/, 'LAUNCHERS')}
   ${extractConst(/const LAUNCHER_STYLE_ID = [^\n]+/, 'LAUNCHER_STYLE_ID')}
   ${extractFunction(/function isTicketPage/, 'isTicketPage')}
   ${extractFunction(/function addLauncherStyles/, 'addLauncherStyles')}
@@ -93,7 +84,6 @@ const sandbox = `
   ${extractFunction(/function installLauncher/, 'installLauncher')}
   module.exports = {
     isTicketPage, installLauncher, onLauncherClick, LAUNCHER_ID,
-    readChatUrl, writeChatUrl, toSafeClaudeUrl, CLAUDE_LAUNCHER_ID,
     formatWhen, choicesToIdLabelMap, buildFieldLabels, authorFor, kindFor,
     attachmentLines, buildReport, pagedList, readTextSkippingOurUi, collectViaApi,
     PER_PAGE, MAX_PAGES
@@ -663,98 +653,9 @@ async function asyncChecks() {
 
     check('an empty result warns too', button.textContent, '\u26A0\uFE0F');
   }
-  // ---------------------------------------------------------------------------
-  // Case helper: which chat the case gets sent to. The stored URL is typed by
-  // hand and then opened in a tab, so it gets the same treatment as the CMS
-  // snapshot link - validated, not trusted.
-  // ---------------------------------------------------------------------------
-  {
-    const api = load({});
-
-    check(
-      'a chat URL in the project is accepted',
-      api.toSafeClaudeUrl('https://claude.ai/chat/2f8e1c4a-0000-4444-8888-abcdefabcdef'),
-      'https://claude.ai/chat/2f8e1c4a-0000-4444-8888-abcdefabcdef'
-    );
-    check(
-      'a project URL is accepted too - it opens a new chat in the project',
-      /^https:\/\/claude\.ai\/project\//.test(api.toSafeClaudeUrl('https://claude.ai/project/abc123')),
-      true
-    );
-    check('www is accepted', Boolean(api.toSafeClaudeUrl('https://www.claude.ai/chat/abc')), true);
-    check('/new is accepted', Boolean(api.toSafeClaudeUrl('https://claude.ai/new')), true);
-    // The real Case helper sessions are Cowork, which the first version rejected.
-    check(
-      'a cowork session URL is accepted',
-      api.toSafeClaudeUrl('https://claude.ai/cowork/cse_01PfZTMrkUr6JFk3NUiTFPAS'),
-      'https://claude.ai/cowork/cse_01PfZTMrkUr6JFk3NUiTFPAS'
-    );
-    check('a bare /cowork with no id is not a session', api.toSafeClaudeUrl('https://claude.ai/cowork/'), '');
-    check('a look-alike host is rejected', api.toSafeClaudeUrl('https://claude.ai.evil.example/chat/abc'), '');
-    check('another host is rejected', api.toSafeClaudeUrl('https://chatgpt.com/c/abc'), '');
-    check('http is rejected', api.toSafeClaudeUrl('http://claude.ai/chat/abc'), '');
-    check('javascript: is rejected', api.toSafeClaudeUrl('javascript:alert(1)'), '');
-    check('the settings page is not a chat', api.toSafeClaudeUrl('https://claude.ai/settings/profile'), '');
-    check('the bare root is not a chat', api.toSafeClaudeUrl('https://claude.ai/'), '');
-    check('a relative path is rejected', api.toSafeClaudeUrl('/chat/abc'), '');
-    check('empty input is rejected', api.toSafeClaudeUrl(''), '');
-  }
 
   {
-    // One link, pasted once. It has to survive a reload, and a corrupt value has
-    // to read as "nothing saved" rather than throwing on the click path.
-    const store = new Map();
-    const api = load({ store });
-
-    check('nothing is saved to begin with', api.readChatUrl(), '');
-
-    api.writeChatUrl('https://claude.ai/cowork/cse_01PfZTMrkUr6JFk3NUiTFPAS');
-    check(
-      'the link is remembered',
-      api.readChatUrl(),
-      'https://claude.ai/cowork/cse_01PfZTMrkUr6JFk3NUiTFPAS'
-    );
-
-    store.set('betterFreshdeskCaseHelperChat', { not: 'a string' });
-    check('a corrupt value reads as nothing saved', api.readChatUrl(), '');
-  }
-
-  {
-    // Whoever already picked a session in the two-session version keeps it
-    // rather than being asked again.
-    const store = new Map([['betterFreshdeskCaseHelperSessions', {
-      chosen: 'sebastian',
-      urls: { esteban: 'https://claude.ai/chat/e', sebastian: 'https://claude.ai/cowork/s' }
-    }]]);
-    const api = load({ store });
-
-    check('the previously chosen session is carried over', api.readChatUrl(), 'https://claude.ai/cowork/s');
-  }
-
-  {
-    // ... and if nothing was marked chosen, any saved URL beats asking again.
-    const store = new Map([['betterFreshdeskCaseHelperSessions', {
-      chosen: '',
-      urls: { esteban: 'https://claude.ai/chat/e' }
-    }]]);
-    const api = load({ store });
-
-    check('any legacy URL is carried over', api.readChatUrl(), 'https://claude.ai/chat/e');
-  }
-
-  {
-    const store = new Map([
-      ['betterFreshdeskCaseHelperChat', 'https://claude.ai/cowork/new'],
-      ['betterFreshdeskCaseHelperSessions', { chosen: 'esteban', urls: { esteban: 'https://claude.ai/chat/old' } }]
-    ]);
-    const api = load({ store });
-
-    check('a saved link wins over the legacy one', api.readChatUrl(), 'https://claude.ai/cowork/new');
-  }
-
-  {
-    // 2026-09-30: the 🧠 Case helper float was removed on request - only the
-    // copy float is installed, and a leftover 🧠 from an older version goes.
+    // On a ticket: one copy float, and a second pass adds nothing.
     const dom = fakeDom();
     const api = load({ document: dom.doc, location: { pathname: '/a/tickets/352003', origin: 'x' } });
 
@@ -762,12 +663,11 @@ async function asyncChecks() {
     api.installLauncher();
 
     check('the copy float is there', Boolean(dom.byId.get('better-freshdesk-copy-case')), true);
-    check('the Case helper float is not installed any more', dom.byId.has('better-freshdesk-case-to-claude'), false);
     check('and a second pass adds nothing', dom.appended.filter(n => n.tagName === 'BUTTON').length, 1);
   }
 
   {
-    // Off a ticket, both go away.
+    // Off a ticket, it goes away.
     const dom = fakeDom();
     const where = { pathname: '/a/tickets/1', origin: 'x' };
     const api = load({ document: dom.doc, location: where });
@@ -777,7 +677,6 @@ async function asyncChecks() {
     api.installLauncher();
 
     check('the copy float is gone', dom.byId.get('better-freshdesk-copy-case'), undefined);
-    check('and the Case helper float with it', dom.byId.get('better-freshdesk-case-to-claude'), undefined);
   }
 }
 
