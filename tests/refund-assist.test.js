@@ -110,6 +110,11 @@ const loader = new Function('ctx', 'bvEventView', `
   ${extractFunction(assistSrc, 'formatRefundAmount')}
   ${extractFunction(assistSrc, 'refundPlanFor')}
   ${extractFunction(assistSrc, 'refundedAmount')}
+  ${extractFunction(assistSrc, 'preTaxRefundAmount')}
+  ${extractFunction(assistSrc, 'refundMismatch')}
+  ${extractFunction(assistSrc, 'refundSummary')}
+  ${extractFunction(assistSrc, 'accountSummary')}
+  ${extractFunction(assistSrc, 'accountIsCancelled')}
   ${extractFunction(assistSrc, 'refundAuditComment')}
   ${extractFunction(assistSrc, 'isRefundRecord')}
   ${extractFunction(assistSrc, 'refundRecordFor')}
@@ -125,7 +130,7 @@ const loader = new Function('ctx', 'bvEventView', `
   function isCMSHost(h) { return /^cms.monumentalsportsnetwork.com$/.test(h); }
   ${extractFunction(assistSrc, 'scenarioActionsToUpdate')}
   ${extractArray(assistSrc, 'REFUNDED_SCENARIO_FALLBACK_ACTIONS')}
-  Object.assign(ctx, { refundPlanFor, refundedAmount, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+  Object.assign(ctx, { refundPlanFor, refundedAmount, preTaxRefundAmount, refundMismatch, accountIsCancelled, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
     noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS });
 `);
 loader(context, undefined);
@@ -140,7 +145,7 @@ new Function('ctx', `
   ctx.triggerMatchesExpectedOrder = triggerMatchesExpectedOrder;
 `)(workflowCtx);
 
-const { refundPlanFor, refundedAmount, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
+const { refundPlanFor, refundedAmount, preTaxRefundAmount, refundMismatch, accountIsCancelled, refundAuditComment, isRefundRecord, refundRecordFor, recordToRow, formatRefundAmount, firstNameOf, markRefundedCharges, scrapeCharges, isRefundable, parseAmount, formatTotal, readPlanCard, buildNote,
   noteLinesToHtml, noteToHtml, noteToText, scenarioActionsToUpdate, REFUNDED_SCENARIO_FALLBACK_ACTIONS } = context;
 
 // ------------------------------------------------------------------ charges
@@ -210,6 +215,20 @@ const partialCharge = Object.assign({}, full74, { refundPlan: refundPlanFor(full
 check('the refund log gets the partial amount, not the charge', refundedAmount(partialCharge) === 'USD 10.00' && refundedAmount(full74) === 'USD 74.69',
   [refundedAmount(partialCharge), refundedAmount(full74)]);
 check('refund log: partial and full mixed', formatRefundAmount([partialCharge, full74].map(c => ({ amount: refundedAmount(c) }))) === 'USD 10.00 + USD 74.69');
+// #365225 (2026-10-08): CMS's fixed amount is PRE-TAX - 8.82 sent on a
+// 74.82 charge (66.00 + tax) came back as a 10.00 refund.
+const taxed = { totalAmount: 74.82, preTaxAmount: 66 };
+const sent = preTaxRefundAmount(taxed, 8.82);
+check('a partial on a taxed charge is sent as its pre-tax share', sent === 7.78, sent);
+check('and CMS adding the tax back gives what was asked', Math.round(sent * 74.82 / 66 * 100) / 100 === 8.82, sent * 74.82 / 66);
+check('a charge with no tax on its record is sent as typed', preTaxRefundAmount({ totalAmount: 19.99, preTaxAmount: 19.99 }, 5) === 5 &&
+  preTaxRefundAmount({ totalAmount: 19.99 }, 5) === 5 && preTaxRefundAmount(null, 5) === 5);
+const charge365225 = { amount: 'USD 74.82', order: 'ch_3UKs', refundPlan: { partial: true, value: 8.82, text: 'USD 8.82' },
+  refundRow: { amount: 'USD 10.00' } };
+check('once CMS lists the REFUND, its amount is what was refunded', refundedAmount(charge365225) === 'USD 10.00', refundedAmount(charge365225));
+check('a REFUND for another amount than asked is called out', refundMismatch(charge365225) === 'CMS refunded USD 10.00 - USD 8.82 was asked (ch_3UKs)',
+  refundMismatch(charge365225));
+check('a REFUND for the asked amount is fine', refundMismatch(Object.assign({}, charge365225, { refundRow: { amount: 'USD 8.82' } })) === '');
 check('audit log uses CMS\'s own amount wording', refundAuditComment(partialCharge) === 'Issued refund of amount: 10, Reason: ROTH' &&
   refundAuditComment(full74) === 'Issued refund of percentage: 100%, Reason: ROTH', [refundAuditComment(partialCharge), refundAuditComment(full74)]);
 
@@ -348,11 +367,14 @@ const charge2 = { date: '8/29/2026', title: 'Annual Plan', type: 'CHARGE', order
 
 const okNote = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan, cmsUrl: CMS_URL, done: [charge], failed: [], skipped: [] });
 const okLines = okNote.lines.map(line => line.text);
-check('note opens with the plan name in brackets, then the CMS link', okLines[0] === '(Annual Plan)' &&
-  okLines[1] === 'CMS: ' + CMS_URL && okNote.lines[1].href === CMS_URL, okLines);
+check('note opens with the amount refunded and whether the account is cancelled (2026-10-08)',
+  okLines[0] === 'Refunded: USD 179.99 (100%)' && okLines[1] === 'Account: CANCELLED (Cancel Now)' &&
+  okNote.lines[0].bold && okNote.lines[1].bold, okLines);
+check('then the plan name in brackets, then the CMS link', okLines[2] === '(Annual Plan)' &&
+  okLines[3] === 'CMS: ' + CMS_URL && okNote.lines[3].href === CMS_URL, okLines);
 check('note has the Subscription details block in the asked order',
-  JSON.stringify(okLines.slice(2)) === JSON.stringify(['Subscription details', 'Billing Cycle: Yearly',
-    'Plan Name: Annual Plan', 'Price: USD 179.99', 'Status: CANCELLED']) && okNote.lines[2].bold === true, okLines);
+  JSON.stringify(okLines.slice(4)) === JSON.stringify(['Subscription details', 'Billing Cycle: Yearly',
+    'Plan Name: Annual Plan', 'Price: USD 179.99', 'Status: CANCELLED']) && okNote.lines[4].bold === true, okLines);
 check('the table has the REFUND row (re_ id) above its CHARGE row', JSON.stringify(okNote.rows) === JSON.stringify([
   ['9/30/2026', 'Annual Plan', 'REFUND', 're_3UL9b7JtJXFjDDk501KK4Zho', 'USD 179.99', 'STRIPE', 'N/A'],
   ['9/29/2026', 'Annual Plan', 'CHARGE', 'ch_3UL9b7JtJXFjDDk50hpPSre8', 'USD 179.99', 'STRIPE', 'N/A']
@@ -361,7 +383,7 @@ check('a clean run has nothing below the table', okNote.after.length === 0, okNo
 check('no tool name anywhere in the note', !okLines.some(t => /refund assist/i.test(t)), okLines);
 
 const text = noteToText(okNote);
-check('clipboard copy is the lines, a blank line, then tab-separated rows', text.startsWith('(Annual Plan)\nCMS: ') &&
+check('clipboard copy is the lines, a blank line, then tab-separated rows', text.startsWith('Refunded: USD 179.99 (100%)\nAccount: CANCELLED (Cancel Now)\n(Annual Plan)\nCMS: ') &&
   text.includes('Status: CANCELLED\n\n9/30/2026\tAnnual Plan\tREFUND\tre_3UL9b7JtJXFjDDk501KK4Zho\tUSD 179.99\tSTRIPE\tN/A\n9/29/2026\t'), text);
 
 const noteHtml = noteToHtml(okNote);
@@ -392,11 +414,11 @@ check('charges after the failure are listed as not done', partialAfter.includes(
 check('a failed charge is not in the table', !partial.rows.some(cells => cells.includes('ch_BBB')), partial.rows);
 
 const cancelFailed = buildNote({ dryRun: false, cancelOk: false, plan: null, cmsUrl: CMS_URL, done: [], failed: [], skipped: [charge] });
-check('a failed cancel says no refund was issued', cancelFailed.lines[0].text === 'Cancellation failed - no refunds issued', cancelFailed.lines);
+check('a failed cancel says no refund was issued', cancelFailed.lines[2].text === 'Cancellation failed - no refunds issued', cancelFailed.lines);
 // API mode runs the cancel alongside the refunds, so they can both be true.
 const cancelFailedAfterRefund = buildNote({ dryRun: false, cancelOk: false, plan: null, cmsUrl: CMS_URL, done: [charge], failed: [], skipped: [] });
 check('a failed cancel with refunds done says they WERE issued',
-  /WERE issued; cancel the account by hand/.test(cancelFailedAfterRefund.lines[0].text) && cancelFailedAfterRefund.rows.length > 0,
+  /WERE issued; cancel the account by hand/.test(cancelFailedAfterRefund.lines[2].text) && cancelFailedAfterRefund.rows.length > 0,
   cancelFailedAfterRefund.lines);
 check('a failed cancel has an empty table', cancelFailed.rows.length === 0, cancelFailed.rows);
 
@@ -409,6 +431,26 @@ const partialNote = buildNote({ dryRun: false, cancelOk: true, plan: annualPlan,
 check('a partial refund says how much of the charge was given back',
   partialNote.lines.some(line => line.text === 'Partial refund: USD 5.00 of USD 19.99 (ch_BBB)'), partialNote.lines);
 check('a full refund adds no partial line', !okNote.lines.some(line => /partial/i.test(line.text)), okNote.lines);
+check('a failed cancel says the account is NOT cancelled', cancelFailed.lines[1].text === 'Account: NOT cancelled - Cancel Now failed, cancel it by hand' &&
+  cancelFailed.lines[0].text === 'Refunded: nothing', cancelFailed.lines);
+
+// #365225 as it should have gone: partial, no Cancel Now, CMS refunded 10.
+const activePlan = { name: 'Season Plan', cycle: 'Yearly', price: 'USD 74.82', status: 'ACTIVE' };
+const partialNoCancel = buildNote({ dryRun: false, cancelWanted: false, cancelOk: true, plan: activePlan, cmsUrl: CMS_URL,
+  done: [charge365225], failed: [], skipped: [] });
+const pncLines = partialNoCancel.lines.map(line => line.text);
+check('a partial refund note says the amount CMS refunded and that the account stays', pncLines[0] === 'Refunded: USD 10.00 (partial, of USD 74.82)' &&
+  pncLines[1] === 'Account: NOT cancelled - still ACTIVE', pncLines);
+check('and calls out the amount that differs from what was asked', pncLines[2] === 'CMS refunded USD 10.00 - USD 8.82 was asked (ch_3UKs)', pncLines);
+const twoDone = buildNote({ dryRun: false, cancelWanted: false, cancelOk: true, plan: { status: 'CANCELLED' }, cmsUrl: '',
+  done: [Object.assign({}, charge365225, { refundRow: { amount: 'USD 8.82' } }), charge2], failed: [], skipped: [] });
+check('several refunds are summed, and an account already cancelled says so',
+  twoDone.lines[0].text === 'Refunded: USD 28.81 - 2 charges, 1 partial' && twoDone.lines[1].text === 'Account: CANCELLED (already, before this refund)',
+  twoDone.lines.map(line => line.text));
+check('the reply may say cancelled only when it is', accountIsCancelled({ dryRun: false, cancelWanted: true, cancelOk: true, plan: null }) &&
+  !accountIsCancelled({ dryRun: false, cancelWanted: false, cancelOk: true, plan: activePlan }) &&
+  accountIsCancelled({ dryRun: false, cancelWanted: false, cancelOk: true, plan: { status: 'CANCELLED' } }) &&
+  !accountIsCancelled({ dryRun: false, cancelWanted: true, cancelOk: false, plan: activePlan }));
 
 // ------------------------------------------------------------------ order pin
 

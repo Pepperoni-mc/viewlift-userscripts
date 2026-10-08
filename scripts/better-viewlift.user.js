@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.88.0
+// @version      3.89.0
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -6288,6 +6288,9 @@ if (isCMSHost()) {
  * Feature 3: CMS Percentage Refund Workflow
  * Opens Refund > Percentage and prepares the Issue Refund form.
  * Completes the Issue Refund form and submits it automatically.
+ * Only Refund Assist starts it (window.__bvRefundWorkflow.start): a click
+ * by hand on the eye / Refund / percentage item stays manual (Sebastian,
+ * 2026-10-08: "que esto quede manual").
  * ============================================================ */
 
 if (isCMSHost()) {
@@ -6411,11 +6414,6 @@ if (isCMSHost()) {
         return Array.from(document.querySelectorAll('button, [role="button"]'))
             .filter(isVisible)
             .find(button => getText(button).toLowerCase() === 'refund') || null;
-    }
-
-    function isRefundTrigger(target) {
-        const button = target?.closest?.('button');
-        return Boolean(button && button === getRefundTrigger());
     }
 
     function realClick(element, message) {
@@ -6650,24 +6648,6 @@ if (isCMSHost()) {
             const value = cleanText(option.getAttribute('data-value') || '').toUpperCase();
             return value === REFUND_REASON_VALUE || getText(option).toLowerCase().includes('roth');
         }) || null;
-    }
-
-    function isRefundActionIconClick(target) {
-        // MUI names its own icons, so the testid is the stable identity of the
-        // eye button; the path-data comparison below stays as a fallback for
-        // builds that render the same glyph without a testid. Matching the
-        // whole button (not just the <path>) also catches clicks that land on
-        // the ripple span or the button's padding rather than the glyph itself.
-        const button = target?.closest?.('button');
-        if (button?.querySelector('svg[data-testid="VisibilityIcon"]')) return true;
-        if (target?.closest?.('svg[data-testid="VisibilityIcon"]')) return true;
-
-        const path = target?.closest?.('path');
-        if (!path) return false;
-
-        const pathData = cleanText(path.getAttribute('d')).replace(/\s+/g, '');
-        const refundEyePath = 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3'.replace(/\s+/g, '');
-        return pathData === refundEyePath;
     }
 
     function selectNativeROTH(dialog) {
@@ -6989,34 +6969,15 @@ if (isCMSHost()) {
     }
 
     // Refund Assist (next feature) opens the eye itself and then calls start()
-    // with the order it expects, so its own clicks must not ALSO start an
-    // unpinned run from the listener below.
+    // with the order it expects. Nothing else starts a run: the click
+    // listener that refunded on a hand click of the eye / Refund was removed
+    // (2026-10-08) - a manual refund is done entirely by hand.
     window.__bvRefundWorkflow = {
         start: options => startWorkflow(options || {}),
         isActive: () => workflowActive,
         isDryRun: () => readFlag(DRY_RUN_KEY),
         getTicketURL: () => getFreshdeskTicketURL()
     };
-
-    document.addEventListener('click', function (event) {
-        if (internalClick) return;
-        if (window.__bvRefundAssistDriving === true) return;
-
-        if (isRefundActionIconClick(event.target)) {
-            debugLog('Refund eye clicked - will drive Refund then Issue percentage refund.');
-            startWorkflow();
-            return;
-        }
-
-        if (isRefundTrigger(event.target)) {
-            startWorkflow({ triggerClicked: true });
-            return;
-        }
-
-        if (isPercentageRefundOption(event.target)) {
-            startWorkflow({ percentageChosen: true });
-        }
-    }, true);
 
     const observer = new MutationObserver(function () {
         if (workflowActive) scheduleRun(60);
@@ -7484,8 +7445,38 @@ if (isCMSHost()) {
 
     // The amount a charge was (or will be) refunded - for totals and the
     // refund log, which must never claim the full charge for a partial one.
+    // Once CMS lists the REFUND, its amount is the truth - what was asked can
+    // differ (#365225: 8.82 asked, 10.00 refunded).
     function refundedAmount(charge) {
+        if (parseAmount(charge.refundRow?.amount)) return cleanText(charge.refundRow.amount);
         return charge.refundPlan?.partial ? charge.refundPlan.text : charge.amount;
+    }
+
+    // Is any ticked charge set to a partial refund right now?
+    function anyPartialPicked() {
+        return charges.some(charge => selected.has(charge.order) && isRefundable(charge) &&
+            refundPlanFor(charge, refundAmounts.get(charge.order)).partial);
+    }
+
+    // CMS's fixed-amount refund is a PRE-TAX amount: the backend adds the
+    // charge's tax on top (live #365225, 2026-10-08: amount 8.82 on a USD
+    // 74.82 charge - 66.00 + 8.82 tax - came back as a USD 10.00 refund).
+    // So the call gets the pre-tax share of what the customer should get
+    // back, from the charge's own billing record; a charge with no tax on
+    // its record is sent as typed.
+    function preTaxRefundAmount(record, wanted) {
+        const total = Number(record?.totalAmount);
+        const preTax = Number(record?.preTaxAmount);
+        if (!(total > 0) || !(preTax > 0) || preTax >= total) return wanted;
+        return Math.round(wanted * preTax / total * 100) / 100;
+    }
+
+    // A REFUND whose amount is not what was asked (by more than a cent).
+    function refundMismatch(charge) {
+        if (!charge.refundPlan?.partial) return '';
+        const got = parseAmount(charge.refundRow?.amount);
+        if (!got || Math.abs(Math.abs(got.value) - charge.refundPlan.value) <= 0.011) return '';
+        return `CMS refunded ${cleanText(charge.refundRow.amount)} - ${charge.refundPlan.text} was asked (${cleanText(charge.order)})`;
     }
 
     // CMS's own audit-log wording for each kind of refund.
@@ -8072,7 +8063,8 @@ if (isCMSHost()) {
             title: cleanText(record.planTitle) || charge.title,
             type: 'REFUND',
             order: cleanText(record.gatewayRefundId) || cleanText(record.gatewayChargeId) || charge.order,
-            amount: Number.isFinite(amount) ? `${cleanText(record.currencyCode)} ${amount.toFixed(2)}`.trim() : charge.amount,
+            amount: Number.isFinite(amount) ? `${cleanText(record.currencyCode)} ${amount.toFixed(2)}`.trim()
+                : (charge.refundPlan?.partial ? charge.refundPlan.text : charge.amount),
             handler: cleanText(record.paymentHandler) || charge.handler,
             offer: charge.offer || 'N/A'
         };
@@ -8129,7 +8121,10 @@ if (isCMSHost()) {
 
         const ticketURL = getTicketURL();
         const partial = Boolean(charge.refundPlan?.partial);
-        const howMuch = partial ? `${charge.refundPlan.text} of ${charge.amount}` : '100%';
+        const preTax = partial ? preTaxRefundAmount(record, charge.refundPlan.value) : 0;
+        const howMuch = partial
+            ? `${charge.refundPlan.text} of ${charge.amount}${preTax !== charge.refundPlan.value ? ` (sent as ${preTax.toFixed(2)} before tax - CMS adds the tax)` : ''}`
+            : '100%';
         const request = {
             method: 'POST',
             role: 'Customer Support',
@@ -8137,7 +8132,7 @@ if (isCMSHost()) {
             query: { site: ctx.site, userId: ctx.userId },
             auth: { site: ctx.site, userId: ctx.userId },
             body: {
-                ...(partial ? { amount: charge.refundPlan.value } : { refundPercentage: 100 }),
+                ...(partial ? { amount: preTax } : { refundPercentage: 100 }),
                 comment: `Customer wanted a refund: ${ticketURL}`,
                 deactivate: false,
                 paymentHandler: record.paymentHandler,
@@ -8152,7 +8147,7 @@ if (isCMSHost()) {
             return endStep(step, 'dry-run', 'API request built, not sent (dry run)');
         }
 
-        stepLog(step, `\u26a1 API: refund ${partial ? charge.refundPlan.text : '100%'} of ${record.gatewayChargeId} (${record.paymentHandler})`);
+        stepLog(step, `\u26a1 API: refund ${howMuch} - ${record.gatewayChargeId} (${record.paymentHandler})`);
         let callError = null;
         try {
             const response = await cmsInvoke(ctx, request);
@@ -8173,7 +8168,9 @@ if (isCMSHost()) {
         if (refund) {
             charge.refundRow = recordToRow(refund, charge);
             if (callError) cmsAuditLog(ctx, { actionType: 'refund', comments: refundAuditComment(charge), reason: 'ROTH' });
-            return endStep(step, 'done', `\u26a1 refunded ${partial ? `${charge.refundPlan.text} ` : ''}via the API - REFUND ${charge.refundRow.order}`);
+            const mismatch = refundMismatch(charge);
+            if (mismatch) return endStep(step, 'done', `\u26a0 ${mismatch} - REFUND ${charge.refundRow.order}`);
+            return endStep(step, 'done', `\u26a1 refunded ${refundedAmount(charge)} via the API - REFUND ${charge.refundRow.order}`);
         }
         return endStep(step, 'failed', callError
             ? `API refund failed: ${callError.message} - and no REFUND in the billing history (use Recheck)`
@@ -8217,14 +8214,8 @@ if (isCMSHost()) {
         if (!eye) return endStep(step, 'failed', 'Charge not found on this page of the table');
         stepLog(step, `Found the charge row - opening its details`);
 
-        // The flag keeps Feature 3's own eye listener from also starting an
-        // unpinned run off this click; start() below pins it to the order.
-        window.__bvRefundAssistDriving = true;
-        try {
-            realClick(eye);
-        } finally {
-            window.__bvRefundAssistDriving = false;
-        }
+        // start() below pins Feature 3's run to this order.
+        realClick(eye);
 
         const drawer = await waitFor(() => {
             const open = getDrawer();
@@ -8296,9 +8287,14 @@ if (isCMSHost()) {
     //   id) above its CHARGE row, exactly as CMS lists them.
     // Returns { lines, rows, after }: text above the table, the table, and
     // anything that went wrong below it.
-    function buildNote({ dryRun, cancelOk, plan, cmsUrl, done, failed, skipped }) {
+    function buildNote({ dryRun, cancelWanted = true, cancelOk, plan, cmsUrl, done, failed, skipped }) {
         const lines = [];
         if (dryRun) lines.push({ text: 'DRY RUN - nothing was cancelled or refunded', bold: true });
+        // Always first (Sebastian, 2026-10-08: "siempre indiques el monto
+        // refunded Y si esta cancelada o no la cuenta").
+        lines.push({ text: `Refunded: ${refundSummary(done)}`, bold: true });
+        lines.push({ text: `Account: ${accountSummary({ cancelWanted, cancelOk, plan })}`, bold: true });
+        done.map(refundMismatch).filter(Boolean).forEach(text => lines.push({ text, bold: true }));
         // With the API the cancel runs alongside the refunds, so a failed
         // cancel can come with refunds that did go through.
         if (!cancelOk) {
@@ -8351,6 +8347,34 @@ if (isCMSHost()) {
         return { lines, rows, after };
     }
 
+    // "USD 8.82 (partial, of USD 74.82)", "USD 179.99 (100%)", "USD 30.00 -
+    // 2 charges", or "nothing".
+    function refundSummary(done) {
+        if (!done.length) return 'nothing';
+        const total = formatTotal(done.map(charge => ({ amount: refundedAmount(charge) })));
+        if (done.length > 1) {
+            const partials = done.filter(charge => charge.refundPlan?.partial).length;
+            return `${total} - ${done.length} charges${partials ? `, ${partials} partial` : ''}`;
+        }
+        const [charge] = done;
+        return charge.refundPlan?.partial ? `${total} (partial, of ${cleanText(charge.amount)})` : `${total} (100%)`;
+    }
+
+    // Did this run leave the account cancelled? Partial refunds never cancel.
+    function accountSummary({ cancelWanted, cancelOk, plan }) {
+        const status = cleanText(plan?.status).toUpperCase();
+        if (cancelWanted && cancelOk) return 'CANCELLED (Cancel Now)';
+        if (cancelWanted) return 'NOT cancelled - Cancel Now failed, cancel it by hand';
+        if (/^CANCELL?ED$/.test(status)) return 'CANCELLED (already, before this refund)';
+        return `NOT cancelled${status ? ` - still ${status}` : ''}`;
+    }
+
+    // Whether the customer can be told the subscription is cancelled.
+    function accountIsCancelled({ dryRun, cancelWanted, cancelOk, plan }) {
+        if (!dryRun && cancelWanted && cancelOk) return true;
+        return /^CANCELL?ED$/.test(cleanText(plan?.status).toUpperCase());
+    }
+
     // Tab-separated rows, like copying the table straight out of CMS.
     function noteToText(note) {
         const block = list => list.map(line => line.text).join('\n');
@@ -8366,7 +8390,7 @@ if (isCMSHost()) {
     // clicks Apply on that scenario so its customer reply lands in the reply
     // editor for review - only queued once the note is already saved,
     // because the reply editor replaces an open note draft.
-    function queueNote(ticketURL, note, { pasteNote = true, submitNote = false, applyScenario = '', replyEmail = '', replyFirstName = '', refundCount = 0, updateProperties = false } = {}) {
+    function queueNote(ticketURL, note, { pasteNote = true, submitNote = false, applyScenario = '', replyEmail = '', replyFirstName = '', refundCount = 0, refundTotal = '', accountCancelled = true, updateProperties = false } = {}) {
         try {
             let queue = GM_getValue(BV_REFUND_ASSIST_NOTE_KEY, []);
             if (!Array.isArray(queue)) queue = [];
@@ -8386,6 +8410,8 @@ if (isCMSHost()) {
                 replyFirstName,
                 // How many refunds the reply should mention (only said when > 1).
                 refundCount,
+                refundTotal,
+                accountCancelled,
                 // Click the properties Update after the send (the API could
                 // not set the scenario fields).
                 updateProperties
@@ -8608,6 +8634,9 @@ if (isCMSHost()) {
             return;
         }
         const dryRun = isDryRun();
+        // A partial refund never cancels the account (Sebastian, 2026-10-08,
+        // #365225 was cancelled with an 8.82 refund) - whatever the box says.
+        const cancelWanted = cancelFirst && !picked.some(charge => charge.refundPlan.partial);
 
         running = true;
         view = 'run';
@@ -8619,7 +8648,7 @@ if (isCMSHost()) {
         // How many steps this run should take, for the progress bar: cancel,
         // one per refund, refund ids, contact/plan read, note, scenario,
         // refund-log row, back to the ticket. A real run can only grow it.
-        plannedSteps = (cancelFirst ? 1 : 0) + picked.length + 1 +
+        plannedSteps = (cancelWanted ? 1 : 0) + picked.length + 1 +
             (dryRun ? 0 : 4);
         runStartedAt = Date.now();
         render();
@@ -8630,7 +8659,7 @@ if (isCMSHost()) {
             ticketId: getTicketNumber(ticketURL),
             dryRun,
             picked,
-            cancelWanted: cancelFirst,
+            cancelWanted,
             cancelOk: true,
             done: [],
             failed: [],
@@ -8660,7 +8689,7 @@ if (isCMSHost()) {
         }
 
         try {
-            if (cancelFirst && apiCtx && picked.length) {
+            if (cancelWanted && apiCtx && picked.length) {
                 // Through the API, Cancel Now runs ALONGSIDE the refunds
                 // (Sebastian, 2026-10-06: waiting for the cancel first was
                 // the slow part). Each refund names its own charge, so they
@@ -8675,7 +8704,7 @@ if (isCMSHost()) {
                 await refundEach(run, picked, { beforeScreen: () => cancelPromise });
                 run.cancelOk = (await cancelPromise).ok;
             } else {
-                if (cancelFirst) {
+                if (cancelWanted) {
                     const cancel = await cancelSubscriptions(ticketURL, dryRun);
                     run.cancelOk = cancel.ok;
                 }
@@ -8854,7 +8883,12 @@ if (isCMSHost()) {
             console.warn('[BV Refund Assist] Could not re-read the plan card.', error);
         }
 
-        const note = buildNote({ dryRun, cancelOk: run.cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
+        const note = buildNote({ dryRun, cancelWanted: run.cancelWanted, cancelOk: run.cancelOk, plan, cmsUrl: location.href, done, failed, skipped });
+        // What the customer reply must say: the amount, and cancelled or not.
+        const replyFacts = {
+            refundTotal: done.length ? formatTotal(done.map(charge => ({ amount: refundedAmount(charge) }))) : '',
+            accountCancelled: accountIsCancelled({ dryRun, cancelWanted: run.cancelWanted, cancelOk: run.cancelOk, plan })
+        };
         lastNoteText = noteToText(note);
         const copied = copyText(lastNoteText);
 
@@ -8944,7 +8978,7 @@ if (isCMSHost()) {
                     applyScenario: wantsScenario ? scenarioName : '',
                     replyEmail: contact.email,
                     replyFirstName: contact.firstName,
-                    refundCount: done.length,
+                    refundCount: done.length, ...replyFacts,
                     updateProperties: wantsScenario
                 });
                 handedNow = queued;
@@ -8959,7 +8993,7 @@ if (isCMSHost()) {
         if (wantsScenario) {
             const scenarioStep = addStep(`Scenario: ${scenarioName}`);
             const replyPlan = contact.email
-                ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / greets ${contact.firstName}` : ''}${done.length > 1 ? ` / mentions the ${done.length} refunds` : ''} and sends it (Waiting on End User)`
+                ? `the ticket tab checks the reply says ${contact.email}${contact.firstName ? ` / greets ${contact.firstName}` : ''}${replyFacts.refundTotal ? ` / says ${replyFacts.refundTotal} refunded` : ''}${done.length > 1 ? ` / mentions the ${done.length} refunds` : ''}${replyFacts.accountCancelled ? '' : ' / says the subscription was NOT cancelled'} and sends it (Waiting on End User)`
                 : 'no account email read - the reply is left in the editor for you to send';
             if (handedNow) {
                 run.scenarioDone = true;
@@ -8978,7 +9012,7 @@ if (isCMSHost()) {
                         applyScenario: scenarioName,
                         replyEmail: contact.email,
                         replyFirstName: contact.firstName,
-                        refundCount: done.length
+                        refundCount: done.length, ...replyFacts
                     });
                     run.scenarioDone = true;
                     endStep(scenarioStep, 'done', `set ${result.changed.join(', ') || 'nothing new'} (${result.source}) - ${replyPlan}`);
@@ -8990,7 +9024,7 @@ if (isCMSHost()) {
                         applyScenario: scenarioName,
                         replyEmail: contact.email,
                         replyFirstName: contact.firstName,
-                        refundCount: done.length,
+                        refundCount: done.length, ...replyFacts,
                         updateProperties: true
                     });
                     if (queued) run.scenarioDone = true;
@@ -9392,6 +9426,18 @@ if (isCMSHost()) {
         };
         const pickedHaveProblem = () => charges.some(charge =>
             selected.has(charge.order) && isRefundable(charge) && amountProblem(charge));
+        // A partial refund never cancels (2026-10-08): the box shows it and
+        // locks while one is typed; cancelFirst itself is kept for later.
+        const cancelBox = el('input', { type: 'checkbox', checked: cancelFirst, onchange: event => { cancelFirst = event.target.checked; render(); } });
+        const cancelText = el('span');
+        const syncCancel = () => {
+            const partial = anyPartialPicked();
+            cancelBox.disabled = partial;
+            cancelBox.checked = cancelFirst && !partial;
+            cancelText.textContent = partial
+                ? ' Not cancelled - a partial refund never cancels the account'
+                : ' Cancel the subscription first (CANCEL NOW)';
+        };
 
         for (const charge of charges) {
             const on = isRefundable(charge);
@@ -9414,6 +9460,7 @@ if (isCMSHost()) {
                 hint.textContent = problem || (plan.partial ? `partial refund of ${plan.text}` : 'full refund (100%)');
                 hint.className = `bv-ra-amount-hint${problem ? ' is-error' : (plan.partial ? ' is-partial' : '')}`;
                 if (reviewButton) reviewButton.disabled = !ticketURL || pickedHaveProblem();
+                syncCancel();
             };
             body.appendChild(el('div', { class: 'bv-ra-amount' }, [
                 el('span', { text: 'Refund' }),
@@ -9435,10 +9482,8 @@ if (isCMSHost()) {
         }
 
         body.appendChild(el('p', { class: 'bv-ra-muted', text: 'Only the current page of the table is listed.' }));
-        body.appendChild(el('label', { style: 'display:block;margin-top:6px;cursor:pointer' }, [
-            el('input', { type: 'checkbox', checked: cancelFirst, onchange: event => { cancelFirst = event.target.checked; render(); } }),
-            ' Cancel the subscription first (CANCEL NOW)'
-        ]));
+        body.appendChild(el('label', { style: 'display:block;margin-top:6px;cursor:pointer' }, [cancelBox, cancelText]));
+        syncCancel();
 
         const picked = charges.filter(charge => selected.has(charge.order) && isRefundable(charge));
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Refresh', onclick: openPanel }));
@@ -9462,10 +9507,13 @@ if (isCMSHost()) {
         if (dryRun) body.appendChild(el('div', { class: 'bv-ra-warn', style: 'background:#fffaeb;color:#93370d', text: 'DRY RUN - dialogs are filled and closed, nothing is cancelled or refunded.' }));
         body.appendChild(el('p', { text: 'This will, in order:' }));
         const list = el('ol');
-        if (cancelFirst) list.appendChild(el('li', { text: 'Cancel the subscription with CANCEL NOW (not after the billing period).' }));
+        const anyPartial = anyPartialPicked();
+        const cancelWanted = cancelFirst && !anyPartial;
+        list.appendChild(el('li', { text: cancelWanted
+            ? 'Cancel the subscription with CANCEL NOW (not after the billing period).'
+            : `Leave the subscription as it is - NOT cancelled${anyPartial ? ' (a partial refund never cancels)' : ''}.` }));
         if (picked.length) {
             const planned = picked.map(charge => ({ charge, plan: refundPlanFor(charge, refundAmounts.get(charge.order)) }));
-            const anyPartial = planned.some(({ plan }) => plan.partial);
             list.appendChild(el('li', {}, [
                 `Refund ${anyPartial ? '' : '100% of '}${picked.length} charge${picked.length === 1 ? '' : 's'} - total ${formatTotal(planned.map(({ plan }) => ({ amount: plan.text })))}:`,
                 el('ul', {}, planned.map(({ charge, plan }) => el('li', {
@@ -9480,13 +9528,13 @@ if (isCMSHost()) {
         if (picked.length) list.appendChild(el('li', { text: `Write the refund-log row with ${getRefunder() || 'the selected agent'} as the Refunder.` }));
         body.appendChild(list);
         body.appendChild(el('p', { class: 'bv-ra-muted', text: cmsApiContext() && picked.length
-            ? `⚡ Through the API${cancelFirst ? ', Cancel Now runs alongside the refunds' : ''}; ${picked.length > 1 ? 'the refunds go out together, ' : ''}each one checked in CMS.${cancelFirst ? ' If the cancel fails, the refunds still happen - the note says so and you cancel by hand.' : ''}`
+            ? `⚡ Through the API${cancelWanted ? ', Cancel Now runs alongside the refunds' : ''}; ${picked.length > 1 ? 'the refunds go out together, ' : ''}each one checked in CMS.${cancelWanted ? ' If the cancel fails, the refunds still happen - the note says so and you cancel by hand.' : ''}`
             : 'Stops at the first failure. If the cancel fails, no refund is issued.' }));
 
         actions.appendChild(el('button', { class: 'bv-ra-btn', text: 'Back', onclick: () => { view = 'select'; render(); } }));
         actions.appendChild(el('button', {
             class: 'bv-ra-btn bv-ra-primary',
-            text: dryRun ? 'Run dry run' : 'Confirm - cancel & refund',
+            text: dryRun ? 'Run dry run' : (cancelWanted ? 'Confirm - cancel & refund' : 'Confirm - refund only'),
             onclick: runAssist
         }));
     }
@@ -12502,42 +12550,61 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   // kept, the node itself is reused), then Send and set as Waiting on End
   // User. Anything that cannot be checked is NOT sent - it is left in the
   // editor with the reason on screen.
-  // Several refunds -> the reply says how many (Sebastian, 2026-10-01).
+  // The refund sentence names the amount (Sebastian, 2026-10-08: always say
+  // how much was refunded) and, for several refunds, how many (2026-10-01).
   // Matched on the template's own refund sentence, in both languages:
   //   "The refund process has been initiated, ..."  (B2C Account Refunded)
   //   "Se ha iniciado el proceso de reembolso y ..." (FOX Refunded)
-  const REFUND_COUNT_SENTENCES = [
+  const REFUND_SENTENCES = [
     {
-      find: /The refund process has been initiated/i,
-      said: /The refund process for your \d+ charges/i,
-      make: count => `The refund process for your ${count} charges has been initiated`
+      // Also matches its own rewrite, so a second pass changes nothing.
+      find: /The refund (?:process|of (?:[A-Z]{3} )?[\d.,]+(?: \+ (?:[A-Z]{3} )?[\d.,]+)*)(?: for your \d+ charges)? has been initiated/i,
+      make: (amount, count) => `The refund${amount ? ` of ${amount}` : ' process'}${count > 1 ? ` for your ${count} charges` : ''} has been initiated`
     },
     {
-      find: /Se ha iniciado el proceso de reembolso/i,
-      said: /proceso de reembolso de sus \d+ cargos/i,
-      make: count => `Se ha iniciado el proceso de reembolso de sus ${count} cargos`
+      find: /Se ha iniciado el (?:proceso de reembolso|reembolso de (?:[A-Z]{3} )?[\d.,]+(?: \+ (?:[A-Z]{3} )?[\d.,]+)*)(?: (?:de|por) sus \d+ cargos)?/i,
+      make: (amount, count) => `Se ha iniciado el ${amount ? `reembolso de ${amount}` : 'proceso de reembolso'}${count > 1 ? ` ${amount ? 'por' : 'de'} sus ${count} cargos` : ''}`
     }
   ];
 
-  // '' = nothing to do (one refund, or already said), a description of the
-  // change, or 'not-found' when the template no longer has the sentence.
-  function addRefundCount(editor, count) {
-    if (!(count > 1)) return '';
-    if (REFUND_COUNT_SENTENCES.some(rule => rule.said.test(editor.textContent || ''))) return '';
+  // The template says the subscription "has been successfully canceled".
+  // When the run did not cancel it (a partial refund), that is rewritten -
+  // never sent as is (#365225 told the customer it was cancelled).
+  const CANCEL_SENTENCES = [
+    { find: /has been successfully cancell?ed(?: as per your request)?/i, make: 'remains active - it has not been canceled' },
+    { find: /se ha cancelado[^.\n]*/i, make: 'sigue activa - no se ha cancelado' }
+  ];
+  const NOT_CANCELLED_SAID = /remains active - it has not been canceled|sigue activa - no se ha cancelado/i;
+
+  // Rewrites the first text node that matches one of the rules. '' = nothing
+  // to do, a description of the change, or 'not-found'.
+  function rewriteSentence(editor, rules, make, label) {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      for (const rule of REFUND_COUNT_SENTENCES) {
+      for (const rule of rules) {
         const match = rule.find.exec(node.nodeValue || '');
         if (!match) continue;
-        node.nodeValue = node.nodeValue.slice(0, match.index) + rule.make(count) +
-          node.nodeValue.slice(match.index + match[0].length);
-        return `mentions the ${count} refunds`;
+        const text = make(rule);
+        if (match[0] === text) return '';
+        node.nodeValue = node.nodeValue.slice(0, match.index) + text + node.nodeValue.slice(match.index + match[0].length);
+        return label;
       }
     }
     return 'not-found';
   }
 
-  async function checkAndSendReply(expectedEmail, firstName, { send = true, refundCount = 0 } = {}) {
+  function fitRefundSentence(editor, amount, count) {
+    if (!amount && !(count > 1)) return '';
+    return rewriteSentence(editor, REFUND_SENTENCES, rule => rule.make(amount, count),
+      `says ${amount || 'the refund'}${count > 1 ? ` for ${count} charges` : ''}`);
+  }
+
+  function fitCancelSentence(editor, cancelled) {
+    if (cancelled || NOT_CANCELLED_SAID.test(editor.textContent || '')) return '';
+    return rewriteSentence(editor, CANCEL_SENTENCES, rule => rule.make, 'says the subscription was NOT cancelled');
+  }
+
+  async function checkAndSendReply(expectedEmail, firstName, { send = true, refundCount = 0, refundTotal = '', accountCancelled = true } = {}) {
     if (!expectedEmail) return { problem: 'CMS gave no account email to check the reply against' };
     const editor = await waitFor(findScenarioReplyEditor, { timeout: 10000, pollMs: 200 });
     if (!editor) return { problem: 'the scenario reply did not appear in the editor' };
@@ -12592,9 +12659,14 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       const greeting = fixGreeting(editor, firstName);
       if (greeting) changed.push(greeting);
     }
-    const countChange = addRefundCount(editor, Number(refundCount) || 0);
-    if (countChange === 'not-found') changed.push(`the ${refundCount} refunds could NOT be added - the refund sentence was not found`);
-    else if (countChange) changed.push(countChange);
+    // Amount and cancellation are facts the customer is told: a template
+    // that no longer has the sentence to fix is NOT sent.
+    const refundChange = fitRefundSentence(editor, cleanText(refundTotal), Number(refundCount) || 0);
+    if (refundChange === 'not-found') return { problem: 'the refund sentence was not found, so the amount could not be put in the reply', changed };
+    if (refundChange) changed.push(refundChange);
+    const cancelChange = fitCancelSentence(editor, accountCancelled !== false);
+    if (cancelChange === 'not-found') return { problem: 'the account was NOT cancelled, but the "has been canceled" sentence was not found to correct', changed };
+    if (cancelChange) changed.push(cancelChange);
     // Once more after the edits: the greeting rewrite can touch text nodes.
     runAutoBold(editor);
 
@@ -12988,7 +13060,9 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       return;
     }
     const result = await checkAndSendReply(cleanText(entry.replyEmail).toLowerCase(), cleanText(entry.replyFirstName), {
-      refundCount: Number(entry.refundCount) || 0
+      refundCount: Number(entry.refundCount) || 0,
+      refundTotal: cleanText(entry.refundTotal),
+      accountCancelled: entry.accountCancelled !== false
     });
     const fixes = result.changed && result.changed.length ? ` (fixed ${result.changed.join('; ')})` : '';
     if (!result.sent) {
@@ -13107,8 +13181,8 @@ if (location.hostname === 'viewlift.freshdesk.com') {
     }
     window.setInterval(consume, 3000);
 
-    // Live test hook, no send: set <html data-bv-reply-check="email|FirstName">
-    // on a ticket whose reply editor holds the scenario reply; the check runs
+    // Live test hook, no send: set <html data-bv-reply-check="email|FirstName|count|USD 8.82|no">
+    // (count / refund total / "no" = not cancelled are optional) on a ticket whose reply editor holds the scenario reply; the check runs
     // on it (cleanup, email, greeting, bold, Froala sync, layout checks) and
     // the outcome lands in data-bv-reply-check-result as JSON. A data
     // attribute because the page cannot reach this sandbox any other way.
@@ -13117,10 +13191,15 @@ if (location.hostname === 'viewlift.freshdesk.com') {
       const request = root.getAttribute('data-bv-reply-check');
       if (!request) return;
       root.removeAttribute('data-bv-reply-check');
-      const [email, firstName, count] = request.split('|');
+      const [email, firstName, count, total, cancelled] = request.split('|');
       let result;
       try {
-        result = await checkAndSendReply(cleanText(email).toLowerCase(), cleanText(firstName || ''), { send: false, refundCount: Number(count) || 0 });
+        result = await checkAndSendReply(cleanText(email).toLowerCase(), cleanText(firstName || ''), {
+          send: false,
+          refundCount: Number(count) || 0,
+          refundTotal: cleanText(total || ''),
+          accountCancelled: cancelled !== 'no'
+        });
       } catch (error) {
         result = { problem: String(error && error.message || error) };
       }

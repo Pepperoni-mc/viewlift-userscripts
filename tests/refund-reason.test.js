@@ -186,11 +186,10 @@ const sandbox = [
   extractFunction(/function isReasonAlreadyROTH/, 'isReasonAlreadyROTH'),
   extractFunction(/function getReasonNativeInput/, 'getReasonNativeInput'),
   extractFunction(/function writeReasonNativeValue/, 'writeReasonNativeValue'),
-  extractFunction(/function isRefundActionIconClick/, 'isRefundActionIconClick'),
   extractFunction(/function getRefundTrigger/, 'getRefundTrigger'),
   extractFunction(/function isPercentageRefundOption/, 'isPercentageRefundOption'),
   `module.exports = { cleanText, getText, getReasonCurrentText, isReasonAlreadyROTH,
-     getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick,
+     getReasonNativeInput, writeReasonNativeValue,
      getRefundTrigger, isPercentageRefundOption, REFUND_REASON_VALUE };`
 ].join('\n');
 
@@ -199,7 +198,7 @@ const mod = { exports: {} };
 new Function('module', 'window', 'Event', 'document', sandbox)(mod, fakeWindow, FakeEvent, fakeDocument);
 const {
   cleanText, getReasonCurrentText, isReasonAlreadyROTH,
-  getReasonNativeInput, writeReasonNativeValue, isRefundActionIconClick,
+  getReasonNativeInput, writeReasonNativeValue,
   getRefundTrigger, isPercentageRefundOption, REFUND_REASON_VALUE
 } = mod.exports;
 
@@ -255,24 +254,6 @@ dispatched = [];
 check('writing without a hidden input fails loudly rather than silently',
   writeReasonNativeValue(new El('div', { role: 'dialog' }, []), 'ROTH'), false);
 check('nothing is dispatched when there is no field', dispatched, []);
-
-// The eye button that starts the whole workflow.
-const eyeSvg = new El('svg', { 'data-testid': 'VisibilityIcon' }, [
-  new El('path', { d: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3' })
-]);
-const ripple = new El('span', { class: 'MuiTouchRipple-root' });
-const eyeButton = new El('button', { class: 'MuiIconButton-root', type: 'button' }, [eyeSvg, ripple]);
-
-check('a click on the eye glyph starts the workflow',
-  isRefundActionIconClick(eyeSvg.children[0]), true);
-check('a click on the eye button\'s ripple still counts', isRefundActionIconClick(ripple), true);
-check('a click on the button padding still counts', isRefundActionIconClick(eyeButton), true);
-
-const closeButton = new El('button', { class: 'MuiIconButton-colorError' }, [
-  new El('svg', { 'data-testid': 'CloseIcon' }, [new El('path', { d: 'M19 6.41 17.59 5 12 10.59Z' })])
-]);
-check('the dialog\'s close button does not start the workflow',
-  isRefundActionIconClick(closeButton), false);
 
 // The chain the eye kicks off: Refund -> Issue percentage refund -> dialog.
 // The live Refund button is a plain MUI Button with a MoreHoriz icon and NO
