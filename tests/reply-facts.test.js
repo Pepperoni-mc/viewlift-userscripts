@@ -51,7 +51,7 @@ let reply = english();
 check('the refund sentence names the amount', fitRefundSentence(reply, 'USD 8.82', 1) === 'says USD 8.82' &&
   reply.nodes[4].nodeValue.startsWith('The refund of USD 8.82 has been initiated, and the funds'), reply.nodes[4].nodeValue);
 check('a run that did not cancel rewrites "has been successfully canceled"', fitCancelSentence(reply, false) === 'says the subscription was NOT cancelled' &&
-  reply.nodes[3].nodeValue === ' remains active - it has not been canceled.', reply.nodes[3].nodeValue);
+  reply.nodes[3].nodeValue === ' remains active and has not been canceled.', reply.nodes[3].nodeValue);
 check('a second pass changes nothing', fitRefundSentence(reply, 'USD 8.82', 1) === '' && fitCancelSentence(reply, false) === '');
 
 reply = english();
@@ -70,7 +70,7 @@ const spanish = editor([
 check('Spanish: amount and count', fitRefundSentence(spanish, 'USD 5.00', 2) !== 'not-found' &&
   spanish.nodes[4].nodeValue === 'Se ha iniciado el reembolso de USD 5.00 por sus 2 cargos y los fondos...', spanish.nodes[4].nodeValue);
 check('Spanish: not cancelled', fitCancelSentence(spanish, false) !== 'not-found' &&
-  spanish.nodes[3].nodeValue === ' sigue activa - no se ha cancelado.', spanish.nodes[3].nodeValue);
+  spanish.nodes[3].nodeValue === ' sigue activa y no ha sido cancelada.', spanish.nodes[3].nodeValue);
 
 check('no cancel sentence to fix = not-found (the reply is then NOT sent)', fitCancelSentence(editor(['Hello,']), false) === 'not-found');
 check('no refund sentence to fix = not-found', fitRefundSentence(editor(['Hello,']), 'USD 1.00', 1) === 'not-found');

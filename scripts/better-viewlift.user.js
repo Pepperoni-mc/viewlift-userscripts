@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Viewlift
 // @namespace    https://github.com/Pepperoni-mc/viewlift-userscripts
-// @version      3.89.0
+// @version      3.89.1
 // @author       Happy
 // @description  Unified ViewLift toolkit for Freshdesk and CMS: case actions, CMS email search, Set Agent, refund capture, reply cleanup, screenshots, session autofill, and workflow improvements.
 // @match        https://viewlift.freshdesk.com/*
@@ -12571,10 +12571,10 @@ if (location.hostname === 'viewlift.freshdesk.com') {
   // When the run did not cancel it (a partial refund), that is rewritten -
   // never sent as is (#365225 told the customer it was cancelled).
   const CANCEL_SENTENCES = [
-    { find: /has been successfully cancell?ed(?: as per your request)?/i, make: 'remains active - it has not been canceled' },
-    { find: /se ha cancelado[^.\n]*/i, make: 'sigue activa - no se ha cancelado' }
+    { find: /has been successfully cancell?ed(?: as per your request)?/i, make: 'remains active and has not been canceled' },
+    { find: /se ha cancelado[^.\n]*/i, make: 'sigue activa y no ha sido cancelada' }
   ];
-  const NOT_CANCELLED_SAID = /remains active - it has not been canceled|sigue activa - no se ha cancelado/i;
+  const NOT_CANCELLED_SAID = /remains active and has not been canceled|sigue activa y no ha sido cancelada/i;
 
   // Rewrites the first text node that matches one of the rules. '' = nothing
   // to do, a description of the change, or 'not-found'.
